@@ -34,8 +34,8 @@ export default function Backups() {
     finally { setBusy(""); }
   }
   return <Page title="Backup & restore" subtitle="TAKE YOUR LIBRARY WITH YOU" action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>}><View style={{ paddingHorizontal: 22 }}>
-    <Text style={ui.muted}>A portable file containing your stories, bookmarks, likes, reading lists, read chapters, reading positions and reader settings. Save it to Files or a drive you already use. No NightShelf account is needed.</Text>
-    <Text style={[ui.muted, { marginTop: 14 }]}>Chapter images and novel text are not included. Download them again after importing on another phone. Automatic downloads and notification permissions are not enabled by importing a backup.</Text>
+    <Text style={ui.muted}>Save your library, reading progress and settings to a file for another phone. No account needed.</Text>
+    <Text style={[ui.muted, { marginTop: 14 }]}>Downloaded chapters are excluded. Importing won’t enable automatic downloads or notifications.</Text>
     <Pressable disabled={Boolean(busy)} onPress={() => void exportFile()} style={[ui.primary, { marginTop: 24 }]}><Text style={ui.primaryText}>Export backup</Text></Pressable>
     <Pressable disabled={Boolean(busy)} onPress={() => void importFile()} style={[ui.row, { justifyContent: "center", padding: 20 }]}><Icon name="document-outline" tint={color.lilac} /><Text style={{ color: color.lilac }}>Import backup</Text></Pressable>
     {busy ? <View style={ui.row}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>{busy}</Text></View> : null}

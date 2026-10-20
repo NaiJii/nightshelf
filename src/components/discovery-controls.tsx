@@ -28,9 +28,9 @@ export function DiscoveryControls() {
       <View style={[ui.row, { justifyContent: "space-between" }]}><Text style={[ui.text, { fontWeight: "700" }]}>Tags</Text>{selectedTags.length > 0 && <Pressable accessibilityLabel="Clear tag filters" onPress={() => setTags([])} style={{ padding: 10 }}><Text style={{ color: color.lilac }}>Clear ({selectedTags.length})</Text></Pressable>}</View>
       {tags.length > 12 && <TextInput accessibilityLabel="Find a tag" placeholder="Find a tag…" placeholderTextColor={color.muted} value={tagQuery} onChangeText={setTagQuery} style={{ color: color.text, backgroundColor: color.surface, borderRadius: 10, padding: 12, marginVertical: 8 }} />}
       <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled contentContainerStyle={{ flexDirection: "row", flexWrap: "wrap", gap: 7, paddingVertical: 8 }}>{tags.filter(tag => selectedTags.includes(tag) || tag.toLowerCase().includes(tagQuery.trim().toLowerCase())).map(tag => <Chip key={tag} text={tag} active={selectedTags.includes(tag)} onPress={() => setTags(selectedTags.includes(tag) ? selectedTags.filter(value => value !== tag) : [...selectedTags, tag])} />)}</ScrollView>
-      <Text style={[ui.muted, { fontSize: 11, marginBottom: 10 }]}>{tags.length ? "Match all selected tags in discovered titles. Load more in Explore to expand results." : "Tags appear as story details load."}</Text>
+      <Text style={[ui.muted, { fontSize: 11, marginBottom: 10 }]}>{tags.length ? "Matches all selected tags in loaded stories." : "Tags appear as story details load."}</Text>
       {([["hideDownloaded", "Hide downloaded"], ["hideLiked", "Hide liked"], ["hideBookmarked", "Hide bookmarked"]] as const).map(([key, label]) => <View key={key} style={[ui.row, { justifyContent: "space-between", paddingVertical: 3 }]}><Text style={ui.text}>{label}</Text><Switch accessibilityLabel={label} value={p[key]} onValueChange={value => update({ [key]: value })} trackColor={{ true: color.purple }} /></View>)}
-      <Text style={[ui.muted, { fontSize: 11, marginVertical: 5 }]}>Shared across Home, popularity lists and Explore searches.</Text>
+      <Text style={[ui.muted, { fontSize: 11, marginVertical: 5 }]}>Applies to Home and Explore.</Text>
     </View>}
   </View>;
 }
