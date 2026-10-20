@@ -15,17 +15,71 @@ function component(file, extraModules = {}) {
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
-    "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput"].map(name => [name, name])),
+    "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput", "ActivityIndicator"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "./ui": { color: {}, ui: {}, Icon: "Icon" },
     ...extraModules,
   };
   const exports = {};
   const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  vm.runInNewContext(script, { exports, AbortController, Error, require: name => { assert.ok(modules[name], name); return modules[name]; } });
+  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, require: name => { assert.ok(modules[name], name); return modules[name]; } });
   return { effects, render(name, props) { cursor = 0; effects.length = 0; return exports[name](props); } };
 }
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
+
+const browseRequests = [];
+const exploreShelf = {
+  catalog: [{slug:'first',title:'First'}], saved: {}, preferences: {source:'asura',sort:'title'},
+  browse: (options, cursor, signal, manual) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,resolve,reject})),
+};
+const explore = component('../src/app/(tabs)/explore.tsx', {
+  'expo-router': {router:{}},
+  '../../lib/app-state': {useShelf:()=>exploreShelf},
+  '../../lib/parser': {filterDiscovery:items=>items,sortExplore:items=>items},
+  '../../lib/scraper': {FIRST_PAGE:{page:1}},
+  '../../components/ui': {ui:{},color:{},Icon:'Icon',Chip:'Chip',PageHeading:'PageHeading'},
+  '../../components/series-card': {SeriesCard:'SeriesCard'},
+  '../../components/discovery-controls': {DiscoveryControls:'DiscoveryControls',PopularPeriods:'PopularPeriods'},
+});
+const exploreList = () => nodes(explore.render('default',{})).find(node=>node.type==='FlatList');
+const settleExplore = async () => { await new Promise(resolve=>setTimeout(resolve,0)); const list=exploreList(); explore.effects.at(-1).callback(); return list; };
+exploreList();
+const stopExplore = explore.effects[1].callback();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(browseRequests.length,1);
+let discovery = exploreList();
+discovery.props.onLayout({nativeEvent:{layout:{height:600}}});
+discovery.props.onContentSizeChange(400,3000);
+browseRequests[0].resolve({ids:['first'],cursor:{page:2},hasMore:true});
+await settleExplore();
+assert.equal(browseRequests.length,1,'being far from the bottom does not fetch another page');
+discovery=exploreList();
+discovery.props.onScroll({nativeEvent:{contentOffset:{y:1900}}});
+discovery.props.onEndReached();
+discovery.props.onScroll({nativeEvent:{contentOffset:{y:1950}}});
+assert.equal(browseRequests.length,2,'approaching the bottom prefetches once, despite repeated scroll/end events');
+assert.ok(nodes(exploreList().props.ListFooterComponent).some(node=>node.type==='ActivityIndicator'),'pagination displays a loading indicator');
+browseRequests[1].resolve({ids:[],cursor:{page:3},hasMore:true});
+await settleExplore();
+assert.equal(browseRequests.length,3,'pages hidden by filters keep advancing even without a content-size/end-reached event');
+assert.equal(browseRequests[2].cursor.page,3);
+browseRequests[2].reject(new Error('Offline'));
+await settleExplore();
+discovery=exploreList();
+discovery.props.onEndReached();
+discovery.props.onContentSizeChange(400,2900);
+discovery.props.onScroll({nativeEvent:{contentOffset:{y:2100}}});
+assert.equal(browseRequests.length,3,'failed pagination stops automatic requests until explicitly retried');
+nodes(discovery.props.ListFooterComponent).find(node=>node.props?.accessibilityLabel==='Retry loading titles').props.onPress();
+assert.equal(browseRequests.length,4);
+assert.equal(browseRequests[3].manual,true);
+browseRequests[3].resolve({ids:[],cursor:{page:4},hasMore:false});
+await settleExplore();
+discovery=exploreList(); discovery.props.onEndReached(); discovery.props.onContentSizeChange(400,2900);
+assert.equal(browseRequests.length,4,'exhausted results stop automatic pagination');
+assert.ok(!nodes(discovery.props.ListFooterComponent).some(node=>node.type==='Pressable'),'normal pagination needs no Load more button');
+stopExplore();
+
 const summary = component("../src/components/expandable-summary.tsx");
 const renderSummary = () => nodes(summary.render("ExpandableSummary", { text: "A summary of any character length." }));
 const measure = count => renderSummary().find(node => node.props?.onTextLayout).props.onTextLayout({ nativeEvent: { lines: Array(count).fill({}) } });
