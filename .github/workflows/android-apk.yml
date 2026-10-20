@@ -30,7 +30,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install dependencies
-        run: npm ci
+        run: npx --yes npm@10.9.3 ci --no-audit --no-fund
       - name: Check app
         run: |
           npm test
