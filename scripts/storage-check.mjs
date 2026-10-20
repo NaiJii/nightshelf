@@ -146,10 +146,14 @@ export async function fetch(url,options={}){
     return {ok:true,text:async()=>data};
   }
   if(new URL(url).hostname==='webtoon-phinf.pstatic.net')return {ok:true,headers:{get:()=> 'image/jpeg'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
+  if(new URL(url).hostname==='api.vortexscans.org') {
+    if(params.has('view')||params.has('userId'))throw Error('Only anonymous public chapter requests are supported');
+    return {ok:true,text:async()=>JSON.stringify({totalChapterCount:2,post:{chapters:[{number:1,slug:'chapter-1',isLocked:false,isAccessible:true},{number:2,slug:'chapter-2',isLocked:false,isAccessible:true}]}})};
+  }
   if(new URL(url).hostname==='vortexscans.org') {
     const ep=id=>'$R['+(id+10)+']={id:'+id+',slug:"chapter-'+id+'",number:'+id+',title:"",createdAt:"2026-09-01T00:00:00Z",isLocked:!1,isLockedByCoins:!1,mangaPost:$R['+(id+100)+']={id:void 0}}';
-    const record='$R[1]={id:42,slug:"example",postTitle:"Example",featuredImage:"https://storage.vortexscans.org/cover.webp",seriesStatus:"ONGOING",seriesType:"MANHWA",averageRating:9}';
-    const data=url.includes('/chapter-')?'<img data-reader-page-image="true" src="https://storage.vortexscans.org/panel.webp">':'<body><h2>Popular Today</h2><a href="/series/example">Example</a><h2>Latest Releases</h2><div itemProp="description"><p>Full Vortex summary.</p></div></body><script>'+record+ep(1)+ep(2)+'</script>';
+    const record='window.publicPost={id:42,slug:"example",postTitle:"Example",featuredImage:"https://storage.vortexscans.org/cover.webp",seriesStatus:"ONGOING",seriesType:"MANHWA",averageRating:9}';
+    const data=url.includes('/chapter-')?'<img data-reader-page-image="true" src="https://storage.vortexscans.org/panel.webp">':'<body><h2>Popular Today</h2><a href="/series/example"><img alt="Cover of Example" src="https://storage.vortexscans.org/cover.webp"></a><h2>Latest Releases</h2><h1>Example</h1><span>9 Ratings</span><dl><dt>Status</dt><dd>ONGOING</dd><dt>Type</dt><dd>Manhwa</dd><dt>Chapters</dt><dd>2</dd></dl><div itemProp="description"><p>Full Vortex summary.</p></div></body><script>'+record+ep(1)+ep(2)+'</script>';
     return {ok:true,text:async()=>data};
   }
   if(new URL(url).hostname==='www.mangakakalot.gg') {
@@ -286,6 +290,7 @@ export async function fetch(url,options={}){
       const fresh=await refreshSeries(item,async()=>{});
       assert.ok(fresh.detailsCached&&fresh.summary);
       assert.ok(fresh.chapterIds.includes('1'));
+      if(source==='vortex') assert.ok(requests.slice(before).some(url=>url.startsWith('https://api.vortexscans.org/api/chapters?')),'Vortex chapters use its public API when inline hydration is unrecognized');
       await downloadChapters(fresh,'1',()=>{},async()=>{});
       assert.equal(storage.chapterIntact(item.slug,'1'),true);
       assert.ok(!requests.slice(before).some(url=>url.includes('asurascans.com')||url.includes('webtoons.com')));

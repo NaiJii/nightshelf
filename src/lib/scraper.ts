@@ -6,7 +6,7 @@ import { chapterDirectory, chapterIntact, COVERS, initializeStorage, loadCatalog
 import { parseWebtoonCards, parseWebtoonDetails, parseWebtoonEpisodes, parseWebtoonImages, webtoonLanguage, webtoonSearchHasNext } from "./webtoon";
 import { NetworkPaused } from "./network";
 import { throwIfAborted, withAbort } from "./request-control";
-import { directoryHasMore, directoryUrl, imageReferer, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexDetails, parseVortexMetadata } from "./reader-sites";
+import { directoryHasMore, directoryUrl, imageReferer, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexChapterPayload, parseVortexDetails, parseVortexMetadata, vortexPostId } from "./reader-sites";
 import type { ReaderSite } from "./reader-sites";
 import { isVerificationHost, requireSourceVerification, SOURCE_AGENT, verificationCookies, verificationUserAgent } from "./source-session";
 import { backgroundTransfers, waitForTransfer } from "./background-downloads";
@@ -95,7 +95,14 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
   const source = sourceOf(item);
   if (source === "vortex" || source === "mangakakalot") {
     const html = await getText(item.url, guard, undefined, signal);
-    let fresh = source === "vortex" ? (loadChapters ? parseVortexDetails(html, item) : parseVortexMetadata(html, item)) : parseKakalotDetails(html, item);
+    let fresh = source === "vortex" ? parseVortexMetadata(html, item) : parseKakalotDetails(html, item);
+    if (source === "vortex" && loadChapters) {
+      const id = vortexPostId(html, item.url) || item.slug.match(/^vortex-(\d+)$/)?.[1];
+      if (id) {
+        try { fresh = parseVortexChapterPayload(await getJson(`https://api.vortexscans.org/api/chapters?postId=${id}&skip=0&take=all&order=asc`, guard, signal), fresh); }
+        catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; fresh = parseVortexDetails(html, fresh); }
+      } else fresh = parseVortexDetails(html, fresh);
+    }
     if (source === "mangakakalot" && loadChapters) {
       const chapters = parseKakalotChapters(await getJson(`https://www.mangakakalot.gg/api/manga/${encodeURIComponent(siteSlug(item))}/chapters`, guard, signal), item.url);
       fresh = { ...fresh, ...chapters, chapterCount: chapters.chapterIds.length, latestChapter: chapters.chapterIds.at(-1) || "" };

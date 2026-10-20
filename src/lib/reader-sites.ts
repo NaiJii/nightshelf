@@ -36,6 +36,14 @@ function hydrationRecords(html: string): { at: number; block: string }[] {
   return starts.map((match, index) => ({ at: match.index!, block: html.slice(match.index! + match[0].length - 1, starts[index + 1]?.index ?? html.length) }));
 }
 function numericField(block: string, name: string): string { return block.match(new RegExp(`(?:^|[,{}])\\s*"?${name}"?\\s*:\\s*(\\d+(?:\\.\\d+)?)`))?.[1] || ""; }
+export function vortexPostId(html: string, url: string): string {
+  const route = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).at(-1)!);
+  // Read the public identity without depending on the hydration variable or record boundaries.
+  for (const match of html.matchAll(/\b"?id"?\s*:\s*(\d+)\s*,\s*"?slug"?\s*:\s*("[^"\\]*")/g)) {
+    try { if (JSON.parse(match[2]) === route) return match[1]; } catch { /* unrelated record */ }
+  }
+  return "";
+}
 function date(value: string): string | undefined { const parsed = Date.parse(value); return Number.isFinite(parsed) && parsed <= Date.now() ? new Date(parsed).toISOString() : undefined; }
 function siteStoryUrl(value: string, source: ReaderSite): string {
   const url = safeUrl(value, SITE_HOME[source]);
@@ -82,7 +90,7 @@ export function parseVortexCards(html: string, popular = false, metadataOnly = f
     if (!url) continue;
     if (items.has(url)) { ordered.set(url, items.get(url)!); continue; }
     const image = content.match(/<img\b[^>]*>/i)?.[0] || "";
-    const title = attribute(image, "alt") || attribute(tag, "aria-label").replace(/^Open\s+/i, "");
+    const title = (attribute(image, "alt") || attribute(tag, "aria-label").replace(/^Open\s+/i, "")).replace(/^Cover of\s+/i, "");
     const cover = safeUrl(attribute(image, "data-fallback-src") || attribute(image, "data-src") || attribute(image, "src"), SITE_HOME.vortex);
     if (!title || !cover || ordered.has(url)) continue;
     // Keep identity deterministic if the site omits or rearranges its hydration data.
@@ -131,10 +139,37 @@ export function directoryHasMore(html: string, source: ReaderSite, url: string, 
   });
 }
 export function parseVortexMetadata(html: string, item: Series): Series {
-  const own = parseVortexCards(html, false, true).find(value => value.url === item.url.replace(/\/$/, ""));
+  let own: Series | undefined;
+  try { own = parseVortexCards(html, false, true).find(value => value.url === item.url.replace(/\/$/, "")); } catch { /* visible HTML remains usable without hydration */ }
+  const body = html.replace(/<script\b[\s\S]*?<\/script>/gi, "").split(/<h[1-6]\b[^>]*>\s*Similar Series/i)[0];
+  const title = plainText(body.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "") || own?.title;
+  if (!title) throw new Error("Vortex story details are unavailable. Pull down to retry.");
+  const fields = new Map([...body.matchAll(/<dt\b[^>]*>([\s\S]*?)<\/dt>\s*<dd\b[^>]*>([\s\S]*?)<\/dd>/gi)].map(match => [plainText(match[1]).toLowerCase(), plainText(match[2])]));
+  if (!own && !fields.has("chapters") && !fields.has("status")) throw new Error("Vortex returned a page without story details. Pull down to retry.");
+  const text = plainText(body);
+  const coverImage = [...body.matchAll(/<img\b[^>]*>/gi)].find(([tag]) => attribute(tag, "alt").replace(/^Cover of\s+/i, "") === title)?.[0] || "";
+  const cover = safeUrl(attribute(coverImage, "data-fallback-src") || attribute(coverImage, "data-src") || attribute(coverImage, "src"), item.url);
   const summary = own?.summary || plainText(section(html, "itemProp", "description")) || plainText(metadata(html, "description"));
-  if (!own) throw new Error("Vortex story details are unavailable. Pull down to retry.");
-  return { ...item, ...own, slug: item.slug, summary, metadataSyncedAt: new Date().toISOString() };
+  const updatedAt = own?.updatedAt || date(metadata(html, "og:updated_time"));
+  return { ...item, ...own, slug: item.slug, title, summary, cover: own?.cover || cover || item.cover, rating: own?.rating || text.match(/([\d.]+)\s+Ratings?\b/i)?.[1] || "", bookmarks: own?.bookmarks || text.match(/([\d.,]+[KM]?)\s+Favorites\b/i)?.[1] || "", status: own?.status || fields.get("status") || "Unknown", type: own?.type || fields.get("type") || "Comic", chapterCount: own?.chapterCount || Number(fields.get("chapters")?.replace(/,/g, "")) || 0, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
+}
+export function parseVortexChapterPayload(raw: unknown, item: Series): Series {
+  const payload = raw as { post?: { chapters?: unknown }; totalChapterCount?: number };
+  if (!Array.isArray(payload?.post?.chapters) || (payload.totalChapterCount !== undefined && (!Number.isSafeInteger(payload.totalChapterCount) || payload.totalChapterCount < 0 || payload.post.chapters.length < payload.totalChapterCount))) throw new Error("Vortex returned an incomplete chapter list. Pull down to retry.");
+  const chapterUrls: Record<string, string> = {}, chapterTitles: Record<string, string> = {};
+  let updatedAt: string | undefined;
+  const route = decodeURIComponent(new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!);
+  for (const chapter of payload.post.chapters) {
+    if (!chapter || chapter.isLocked !== false || chapter.isAccessible === false || chapter.isPermanentlyLocked || chapter.isLockedByCoins || chapter.isShortLinkLocked) continue;
+    if (chapter.mangaPost?.slug && chapter.mangaPost.slug !== route) continue;
+    const id = String(chapter.number);
+    if (!/^\d+(?:\.\d+)?$/.test(id) || typeof chapter.slug !== "string" || !/^chapter-[\w.-]+$/.test(chapter.slug)) continue;
+    chapterUrls[id] = `${item.url.replace(/\/$/, "")}/${encodeURIComponent(chapter.slug)}`;
+    chapterTitles[id] = `Chapter ${id}${chapter.title ? ` · ${plainText(String(chapter.title))}` : ""}`;
+    const published = date(chapter.createdAt); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
+  }
+  const chapterIds = Object.keys(chapterUrls).sort(chapterSort);
+  return { ...item, chapterUrls, chapterTitles, chapterIds, chapterCount: payload.totalChapterCount ?? payload.post.chapters.length, latestChapter: chapterIds.at(-1) || "", updatedAt: updatedAt || item.updatedAt, sourceDates: Boolean(updatedAt || item.updatedAt), detailsCached: true, syncedAt: new Date().toISOString() };
 }
 export function parseVortexDetails(html: string, item: Series): Series {
   const urls: Record<string, string> = {}, titles: Record<string, string> = {};
@@ -152,6 +187,7 @@ export function parseVortexDetails(html: string, item: Series): Series {
   }
   const ids = Object.keys(urls).sort(chapterSort);
   const own = parseVortexMetadata(html, item);
+  if (matches.length && own.chapterCount > matches.length) throw new Error("Vortex returned only part of the chapter list. Pull down to retry.");
   if (!ids.length && own.chapterCount > 0 && !matches.length) throw new Error("Vortex chapter list could not be read. Pull down to retry.");
   return { ...own, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: own.chapterCount || ids.length, latestChapter: own.latestChapter || ids.at(-1) || "", updatedAt: updatedAt || own.updatedAt, sourceDates: Boolean(updatedAt || own.updatedAt), syncedAt: new Date().toISOString() };
 }

@@ -39,7 +39,7 @@ export function recordSourceHealth(source: SourceId, state: SourceHealth["state"
 }
 export function sourceForRequest(url: string): SourceId | undefined {
   const host = new URL(url).hostname;
-  return /^(?:api\.)?asurascans\.com$/.test(host) ? "asura" : host === "www.webtoons.com" ? "webtoon" : /^(?:www\.)?vortexscans\.org$/.test(host) ? "vortex" : /^(?:www\.)?mangakakalot\.gg$/.test(host) ? "mangakakalot" : undefined;
+  return /^(?:api\.)?asurascans\.com$/.test(host) ? "asura" : host === "www.webtoons.com" ? "webtoon" : /^(?:(?:www|api)\.)?vortexscans\.org$/.test(host) ? "vortex" : /^(?:www\.)?mangakakalot\.gg$/.test(host) ? "mangakakalot" : undefined;
 }
 export function verifyChapterFiles(slug: string, id: string): { damaged: number; checked: number; legacy: boolean } {
   const folder = chapterDirectory(slug, id);
