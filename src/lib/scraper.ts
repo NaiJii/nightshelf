@@ -106,16 +106,18 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     let fresh = parseKakalotDetails(html, item);
     if (loadChapters) {
       const urls: Record<string, string> = {}, titles: Record<string, string> = {};
+      const lockedChapterIds: string[] = [];
       let offset: number | undefined = 0, pages = 0, updatedAt: string | undefined;
       while (offset !== undefined) {
         if (pages++ >= 2000) throw new Error("MangaKakalot chapter pagination could not finish. Pull down to retry.");
         const chapters = parseKakalotChapters(await getJson(`https://www.mangakakalot.gg/api/manga/${encodeURIComponent(siteSlug(item))}/chapters?limit=500&offset=${offset}`, guard, signal), item.url, offset);
+        lockedChapterIds.push(...chapters.lockedChapterIds);
         Object.assign(urls, chapters.chapterUrls); Object.assign(titles, chapters.chapterTitles);
         if (chapters.updatedAt && (!updatedAt || chapters.updatedAt > updatedAt)) updatedAt = chapters.updatedAt;
         offset = chapters.nextOffset;
       }
       const ids = Object.keys(urls).sort(chapterSort);
-      fresh = { ...fresh, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterListComplete: true, chapterCount: ids.length, latestChapter: ids.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) };
+      fresh = { ...fresh, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, lockedChapterIds, chapterListComplete: true, chapterCount: ids.length+lockedChapterIds.length, latestChapter: ids.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) };
     }
     try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
     return { ...fresh, detailsCached: loadChapters || item.detailsCached };
@@ -126,12 +128,15 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     if (!loadChapters) return fresh;
     const known = new Set(item.chapterIds || []);
     const urls = { ...item.chapterUrls }, titles = { ...item.chapterTitles };
+    const locked = new Set(item.lockedChapterIds || []);
     let page: string | undefined = item.url, text = html, count = 0;
     const visited = new Set<string>();
     while (page) {
       if (visited.has(page) || count++ >= 2000) throw new Error("WEBTOON episode pagination could not finish. Pull down to retry.");
       visited.add(page);
       const parsed = parseWebtoonEpisodes(text, page);
+      for (const id of parsed.locked) { locked.add(id); delete urls[id]; }
+      for (const id of parsed.ids) locked.delete(id);
       Object.assign(urls, parsed.urls); Object.assign(titles, parsed.titles);
       if (page === item.url) { fresh.updatedAt = parsed.updatedAt; fresh.sourceDates = Boolean(parsed.updatedAt); }
       // Once a cached episode is reached, older pages are already on this phone.
@@ -141,7 +146,7 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     }
     const ids = Object.keys(urls).sort(chapterSort);
     fresh.localCover = await cacheCover(fresh, guard, signal).catch(error => { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; return item.localCover; });
-    return { ...fresh, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: Math.max(fresh.chapterCount, ids.length), latestChapter: fresh.latestChapter || ids.at(-1) || "", syncedAt: new Date().toISOString() };
+    return { ...fresh, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, lockedChapterIds:[...locked], chapterCount: Math.max(fresh.chapterCount, ids.length+locked.size), latestChapter: fresh.latestChapter || ids.at(-1) || "", syncedAt: new Date().toISOString() };
   }
   let fresh: Series;
   if (kindOf(item) === "novel") {
@@ -149,14 +154,14 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     const parsed = parseApiSeries(result.series, "novel");
     if (!parsed) throw new Error("Novel details are unavailable.");
     const chapters = parseNovelChapters(result.chapters, item.url);
-    fresh = { ...parsed, chapterIds: chapters.filter(chapter => !chapter.locked).map(chapter => chapter.id), chapterCount: chapters.length || parsed.chapterCount, latestChapter: chapters.at(-1)?.id || parsed.latestChapter };
+    fresh = { ...parsed, chapterIds: chapters.filter(chapter => !chapter.locked).map(chapter => chapter.id), lockedChapterIds:chapters.filter(chapter=>chapter.locked).map(chapter=>chapter.id), chapterCount: chapters.length || parsed.chapterCount, latestChapter: chapters.at(-1)?.id || parsed.latestChapter };
   } else {
     const html = await getText(item.url, guard, undefined, signal);
-    fresh = { ...parseSeries(html, item.url), chapterIds: parseChapters(html, item.url).map(chapter => chapter.id) };
+    fresh = parseSeries(html,item.url);
     if (!fresh.chapterCount || !fresh.cover) throw new Error("Story details are unavailable.");
-    if (loadChapters && fresh.chapterIds!.length < fresh.chapterCount) throw new Error("The website returned an incomplete chapter list. Pull down to retry; older chapters have not all loaded yet.");
+    if (loadChapters && fresh.chapterIds!.length + (fresh.lockedChapterIds?.length || 0) < fresh.chapterCount) throw new Error("The website returned an incomplete chapter list. Pull down to retry; older chapters have not all loaded yet.");
   }
-  if (!loadChapters) { delete fresh.chapterIds; delete fresh.chapterUrls; delete fresh.chapterTitles; }
+  if (!loadChapters) { delete fresh.chapterIds; delete fresh.chapterUrls; delete fresh.chapterTitles; delete fresh.lockedChapterIds; }
   return { ...item, ...fresh, genres: fresh.genres?.length ? fresh.genres : item.genres || fresh.genres, summary: fresh.summary || item.summary, detailsCached: loadChapters || item.detailsCached, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, metadataSyncedAt: new Date().toISOString(), syncedAt: loadChapters ? new Date().toISOString() : item.syncedAt };
 }
 
@@ -420,6 +425,35 @@ export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor
   return { ids: updates.map(item => item.slug), cursor: next, hasMore: !next.comicDone || !next.novelDone };
 }
 
+export async function repairSavedPanel(series: Series, chapter: string, page: number, guard: Guard, signal?: AbortSignal): Promise<void> {
+  if (!Number.isInteger(page) || page < 0 || kindOf(series) === "novel") throw new Error("Invalid panel.");
+  const fresh = await refreshSeries(series, guard, signal);
+  if (!fresh.chapterIds?.includes(chapter)) throw new Error("This chapter is no longer publicly available. Existing saved pages remain readable.");
+  const chapterUrl = fresh.chapterUrls?.[chapter] || `${fresh.url}/chapter/${chapter}`;
+  const html = await getText(chapterUrl, guard, fresh.url, signal);
+  const source = sourceOf(fresh);
+  const images = source === "webtoon" ? parseWebtoonImages(html) : source === "vortex" || source === "mangakakalot" ? parseReaderSiteImages(html, source) : parsePageImages(html, chapterUrl);
+  const folder = chapterDirectory(series.slug, chapter), marker = new File(folder, ".complete");
+  const manifest = JSON.parse(marker.textSync());
+  if (manifest.quality !== 2 || JSON.stringify(manifest.urls) !== JSON.stringify(images) || !images[page]) throw new Error("The provider changed this chapter. Re-download it from the series page.");
+  const bytes = await request(images[page], guard, async response => {
+    if (!response.headers.get("content-type")?.startsWith("image/")) throw new Error("The provider did not return an image.");
+    const value = await response.bytes();
+    if (!imageHeader(value)) throw new Error("The provider returned a damaged image. Try again later.");
+    return value;
+  }, chapterUrl, signal, 60_000);
+  throwIfAborted(signal);
+  const target = new File(folder, `${String(page + 1).padStart(3,"0")}${extension(images[page])}`), temporary = new File(folder, `${target.name}.part`);
+  temporary.write(bytes);
+  if (target.exists) target.delete();
+  temporary.move(target);
+  new File(folder, `.original-${page + 1}`).write(images[page]);
+  if (!Array.isArray(manifest.hashes)) manifest.hashes = [];
+  manifest.hashes[page] = target.md5;
+  marker.write(JSON.stringify(manifest));
+  mergeCatalog([fresh]);
+}
+
 export async function downloadChapters(series: Series, selector: string, onProgress: (message: string, fraction: number) => void, guard: Guard, signal?: AbortSignal, planned?: string[], onPlan: (chapters: string[]) => void = () => {}, onChapterSaved: () => void = () => {}, automaticBookmark = false, detachAutomatic = false, nativeTransfer = true): Promise<void> {
   onProgress("Saving story details…", 0);
   const fresh = await refreshSeries(series, guard, signal);
@@ -430,7 +464,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
   const readerSite = sourceOf(series) === "vortex" || sourceOf(series) === "mangakakalot";
   const available = webtoon || readerSite ? (fresh.chapterIds || []).map(id => ({ id, url: fresh.chapterUrls![id] })) : novel
     ? parseNovelChapters((await getJson(`${API}/novel-series/${encodeURIComponent(siteSlug(series))}`, guard, signal) as { chapters?: unknown }).chapters, series.url).filter(chapter => !chapter.locked)
-    : parseChapters(await getText(series.url, guard, undefined, signal), series.url);
+    : parseChapters(await getText(series.url, guard, undefined, signal), series.url).filter(chapter=>!chapter.locked);
   const chapters = planned ? available.filter(chapter => planned.includes(chapter.id)) : selectChapters(available, selector);
   if (planned && chapters.length !== planned.length) throw new Error("Some queued chapters are no longer available. Cancel this job and choose chapters again.");
   if (!chapters.length) throw new Error("No chapters match that selection");

@@ -19,7 +19,7 @@ export default function Explore() {
   return <ExploreResults key={provider} provider={provider} />;
 }
 export function ExploreResults({ provider }: { provider: string }) {
-  const { catalog, preferences, saved, browse, updatePreferences, sourceSessionRevision } = useShelf();
+  const { catalog, preferences, saved, browse, updatePreferences, rememberSearch, sourceSessionRevision } = useShelf();
   const [query, setQuery] = useState(() => exploreQuery(provider));
   const [debounced, setDebounced] = useState(() => exploreQuery(provider).trim());
   const [reload, setReload] = useState(0);
@@ -59,6 +59,7 @@ export function ExploreResults({ provider }: { provider: string }) {
     try {
       const page = await browse(options, cursor.current, abort.signal, manual);
       if (version !== generation.current) return;
+      if (options.query && loadedIds.current.length === 0) rememberSearch(provider, options.query);
       cursor.current = page.cursor; more.current = page.hasMore;
       loadedIds.current = [...new Set(refreshingFirst.current ? page.hasMore ? [...page.ids, ...loadedIds.current] : page.ids : [...loadedIds.current, ...page.ids])];
       refreshingFirst.current = false;
@@ -70,7 +71,7 @@ export function ExploreResults({ provider }: { provider: string }) {
         setError(failure instanceof Error ? failure.message : "Couldn’t load more titles. Cached stories remain available offline.");
       }
     } finally { if (version === generation.current) { busy.current = false; setLoading(false); setRefreshing(false); } }
-  }, [browse, options, saveSession]);
+  }, [browse, options, saveSession, rememberSearch, provider]);
   const prefetch = useCallback(() => {
     const { height, content, offset } = viewport.current;
     if (!failed.current && !loadedIds.current.some(id => !catalogIds.has(id)) && height > 0 && content > 0 && content - offset - height <= height) void loadMore();
@@ -122,7 +123,8 @@ export function ExploreResults({ provider }: { provider: string }) {
     onEndReached={prefetch} onEndReachedThreshold={1}
     refreshing={refreshing} onRefresh={() => { saveSession(); setRefreshing(true); setReload(value => value + 1); }}
     ListHeaderComponent={<><PageHeading title="Explore" subtitle="FIND SOMETHING TO READ" />
-      <View style={[ui.row, { marginHorizontal: 22, paddingHorizontal: 15, backgroundColor: color.surface, borderRadius: 13, marginBottom: 12 }]}><Icon name="search-outline" tint={color.muted} /><TextInput accessibilityLabel="Search selected source" placeholder={alternate ? "Search this source" : "Search comics and novels"} returnKeyType="search" onSubmitEditing={() => { setDebounced(query.trim()); setReload(value => value + 1); }} placeholderTextColor={color.muted} value={query} onChangeText={value => { setQuery(value); rememberExploreQuery(provider, value); }} style={{ flex: 1, height: 50, color: color.text }} />{(loading || query.trim() !== debounced) && <ActivityIndicator accessibilityLabel="Loading titles" size="small" color={color.lilac} />}</View>
+      <View style={[ui.row, { marginHorizontal: 22, paddingHorizontal: 15, backgroundColor: color.surface, borderRadius: 13, marginBottom: 12 }]}><Icon name="search-outline" tint={color.muted} /><TextInput accessibilityLabel="Search selected source" placeholder={alternate ? "Search this source" : "Search comics and novels"} returnKeyType="search" onSubmitEditing={() => { setDebounced(query.trim()); setReload(value => value + 1); }} placeholderTextColor={color.muted} value={query} onChangeText={value => { setQuery(value); rememberExploreQuery(provider, value); }} style={{ flex: 1, height: 50, color: color.text }} />{query ? <Pressable accessibilityLabel="Clear search" onPress={() => { setQuery(""); setDebounced(""); rememberExploreQuery(provider, ""); }} style={{padding:12}}><Icon name="close" size={18} tint={color.muted}/></Pressable> : null}{(loading || query.trim() !== debounced) && <ActivityIndicator accessibilityLabel="Loading titles" size="small" color={color.lilac} />}</View>
+      {!query && Boolean(preferences.searchHistory?.[provider]?.length) && <View style={{paddingHorizontal:22,marginBottom:12}}><View style={[ui.row,{justifyContent:"space-between"}]}><Text style={ui.muted}>Recent searches</Text><Pressable accessibilityLabel="Clear recent searches for this provider" onPress={()=>rememberSearch(provider,null)} style={{padding:10}}><Icon name="trash-outline" size={16} tint={color.muted}/></Pressable></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:7}}>{preferences.searchHistory![provider].map(term=><Chip key={term} text={term} active={false} onPress={()=>{setQuery(term);setDebounced(term);rememberExploreQuery(provider,term);}}/>)}</ScrollView></View>}
       {shortQuery && <Text style={[ui.muted, {marginHorizontal:22, marginBottom:8}]}>Type at least 2 characters to search this source.</Text>}
       <DiscoveryControls /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ui.chips}>{(readerSite ? ([["smart", "Popular"], ["updated", "Latest updates"], ["title", "A–Z"]] as [SortOrder, string][]) : webtoon ? ([["smart", "Popular"], ...(preferences.webtoonCollection === "canvas" ? [] : [["trending", "Trending"]]), ["title", "A–Z"]] as [SortOrder, string][]) : SORTS).map(([value, label]) => <Chip key={value} text={label} active={effectiveSort === value} onPress={() => updatePreferences({ sort: value })} />)}</ScrollView>
       {!alternate && preferences.sort === "trending" && <View style={{ marginHorizontal: 22, marginBottom: 18 }}><PopularPeriods /></View>}

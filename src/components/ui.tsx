@@ -4,7 +4,9 @@ import { ActivityIndicator, ColorValue, Image, RefreshControl, ScrollView, Style
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Series } from "../lib/parser";
-import { useShelf } from "../lib/app-state";
+import { useDownloadDrawer } from "./download-drawer-context";
+import { queueSummary } from "../lib/background-downloads";
+import { useDownloads, useShelf } from "../lib/app-state";
 
 export const color = { bg: "#0b0b10", surface: "#17171f", raised: "#24232f", text: "#f7f4fb", muted: "#aaa6b3", purple: "#8b5cf6", lilac: "#c9a7ff", line: "#ffffff14" };
 export function Icon({ name, size = 22, tint = color.text }: { name: ComponentProps<typeof Ionicons>["name"]; size?: number; tint?: ColorValue }) { return <Ionicons name={name} size={size} color={tint} />; }
@@ -21,10 +23,16 @@ export function Page({ title, subtitle, children, action }: { title: string; sub
     </ScrollView>
   </SafeAreaView>;
 }
+export function DownloadIndicator() {
+  const downloads = useDownloads(), show = useDownloadDrawer();
+  if (!downloads.length) return null;
+  const percent = Math.floor(queueSummary(downloads).progress * 100);
+  return <Pressable accessibilityLabel={`Download queue, ${downloads.length} stories, ${percent} percent. Open controls`} onPress={show} style={[ui.row,{gap:5,paddingVertical:8,paddingHorizontal:10,borderRadius:12,backgroundColor:color.raised}]}><Icon name="download-outline" size={15} tint={color.lilac}/><Text style={{color:color.lilac,fontSize:11,fontWeight:"700"}}>{percent}%</Text></Pressable>;
+}
 export function PageHeading({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
   const shelf = useShelf();
   const tint = shelf.connection.warning ? "#d6b782" : color.muted;
-  return <><View style={ui.header}><View style={{ flex: 1 }}><Text style={ui.eyebrow}>{subtitle}</Text><Text style={ui.pageTitle}>{title}</Text></View><View style={{ alignItems: "flex-end", gap: 5 }}><View accessible accessibilityLabel={`Connection: ${shelf.connection.label}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Icon name={shelf.connection.icon} size={12} tint={tint} /><Text style={{ color: tint, fontSize: 10 }}>{shelf.connection.label}</Text></View>{shelf.syncing && <ActivityIndicator size="small" color={color.lilac} accessibilityLabel="Syncing in background" />}</View>{action}</View>{shelf.notice ? <Pressable accessibilityRole="button" accessibilityLabel={`${shelf.notice} Tap to dismiss`} onPress={shelf.dismissNotice} style={ui.notice}><Text style={[ui.muted, { flex: 1 }]}>{shelf.notice}</Text><Icon name="close" size={16} /></Pressable> : null}</>;
+  return <><View style={ui.header}><View style={{ flex: 1 }}><Text style={ui.eyebrow}>{subtitle}</Text><Text style={ui.pageTitle}>{title}</Text></View><View style={{ alignItems: "flex-end", gap: 5 }}><DownloadIndicator/><View accessible accessibilityLabel={`Connection: ${shelf.connection.label}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Icon name={shelf.connection.icon} size={12} tint={tint} /><Text style={{ color: tint, fontSize: 10 }}>{shelf.connection.label}</Text></View>{shelf.syncing && <ActivityIndicator size="small" color={color.lilac} accessibilityLabel="Syncing in background" />}</View>{action}</View>{shelf.notice ? <Pressable accessibilityRole="button" accessibilityLabel={`${shelf.notice} Tap to dismiss`} onPress={shelf.dismissNotice} style={ui.notice}><Text style={[ui.muted, { flex: 1 }]}>{shelf.notice}</Text><Icon name="close" size={16} /></Pressable> : null}</>;
 }
 export function Chip({ text, active, onPress }: { text: string; active?: boolean; onPress: () => void }) { return <Pressable accessibilityRole="button" accessibilityState={{ selected: Boolean(active) }} onPress={onPress} style={[ui.chip, active && ui.activeChip]}><Text style={[ui.chipText, active && { color: color.text }]}>{text}</Text></Pressable>; }
 export const ui = StyleSheet.create({

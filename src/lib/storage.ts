@@ -20,7 +20,7 @@ export function loadDownloads(): DownloadJob[] {
   try { const jobs = JSON.parse(DOWNLOADS.textSync()); return Array.isArray(jobs) ? jobs.filter(job => job?.series && safePart(job.series.slug) && typeof job.selection === "string") : []; } catch { return []; }
 }
 export function saveDownloads(jobs: DownloadJob[]): void { initializeStorage(); DOWNLOADS.write(JSON.stringify(jobs)); }
-export type Preferences = DiscoveryFilters & { readerContinuous: boolean; readerPrefetch: boolean; releaseCheckInterval: 60 | 120; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; weights: SortWeights; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
+export type Preferences = DiscoveryFilters & { searchHistory?: Record<string, string[]>; readerContinuous: boolean; readerPrefetch: boolean; releaseCheckInterval: 60 | 120; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; weights: SortWeights; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
 export const DEFAULT_PREFERENCES: Preferences = { readerContinuous: true, readerPrefetch: true, releaseCheckInterval: 120, autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", interval: 10, sort: "smart", weights: DEFAULT_WEIGHTS, contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
 export type ReadingPosition = { chapter: string; fraction: number; readAt: string; chapters?: Record<string, { fraction: number; readAt: string }> };
 
@@ -229,14 +229,14 @@ export function mergeCatalog(updates: Series[], rankings = false): void {
   saveCatalog([...items.values()]);
 }
 
-export function chapterFiles(slug: string, chapter: string): string[] {
+export function chapterFiles(slug: string, chapter: string, includeMissing = false): string[] {
   const folder = chapterDirectory(slug, chapter);
   if (!folder.exists) return [];
   try {
     const manifest = JSON.parse(new File(folder, ".complete").textSync());
     if (manifest.quality === 2 && Array.isArray(manifest.urls)) {
       return manifest.urls.map((url: string, index: number) => new File(folder, `${String(index + 1).padStart(3, "0")}${new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp"}`))
-        .filter((file: File) => file.exists && file.size).map((file: File) => file.uri);
+        .filter((file: File) => includeMissing || (file.exists && file.size)).map((file: File) => file.uri);
     }
   } catch { /* legacy download uses directory listing */ }
   return folder.list()

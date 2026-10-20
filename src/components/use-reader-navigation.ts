@@ -5,8 +5,8 @@ import { useShelf } from "../lib/app-state";
 import { chapterIntact } from "../lib/storage";
 import { useActionSheet } from "./action-sheet";
 
-export function useReaderNavigation(slug: string, title: string | undefined, next: string | undefined, transition?: string) {
-  const { preferences, fetchReaderChapter } = useShelf();
+export function useReaderNavigation(slug: string, title: string | undefined, next: string | undefined, transition?: string, push = false) {
+  const { preferences, fetchReaderChapter, connection } = useShelf();
   const showSheet = useActionSheet();
   const [status, setStatus] = useState(transition ? `Chapter ${transition}` : "");
   const [busy, setBusy] = useState(false);
@@ -52,7 +52,9 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
       }
       if (!active.current || AppState.currentState !== "active") return;
       if (!chapterIntact(slug, target)) throw new Error("Chapter download is incomplete. Tap next or previous to retry.");
-      router.replace({ pathname: "/reader/[slug]/[chapter]", params: { slug, chapter: target, title, entry: previous && automatic ? "end" : "start", transition: target } });
+      setStatus("");
+      const route = { pathname: "/reader/[slug]/[chapter]" as const, params: { slug, chapter: target, title, entry: push ? undefined : previous && automatic ? "end" : "start", transition: push ? undefined : target } };
+      if (push) router.push(route); else router.replace(route);
     } catch (error) {
       if (active.current) setStatus(error instanceof Error && error.name !== "AbortError" ? error.message : "Download paused. Tap next or previous to retry.");
     } finally {
@@ -64,6 +66,7 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
     if (!target || navigating.current) return;
     if (automatic && !preferences.readerContinuous) return;
     if (automatic || chapterIntact(slug, target)) { void open(target, automatic, previous); return; }
+    if (["Offline","No internet"].includes(connection?.label)) { showSheet("Internet required","This chapter is not saved. Connect to download it; your saved chapters remain readable."); return; }
     showSheet(`Download chapter ${target}?`, "Save this chapter on your phone and open it when ready. Mobile-data preferences still apply.", [
       { text: "Cancel", style: "cancel" },
       { text: "Download and read", onPress: () => { void open(target, false, previous); } },
@@ -74,6 +77,6 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
     attempted.current = next;
     void fetchChapter(next, true).catch(() => { /* Navigation offers a visible retry; speculative prefetch stays quiet. */ });
   }
-  function cancel() { request.current?.controller.abort(); }
+  async function cancel() { const pending = request.current; pending?.controller.abort(); await pending?.promise.catch(()=>{}); }
   return { go, prefetch, status, busy, cancel };
 }

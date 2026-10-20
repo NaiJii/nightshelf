@@ -1,12 +1,13 @@
 import { Pressable } from "../../components/pressable";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useShelf } from "../../lib/app-state";
 import { readingHistory } from "../../lib/storage";
-import { filterDiscovery, kindOf, nextUnread } from "../../lib/parser";
-import { color, Cover, Icon, Page, ui } from "../../components/ui";
+import { filterDiscovery, kindOf, resumeTarget } from "../../lib/parser";
+import { color, Icon, Page, ui } from "../../components/ui";
 import { DiscoveryControls, PopularPeriods } from "../../components/discovery-controls";
+import { ReadingShortcut } from "../../components/reading-shortcut";
 import { ReleaseFeed } from "../../components/release-feed";
 import { StoryRow } from "../../components/story-row";
 import { FIRST_PAGE } from "../../lib/scraper";
@@ -28,13 +29,11 @@ export default function Home() {
   const [history, setHistory] = useState(readingHistory);
   useFocusEffect(useCallback(() => { setHistory(readingHistory()); }, []));
   const visible = filterDiscovery(catalog, preferences, saved);
-  const resume = (slug: string, chapters: string[] = []) => nextUnread(chapters, history[slug], read[slug]);
-  const activity = useMemo(() => new Map(catalog.map(item => [item.slug, Object.values(read[item.slug] || {}).reduce((latest, date) => Math.max(latest, Date.parse(date) || 0), Date.parse(history[item.slug]?.readAt || "") || 0)])), [catalog, history, read]);
-  const recent = catalog.filter(item => activity.get(item.slug) && resume(item.slug, item.localChapters)).sort((a, b) => activity.get(b.slug)! - activity.get(a.slug)!).slice(0, 2);
+  const recent = [...catalog].filter(item => resumeTarget(item,history[item.slug],read[item.slug])).sort((a,b)=>(Date.parse(history[b.slug]?.readAt || "")||0)-(Date.parse(history[a.slug]?.readAt || "")||0))[0];
   const latest = [...visible].filter(item => item.updatedAt).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")).slice(0, 8);
   return <Page title="NightShelf" subtitle="COMICS & NOVELS" action={<Pressable accessibilityLabel="Search stories" onPress={() => router.navigate("/explore")} style={{ padding: 12 }}><Icon name="search-outline" /></Pressable>}>
     <DiscoveryControls />
-    {recent.length > 0 && <View style={ui.section}><Text style={ui.title}>Continue reading</Text>{recent.map(item => <Pressable key={item.slug} style={[ui.row, { marginTop: 16, paddingBottom: 16, borderBottomWidth: 1, borderColor: color.line }]} onPress={() => router.push({ pathname: "/reader/[slug]/[chapter]", params: { slug: item.slug, chapter: resume(item.slug, item.localChapters)!, title: item.title } })}><Cover item={item} style={{ width: 65, height: 92, borderRadius: 10 }} /><View style={{ flex: 1 }}><Text numberOfLines={2} style={{ color: color.text, fontWeight: "700" }}>{item.title}</Text><Text style={ui.muted}>Chapter {resume(item.slug, item.localChapters)}</Text></View><Icon name="play-circle-outline" tint={color.lilac} size={28} /></Pressable>)}</View>}
+    {recent && <ReadingShortcut key={recent.slug} item={recent} chapter={resumeTarget(recent,history[recent.slug],read[recent.slug])!}/>}
     <ReleaseFeed />
     <View style={ui.section}><Text style={ui.title}>Popular</Text>{alternate ? <>{sourceLoading && <View style={[ui.row, { paddingVertical: 15 }]}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>Loading stories…</Text></View>}{sourceError ? <Text style={ui.empty}>{sourceError}</Text> : null}{visible.filter(item => item.sourceRank).sort((a, b) => a.sourceRank! - b.sourceRank!).slice(0, 20).map(item => <StoryRow key={item.slug} item={item} rank={item.sourceRank} />)}{!sourceLoading && !sourceError && !visible.some(item => item.sourceRank) && <Text style={ui.empty}>No matches. Adjust filters or open Explore for more stories.</Text>}</> : <><PopularPeriods />
       {(["comic", "novel"] as const).filter(kind => preferences.contentMode === "all" || kind === (preferences.contentMode === "novels" ? "novel" : "comic")).map(kind => {

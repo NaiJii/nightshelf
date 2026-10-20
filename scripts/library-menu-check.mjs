@@ -36,7 +36,7 @@ const root = render();
 const list = nodes(root).find(node => node.type === "FlatList");
 assert.ok(list, "library uses a virtualized list");
 assert.equal(list.props.data.length, 1);
-assert.ok(nodes(list.props.ListHeaderComponent).some(node => node.type === "DownloadList"), "download controls stay in the list header");
+assert.ok(!nodes(list.props.ListHeaderComponent).some(node => node.type === "DownloadList"), "queue controls live in the shared drawer rather than expanding the library header");
 assert.equal(list.props.refreshControl.type, "RefreshControl");
 assert.ok(!nodes(root).some(node => node.props?.accessibilityLabel === "Library actions for Example"), "rows are created lazily");
 shelf.catalog = Array.from({length: 1500}, (_, index) => ({...story, slug: `story-${index}`}));

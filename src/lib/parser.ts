@@ -22,6 +22,7 @@ export type Series = {
   type: string;
   chapterCount: number;
   chapterIds?: string[];
+  lockedChapterIds?: string[];
   latestChapter: string;
   rank?: number;
   syncedAt?: string;
@@ -66,8 +67,8 @@ export function mergeDiscovery(fresh: Series, previous?: Series): Series {
 }
 
 export function chapterListCached(item: Series): boolean {
-  if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
-  if (sourceOf(item) === "asura") return kindOf(item) === "novel" || new Set(item.chapterIds).size >= item.chapterCount;
+  if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && !item.lockedChapterIds?.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
+  if (sourceOf(item) === "asura") return kindOf(item) === "novel" || new Set([...item.chapterIds,...(item.lockedChapterIds || [])]).size >= item.chapterCount;
   if (["vortex", "mangakakalot"].includes(sourceOf(item)) && item.chapterListComplete !== true) return false;
   return item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
 }
@@ -84,6 +85,13 @@ export function chapterProgress(position: { chapter: string; fraction: number; c
 }
 export function nextUnread(chapters: string[], position: { chapter: string } | undefined, read: Record<string, string> = {}): string | undefined {
   return position && chapters.includes(position.chapter) && !read[position.chapter] ? position.chapter : chapters.find(chapter => !read[chapter]);
+}
+export function resumeTarget(item: Series, position: { chapter: string } | undefined, read: Record<string, string> = {}): string | undefined {
+  if (!position) return;
+  const chapters = chapterList(item.chapterIds, item.localChapters, {}, "all", "", false);
+  const index = chapters.indexOf(position.chapter);
+  if (index < 0) return;
+  return !read[position.chapter] ? position.chapter : chapters.slice(index + 1).find(id => !read[id]);
 }
 export function kindOf(item: Series): "comic" | "novel" { return item.kind || (new URL(item.url).pathname.startsWith("/novels/") ? "novel" : "comic"); }
 export function sourceOf(item: Series): SourceId {
@@ -165,9 +173,14 @@ export function chapterSort(a: string, b: string): number {
 }
 
 export function parseChapters(source: string, baseUrl: string): Chapter[] {
-  const chapters = new Map<string, string>();
-  for (const match of source.matchAll(CHAPTER_LINK)) chapters.set(match[2], new URL(match[1], baseUrl).toString());
-  return [...chapters].map(([id, url]) => ({ id, url })).sort((a, b) => chapterSort(a.id, b.id));
+  const chapters = new Map<string, Chapter>();
+  for (const match of source.matchAll(CHAPTER_LINK)) {
+    const start = source.lastIndexOf("<a", match.index), end = source.indexOf("</a>", match.index);
+    const row = start >= 0 && /^<a(?:\s|>)/i.test(source.slice(start,start+3)) && source.indexOf(">",start)>match.index! && end>=match.index! ? source.slice(start,end) : "";
+    const locked = /data-locked=["']true|class=["'][^"']*\b(?:ico_lock|lock-icon)\b/i.test(row);
+    chapters.set(match[2], {id:match[2],url:new URL(match[1],baseUrl).toString(),...(locked ? {locked:true} : {})});
+  }
+  return [...chapters.values()].sort((a,b)=>chapterSort(a.id,b.id));
 }
 
 export function parseSeries(source: string, url: string): Series {
@@ -186,7 +199,8 @@ export function parseSeries(source: string, url: string): Series {
     status: afterLabel(text, "Status"),
     type: afterLabel(text, "Type"),
     chapterCount: Number(text.match(/\b([\d,]+)\s+Chapters\b/i)?.[1].replace(/,/g, "")) || chapters.length,
-    chapterIds: chapters.map(chapter => chapter.id),
+    chapterIds: chapters.filter(chapter=>!chapter.locked).map(chapter => chapter.id),
+    lockedChapterIds: chapters.filter(chapter=>chapter.locked).map(chapter=>chapter.id),
     latestChapter: chapters.at(-1)?.id ?? "",
     kind: new URL(url).pathname.startsWith("/novels/") ? "novel" : "comic",
     updatedAt: dates[0],

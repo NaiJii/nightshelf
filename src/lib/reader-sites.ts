@@ -167,10 +167,15 @@ export function parseVortexChapterPayload(raw: unknown, item: Series, postId = i
   const payload = raw as { post?: { chapters?: unknown }; totalChapterCount?: number };
   if (!Array.isArray(payload?.post?.chapters) || (payload.totalChapterCount !== undefined && (!Number.isSafeInteger(payload.totalChapterCount) || payload.totalChapterCount < 0 || payload.post.chapters.length < payload.totalChapterCount))) throw new Error("Vortex returned an incomplete chapter list. Pull down to retry.");
   const chapterUrls: Record<string, string> = {}, chapterTitles: Record<string, string> = {};
+  const lockedChapterIds: string[] = [];
   let updatedAt: string | undefined, seriesUrl = item.url.replace(/\/$/, "");
   const route = decodeURIComponent(new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!);
   for (const chapter of payload.post.chapters) {
-    if (!chapter || chapter.isLocked !== false || chapter.isAccessible === false || chapter.isPermanentlyLocked || chapter.isLockedByCoins || chapter.isShortLinkLocked) continue;
+    if (!chapter) continue;
+    if (chapter.isLocked !== false || chapter.isAccessible === false || chapter.isPermanentlyLocked || chapter.isLockedByCoins || chapter.isShortLinkLocked) {
+      if (/^\d+(?:\.\d+)?$/.test(String(chapter.number)) && (!postId || chapter.mangaPostId === undefined || String(chapter.mangaPostId) === postId) && (chapter.isLocked === true || chapter.isAccessible === false || chapter.isPermanentlyLocked || chapter.isLockedByCoins || chapter.isShortLinkLocked)) lockedChapterIds.push(String(chapter.number));
+      continue;
+    }
     if (postId && chapter.mangaPostId !== undefined && String(chapter.mangaPostId) !== postId) throw new Error("Vortex returned chapters for a different story. Pull down to retry.");
     if (chapter.mangaPost?.slug && chapter.mangaPost.slug !== route) {
       // A renamed series keeps its numeric identity, while cached URLs can use the old slug.
@@ -184,7 +189,7 @@ export function parseVortexChapterPayload(raw: unknown, item: Series, postId = i
     const published = date(chapter.createdAt); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
   }
   const chapterIds = Object.keys(chapterUrls).sort(chapterSort);
-  return { ...item, url: seriesUrl, vortexId: postId, chapterListComplete: true, chapterUrls, chapterTitles, chapterIds, chapterCount: payload.totalChapterCount ?? payload.post.chapters.length, latestChapter: chapterIds.at(-1) || "", updatedAt: updatedAt || item.updatedAt, sourceDates: Boolean(updatedAt || item.updatedAt), detailsCached: true, syncedAt: new Date().toISOString() };
+  return { ...item, url: seriesUrl, vortexId: postId, chapterListComplete: true, chapterUrls, chapterTitles, chapterIds, lockedChapterIds, chapterCount: payload.totalChapterCount ?? payload.post.chapters.length, latestChapter: chapterIds.at(-1) || "", updatedAt: updatedAt || item.updatedAt, sourceDates: Boolean(updatedAt || item.updatedAt), detailsCached: true, syncedAt: new Date().toISOString() };
 }
 export function parseVortexDetails(html: string, item: Series): Series {
   const urls: Record<string, string> = {}, titles: Record<string, string> = {};
@@ -214,14 +219,16 @@ export function parseKakalotChapters(raw: unknown, seriesUrl: string, offset = 0
   if (pagination && (!Number.isSafeInteger(pagination.total) || pagination.total < 0 || pagination.offset !== offset || typeof pagination.has_more !== "boolean" || ((pagination.has_more || offset < pagination.total) && !received))) throw new Error("MangaKakalot chapter pagination is incomplete. Pull down to retry.");
   const more = pagination && (pagination.has_more || offset + received < pagination.total);
   const urls: Record<string, string> = {}, titles: Record<string, string> = {};
+  const lockedChapterIds: string[] = [];
   let updatedAt: string | undefined;
   for (const chapter of payload.data.chapters) {
-    if (!chapter || !/^\d+(?:\.\d+)?$/.test(String(chapter.chapter_num)) || !/^chapter-[\w.-]+$/.test(chapter.chapter_slug) || chapter.is_locked === true) continue;
+    if (!chapter || !/^\d+(?:\.\d+)?$/.test(String(chapter.chapter_num)) || !/^chapter-[\w.-]+$/.test(chapter.chapter_slug)) continue;
+    if (chapter.is_locked === true) { lockedChapterIds.push(String(chapter.chapter_num)); continue; }
     const id = String(chapter.chapter_num);
     urls[id] = `${seriesUrl}/${chapter.chapter_slug}`; titles[id] = typeof chapter.chapter_name === "string" ? chapter.chapter_name : `Chapter ${id}`;
     const published = date(chapter.updated_at); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
   }
-  return { chapterUrls: urls, chapterTitles: titles, chapterIds: Object.keys(urls).sort(chapterSort), updatedAt, sourceDates: Boolean(updatedAt), nextOffset: more ? offset + received : undefined };
+  return { lockedChapterIds, chapterUrls: urls, chapterTitles: titles, chapterIds: Object.keys(urls).sort(chapterSort), updatedAt, sourceDates: Boolean(updatedAt), nextOffset: more ? offset + received : undefined };
 }
 export function parseKakalotDetails(html: string, item: Series): Series {
   const data: Record<string, unknown>[] = [];

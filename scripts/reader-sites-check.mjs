@@ -37,6 +37,8 @@ try {
   assert.throws(()=>sites.parseVortexMetadata('<h1>Page not found</h1>',card),/without story details/);
   const publicChapters=sites.parseVortexChapterPayload({totalChapterCount:4,post:{chapters:[{number:0,slug:'chapter-0',isLocked:false,isAccessible:true},{number:1,slug:'chapter-1',isLocked:false,isAccessible:true},{number:2,slug:'chapter-2',isLocked:true,isAccessible:false},{number:3,slug:'chapter-3',isAccessible:true}]}},visibleMetadata);
   assert.deepEqual(publicChapters.chapterIds,['0','1'],'only explicitly public and accessible API chapters are included');
+  assert.deepEqual(publicChapters.lockedChapterIds,['2'],'unknown access is not mislabelled as a known lock');
+  assert.equal(publicChapters.chapterUrls['2'],undefined);
   const renamed=sites.parseVortexChapterPayload({totalChapterCount:1,post:{chapters:[{number:1,slug:'chapter-1',isLocked:false,isAccessible:true,mangaPostId:42,mangaPost:{slug:'renamed-example'}}]}},visibleMetadata,'42');
   assert.deepEqual(renamed.chapterIds,['1'],'a renamed story must not silently discard every chapter');
   assert.equal(renamed.chapterUrls['1'],'https://vortexscans.org/series/renamed-example/chapter-1');

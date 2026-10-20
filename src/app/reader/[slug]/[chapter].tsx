@@ -29,9 +29,9 @@ function ReaderSession(params: { slug: string; chapter: string; title?: string; 
   return <><Stack.Screen options={{ statusBarHidden: hidden, navigationBarHidden: hidden }} /><ChapterReader hidden={hidden} setHidden={setHidden} optionsOpen={optionsOpen} setOptionsOpen={setOptionsOpen} key={`${params.slug}/${params.chapter}/${preferences.novelFontSize}/${preferences.novelTheme}`} {...params} manualUnreadRef={manualUnreadRef} /></>;
 }
 function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRef, hidden, setHidden, optionsOpen, setOptionsOpen }: { hidden: boolean; setHidden: (value: boolean) => void; optionsOpen: boolean; setOptionsOpen: (value: boolean) => void; slug: string; chapter: string; title?: string; entry?: string; transition?: string; manualUnreadRef: { current: boolean } }) {
-  const [files] = useState(() => chapterFiles(slug, chapter));
+  const [files] = useState(() => chapterFiles(slug, chapter, true));
   const [novel] = useState(() => novelChapter(slug, chapter));
-  const { preferences, updatePreferences, read, completeChapter, setReadStatus, catalog, loadDetails } = useShelf();
+  const { preferences, updatePreferences, read, completeChapter, setReadStatus, catalog, loadDetails, fetchReaderChapter } = useShelf();
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [position] = useState(() => entry === "end" ? 1 : entry === "start" ? 0 : chapterProgress(readingHistory()[slug], chapter));
@@ -39,9 +39,10 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
   const baseUrl = `${chapterDirectory(slug, chapter).uri.replace(/\/$/, "")}/`;
   const web = useRef<WebView>(null);
   const scrubberBottom = useRef(96);
+  const repair = useRef<AbortController | null>(null);
   const controlsError = useReaderConveniences(web, Boolean(files.length || novel));
   const focused = useRef(false);
-  const [intact] = useState(() => chapterIntact(slug, chapter));
+  const [intact, setIntact] = useState(() => chapterIntact(slug, chapter));
   const item = catalog.find(item => item.slug === slug);
   const chapters = chapterList(item?.chapterIds, item?.localChapters || localChapters(slug), {}, "all", "", false);
   const index = chapters.indexOf(chapter);
@@ -54,8 +55,8 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
   useFocusEffect(useCallback(() => {
     focused.current = true;
     web.current?.injectJavaScript(`window.readerActive=${AppState.currentState === "active"};window.readerUpdateControls?.();true;`);
-    const listener = AppState.addEventListener("change", state => web.current?.injectJavaScript(`window.readerActive=${state === "active"};window.readerUpdateControls?.();true;`));
-    return () => { focused.current = false; web.current?.injectJavaScript("window.readerActive=false;window.readerUpdateControls?.();true;"); listener.remove(); };
+    const listener = AppState.addEventListener("change", state => { if(state!=="active")repair.current?.abort(); web.current?.injectJavaScript(`window.readerActive=${state === "active"};window.readerUpdateControls?.();true;`); });
+    return () => { repair.current?.abort(); focused.current = false; web.current?.injectJavaScript("window.readerActive=false;window.readerUpdateControls?.();true;"); listener.remove(); };
   }, []));
 
   useEffect(() => {
@@ -90,6 +91,20 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
             if (focused.current && AppState.currentState === "active") { setHidden(data.controls === "hide"); if (data.controls === "hide") setOptionsOpen(false); }
             return;
           }
+          if (Number.isInteger(data.repair) && data.repair >= 0 && data.repair < files.length && focused.current && AppState.currentState === "active") {
+            if (repair.current) return;
+            const page = data.repair, controller = new AbortController(); repair.current = controller;
+            const state = (busy: boolean, message: string) => { if (focused.current) web.current?.injectJavaScript(`window.readerPanelRepairState?.(${page},${busy},${JSON.stringify(message)});true;`); };
+            state(true,"Preparing repair…");
+            void navigation.cancel().then(async()=>{
+              if (!focused.current || controller.signal.aborted) return;
+              await fetchReaderChapter(slug,chapter,false,controller.signal,message=>state(true,message),page);
+              if (focused.current && !controller.signal.aborted) web.current?.injectJavaScript(`window.readerReloadPanel?.(${page});true;`);
+            }).catch(failure=>state(false,`${failure instanceof Error?failure.message:"Repair failed"} · Tap to retry`)).finally(()=>{if(repair.current===controller)repair.current=null;});
+            return;
+          }
+          if (Number.isInteger(data.repaired)) { if(focused.current)setIntact(chapterIntact(slug,chapter)); return; }
+          if (data.error && Number.isInteger(data.page)) { setIntact(false); web.current?.injectJavaScript(`window.readerPanelRepairState?.(${data.page},false,"");true;`); return; }
           if (data.error) { setError("A saved image could not be opened. Re-download this chapter to repair it."); return; }
           if (!focused.current || AppState.currentState !== "active") return;
           if (data.boundary === "next" || data.boundary === "previous") {
@@ -97,7 +112,7 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
             return;
           }
           if (Number.isFinite(data.fraction) && intact && !error) navigation.prefetch(data.fraction);
-          if (data.complete === true && !manualUnreadRef.current && intact && !error && focused.current && AppState.currentState === "active") completeChapter(slug, chapter);
+          if (data.complete === true && !manualUnreadRef.current && (intact || chapterIntact(slug,chapter)) && !error && focused.current && AppState.currentState === "active") completeChapter(slug, chapter);
           if (Number.isFinite(data.fraction) && !manualUnreadRef.current) savePosition(slug, chapter, Math.max(0, Math.min(1, data.fraction)));
           if (Number.isInteger(data.page)) setPage(Math.max(1, Math.min(files.length, data.page)));
         } catch { /* ignore malformed messages */ }

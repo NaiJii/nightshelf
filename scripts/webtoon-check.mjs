@@ -20,6 +20,8 @@ try {
   const ep = (id, name, extra = "") => `<li ${extra}><a href="https://www.webtoons.com/en/fantasy/example/${id}/viewer?title_no=42&amp;episode_no=${id}"><span class="subj"><span>${name}</span></span><span class="date">Oct 14, 2026</span></a></li>`;
   const episodes = parseWebtoonEpisodes(`<ul id="_listUl">${ep("10", "Episode Nine")}${ep("2", "Episode One")}${ep("11", "Locked", 'data-locked="true"')}</ul><a href="/en/fantasy/example/list?title_no=42&amp;page=2" class=pg_page>2</a>`, url);
   assert.deepEqual(episodes.ids, ["2", "10"]);
+  assert.deepEqual(episodes.locked,["11"],"restricted episodes are retained for display without download URLs");
+  assert.equal(episodes.urls["11"],undefined);
   assert.equal(episodes.titles["10"], "Episode Nine");
   assert.equal(episodes.next, url + "&page=2");
   assert.ok(episodes.updatedAt);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { DEFAULT_WEIGHTS, filterDiscovery, kindOf, nextUnread, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, parseTrending, publicationState, releaseLabel, selectChapters, sortExplore } from "../src/lib/parser.ts";
+import { DEFAULT_WEIGHTS, filterDiscovery, kindOf, nextUnread, resumeTarget, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, parseTrending, publicationState, releaseLabel, selectChapters, sortExplore } from "../src/lib/parser.ts";
 import { readerHtml } from "../src/lib/reader-html.ts";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "../src/lib/network-policy.ts";
 import { automaticReleaseIds, newReleases, unreadReleases } from "../src/lib/release-policy.ts";
@@ -141,6 +141,10 @@ function readerSession(novel = false, imageCount = 2) {
   const window = { readerActive: false, visualViewport: { offsetTop: 0, offsetLeft: 0, height: 800, width: 400, scale: 1, addEventListener(type, callback) { events[`viewport-${type}`] = callback; } }, ReactNativeWebView: { postMessage: data => messages.push(JSON.parse(data)) } };
   const firstImage = {src:"file:///first.webp",complete:true,naturalWidth:1000,getBoundingClientRect:()=>({top:-500,bottom:firstBottom,left:0,right:400})};
   const document = { getElementById:id=>elements[id], querySelectorAll:()=>novel ? [image] : [], hidden: false, images: novel ? [] : imageCount === 1 ? [image] : [firstImage,image], documentElement: { scrollHeight: 1600 }, querySelector: () => novel ? image : null };
+  for (const img of document.images) {
+    img.nextElementSibling={hidden:true,disabled:false,textContent:""};
+    img.parentElement={getBoundingClientRect:()=>img.getBoundingClientRect()};
+  }
   const context = { window, document, Date: { now: () => now }, innerHeight: 800, innerWidth: 400, scrollY: 800, scrollTo(x,y) { seeks.push(y); if(loaded)context.scrollY=y; }, addEventListener: (type, callback) => { events[type] = callback; }, setInterval: callback => { tick = callback; }, setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id; }, clearTimeout(id) { timers.delete(id); } };
   vm.runInNewContext((novel ? readerHtml([], 0, {title:"Chapter",paragraphs:["Last paragraph"]}) : reader).match(/<script>([\s\S]*?)<\/script>/)[1], context);
   events.load(); loaded = true; window.readerActive = true;
@@ -396,3 +400,30 @@ assert.equal(proseScrub.elements['scrub-crop'].hidden,true);
 assert.equal(proseScrub.elements['scrub-text'].textContent,'A preview of the last paragraph.');
 assert.equal(proseScrub.elements['scrub-label'].textContent,'60% of chapter');
 console.log('Reader scrubber preview, commit, cancel, long-panel, zoom and read-completion checks passed');
+
+const resumeStory={chapterIds:['1','2','3'],localChapters:['1','2']};
+assert.equal(resumeTarget(resumeStory,{chapter:'2'},{}),'2','unfinished chapters resume where the reader stopped');
+assert.equal(resumeTarget(resumeStory,{chapter:'2'},{'2':'read'}),'3','the shortcut includes the next unsaved public chapter');
+assert.equal(resumeTarget(resumeStory,{chapter:'3'},{'3':'read'}),undefined,'finishing does not rewind to an old chapter');
+const restricted=parseSeries('<meta property="og:title" content="Example"><div>2 Chapters</div><a href="/comics/x/chapter/1">1</a><a data-locked="true" href="/comics/x/chapter/2">2</a>','https://asurascans.com/comics/x');
+assert.deepEqual(restricted.chapterIds,['1']);assert.deepEqual(restricted.lockedChapterIds,['2']);
+console.log('Reading shortcut and public-versus-restricted chapter checks passed');
+
+const panelRepair=readerSession();
+const failedPanel=panelRepair.document.images[0], remainingPanel=panelRepair.document.images[1];
+failedPanel.hidden=true;failedPanel.nextElementSibling.hidden=false;
+failedPanel.getBoundingClientRect=()=>({top:-300,bottom:-200,left:0,right:400});
+remainingPanel.getBoundingClientRect=()=>({top:failedPanel.nextElementSibling.hidden?500:200,bottom:1000,left:0,right:400});
+const remainingSource=remainingPanel.src;
+panelRepair.window.readerPanelRepairState(0,false,'Offline · tap to retry');
+assert.equal(failedPanel.nextElementSibling.disabled,false);
+assert.equal(failedPanel.nextElementSibling.textContent,'Offline · tap to retry');
+panelRepair.window.readerReloadPanel(0);
+assert.equal(failedPanel.nextElementSibling.disabled,true);
+assert.match(failedPanel.src,/file:\/\/\/first.webp\?repair=/);
+assert.equal(remainingPanel.src,remainingSource,'repair reloads only the failed panel');
+failedPanel.onload();
+assert.equal(failedPanel.hidden,false);assert.equal(failedPanel.nextElementSibling.hidden,true);
+assert.equal(panelRepair.getScroll(),1100,'repaired layout preserves the visible anchor when a preceding panel grows');
+assert.equal(panelRepair.messages.at(-1).repaired,0);
+console.log('Inline panel retry, cache refresh and reading-anchor checks passed');

@@ -249,7 +249,7 @@ export async function fetch(url,options={}){
   if(url==='https://asurascans.com/comics/repair')return {ok:true,text:async()=>'<meta property="og:title" content="Repair"><meta property="og:image" content="https://cdn/repair.webp"><div>9.7 Rating 1 Chapters</div><a href="/comics/repair/chapter/1">Chapter 1</a>'};
   if(url==='https://asurascans.com/comics/partial')return {ok:true,text:async()=>'<meta property="og:title" content="Partial"><meta property="og:image" content="https://cdn/cover.webp"><div>201 Chapters</div><a href="/comics/partial/chapter/199">199</a><a href="/comics/partial/chapter/200">200</a>'};
   if(url==='https://asurascans.com/comics/repair/chapter/1')return {ok:true,text:async()=>'<img data-page-index="0" src="https://cdn/a.webp"><img data-page-index="1" src="https://cdn/b.webp">'};
-  if(['https://cdn/a.webp','https://cdn/b.webp'].includes(url))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([1,2,3,4])};
+  if(['https://cdn/a.webp','https://cdn/b.webp'].includes(url))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(url==='https://cdn/image.webp')return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>{imagePending=true;return new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));}};
   const data = url.includes('/comics/example/chapter/') ? '<img data-page-index="0" src="https://cdn/image.webp">'
     : url.includes('/comics/example') ? ${JSON.stringify(comicHtml)}
@@ -273,7 +273,7 @@ export async function fetch(url,options={}){
   try {
     storage.toggleSaved('example','bookmarked');
     storage.saveCatalog([{...cached,title:'Example',url:'https://asurascans.com/comics/example',summary:'',detailsCached:false,syncedAt:new Date().toISOString()}]);
-    const {syncCatalog,downloadChapters,browseCatalog,enrichCatalogIds,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
+    const {syncCatalog,downloadChapters,repairSavedPanel,browseCatalog,enrichCatalogIds,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
     const http = await import('expo/fetch'); const {requests} = http;
     const partialStory={...cached,slug:'partial',url:'https://asurascans.com/comics/partial',detailsCached:false,chapterIds:undefined};
     await assert.rejects(()=>refreshSeries(partialStory,async()=>{}),/incomplete chapter list/,'partial source responses cannot be saved as complete lists');
@@ -472,6 +472,19 @@ export async function fetch(url,options={}){
     const beforeRepair=requests.length;
     await downloadChapters(repairStory,'1',()=>{},async()=>{});
     assert.deepEqual(requests.slice(beforeRepair).filter(url=>url.startsWith('https://cdn/')),['https://cdn/a.webp'],'repair only downloads the damaged panel and keeps valid originals');
+    const repairFile=new File(storage.chapterDirectory('repair','1'),'001.webp');repairFile.delete();
+    assert.equal(storage.chapterFiles('repair','1').length,1);
+    assert.equal(storage.chapterFiles('repair','1',true).length,2,'reader keeps a placeholder for each manifest panel');
+    const untouched=new File(storage.chapterDirectory('repair','1'),'002.webp').md5;
+    const beforePanelRepair=requests.length;
+    await repairSavedPanel(repairStory,'1',0,async()=>{});
+    assert.deepEqual(requests.slice(beforePanelRepair).filter(url=>url.startsWith('https://cdn/')),['https://cdn/a.webp'],'panel repair transfers only the requested public panel');
+    assert.equal(new File(storage.chapterDirectory('repair','1'),'002.webp').md5,untouched,'other panels are untouched');
+    assert.equal(storage.chapterIntact('repair','1'),true);
+    await assert.rejects(()=>repairSavedPanel(repairStory,'2',0,async()=>{}),/no longer publicly available/);
+    const repairAbort=new AbortController();repairAbort.abort();const stableHash=repairFile.md5;
+    await assert.rejects(()=>repairSavedPanel(repairStory,'1',0,async()=>{},repairAbort.signal),{name:'AbortError'});
+    assert.equal(repairFile.md5,stableHash,'cancelled repairs preserve the saved file');
     const native=await import('nightshelf-native-test');native.enable();
     const preparation=[];
     await downloadChapters(repairStory,'1',(message)=>preparation.push(message),async()=>{});

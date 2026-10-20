@@ -16,6 +16,7 @@ function component(file, extraModules = {}) {
       createContext: value => ({ Provider: "Provider", value }), useContext: context => context.value, useCallback: fn => fn,
       useMemo(fn, deps) { const at=cursor++, previous=slots[at]; if(!previous || deps.some((value,index)=>!Object.is(value,previous.deps[index]))) slots[at]={value:fn(),deps}; return slots[at].value; },
       useEffect: (callback, deps) => effects.push({callback,deps}),
+      useLayoutEffect: callback=>callback(),
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
@@ -42,7 +43,7 @@ assert.equal(touchButton.props.style({pressed:true})[1].opacity,0.72);
 const browseRequests = [];
 const exploreShelf = {
   catalog: [{slug:'first',title:'First'}], saved: {}, preferences: {source:'asura',sort:'title'},
-  browse: (options, cursor, signal, manual) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,resolve,reject})),
+  rememberSearch:()=>{},browse: (options, cursor, signal, manual) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,resolve,reject})),
 };
 const exploreModules = {
   'expo-router': {router:{}},
@@ -169,6 +170,7 @@ const details = component('../src/app/series/[slug].tsx', {
   '../../components/story-row': {PublicationStatus: 'Status', SaveActions: 'SaveActions'},
   '../../components/story-options': {ReadingListAction: 'ReadingListAction', ReleaseActions: 'ReleaseActions'},
   '../../components/download-list': {DownloadList: 'DownloadList'},
+  '../../components/download-drawer': {useDownloadDrawer:()=>()=>{}},
   '../../components/expandable-summary': {ExpandableSummary: 'Summary'},
   '../../components/action-sheet': {useActionSheet: () => () => {}},
 });
@@ -304,7 +306,7 @@ const readerShelf={preferences:{readerContinuous:true,readerPrefetch:true},fetch
 })};
 const readerNavigation=component('../src/components/use-reader-navigation.ts',{
   'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
-  'expo-router':{router:{replace:route=>readerRoutes.push(route)},useFocusEffect:callback=>{readerFocus=callback;}},
+  'expo-router':{router:{replace:route=>readerRoutes.push(route),push:route=>readerRoutes.push({...route,pushed:true})},useFocusEffect:callback=>{readerFocus=callback;}},
   '../lib/app-state':{useShelf:()=>readerShelf},
   '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter)},
   './action-sheet':{useActionSheet:()=>(...args)=>readerSheets.push(args)},
@@ -365,3 +367,53 @@ intactReaderChapters.delete('2');readerNetwork={type:'cellular',isConnected:true
 await assert.rejects(()=>readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{}),/unmetered Wi-Fi/);
 assert.equal(directReaderCalls.length,1,'speculative downloads never use cellular');
 console.log('Reader writer locks, deletion safety and Wi-Fi prefetch policy checks passed');
+
+// Chapter-number jumps locate exact decimals and never select restricted rows.
+story.chapterIds=['1','2','125.5'];story.lockedChapterIds=['126'];story.chapterCount=4;
+const chapterScrolls=[];
+list().props.ref.current={scrollToIndex:options=>chapterScrolls.push(options),scrollToOffset:()=>{}};
+header().find(node=>node.props?.accessibilityLabel==='Jump to chapter number').props.onPress();
+header().find(node=>node.props?.accessibilityLabel==='Chapter number').props.onChangeText('125.5');
+header().find(node=>node.props?.accessibilityLabel==='Go to chapter').props.onPress();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(list().props.data[chapterScrolls.at(-1).index],'125.5');
+assert.ok(row('126').some(node=>node.props?.name==='lock-closed-outline'));
+assert.equal(row('126').find(node=>node.props?.accessibilityLabel==='Select chapter 126').props.disabled,true);
+nativeControls.backgroundTransfers=null;
+app().rememberSearch('source-a',' First ');app().rememberSearch('source-a','Second');app().rememberSearch('source-a','first');
+assert.equal(JSON.stringify(app().preferences.searchHistory['source-a']),JSON.stringify(['first','Second']));
+app().rememberSearch('source-b','Other');app().rememberSearch('source-a',null);
+assert.equal(app().preferences.searchHistory['source-b'][0],'Other','clearing recents never clears another provider');
+const drawer=component('../src/components/download-drawer.tsx',{
+  'expo-router':{usePathname:()=>'/library'},
+  '../lib/app-state':{useDownloads:()=>[]},'./download-list':{DownloadList:'DownloadList'},
+  './download-drawer-context':{DownloadDrawerContext:{Provider:'Provider'}},
+});
+const draw=()=>drawer.render('DownloadDrawerProvider',{children:'screen'});
+assert.equal(nodes(draw()).find(node=>node.type==='Modal').props.visible,false);
+draw().props.value();assert.equal(nodes(draw()).find(node=>node.type==='Modal').props.visible,true);
+nodes(draw()).find(node=>node.type==='DownloadList').props.onOpenStory();
+assert.equal(nodes(draw()).find(node=>node.type==='Modal').props.visible,false,'opening a story dismisses the download drawer');
+exploreSessions.rememberExploreQuery('recent-test','');
+exploreShelf.preferences.searchHistory={'recent-test':['Hunter']};
+const recentSearch=component('../src/app/(tabs)/explore.tsx',exploreModules);
+const recentNodes=()=>nodes(nodes(recentSearch.render('ExploreResults',{provider:'recent-test'})).find(node=>node.type==='FlatList').props.ListHeaderComponent);
+recentNodes().find(node=>node.type==='Chip'&&node.props.text==='Hunter').props.onPress();
+assert.equal(exploreSessions.exploreQuery('recent-test'),'Hunter');
+recentNodes().find(node=>node.props?.accessibilityLabel==='Clear search').props.onPress();
+assert.equal(exploreSessions.exploreQuery('recent-test'),'');
+console.log('Chapter jump, restricted state, per-provider recents and queue drawer checks passed');
+
+const resumeNavigation=readerNavigation.render('useReaderNavigation','example','Example',undefined,undefined,true);
+const stopResume=readerFocus();resumeNavigation.go('1');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.at(-1).pushed,true,'Home pushes the reader so Back returns to Home');
+assert.equal(readerRoutes.at(-1).params.entry,undefined,'Home resume preserves the saved position');stopResume();
+const cardUI=component('../src/components/series-card.tsx',{
+  'react-native':{Text:'Text',View:'View',StyleSheet:{create:value=>value}},
+  'expo-router':{router:{}},'../lib/parser':parser,
+  './ui':{color:{},Cover:'Cover',Icon:'Icon'},
+});
+const translatedCard=nodes(cardUI.render('SeriesCard',{item:{...story,url:'https://www.webtoons.com/fr/fantasy/example/list?title_no=42',language:'fr'}}));
+assert.ok(translatedCard.some(node=>node.type==='Icon'&&node.props.name==='globe-outline'));
+assert.ok(translatedCard.some(node=>node.type==='Text'&&JSON.stringify(node.props.children).includes('WEBTOON · FR')));
+console.log('Home resume navigation and source/language card checks passed');

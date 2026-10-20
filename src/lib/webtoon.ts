@@ -27,16 +27,18 @@ export function parseWebtoonCards(html: string, language: string): Series[] {
   }
   return [...items.values()];
 }
-export function parseWebtoonEpisodes(html: string, seriesUrl: string): { ids: string[]; urls: Record<string, string>; titles: Record<string, string>; next?: string; updatedAt?: string } {
+export function parseWebtoonEpisodes(html: string, seriesUrl: string): { ids: string[]; urls: Record<string, string>; titles: Record<string, string>; locked: string[]; next?: string; updatedAt?: string } {
   const series = webtoonUrl(seriesUrl);
   if (!series) throw new Error("Invalid WEBTOON story URL.");
   const urls: Record<string, string> = {}, titles: Record<string, string> = {};
+  const locked: string[] = [];
   const list = html.match(/<ul\b[^>]*id=["']_listUl["'][^>]*>([\s\S]*?)<\/ul>/i)?.[1] || "";
   for (const [row, block] of list.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)) {
     const anchor = block.match(/<a\b[^>]*>/i)?.[0] || "";
     const url = webtoonUrl(attr(anchor, "href"), seriesUrl);
     const id = url?.searchParams.get("episode_no");
-    if (!url || !id || !/^\d+$/.test(id) || !url.pathname.endsWith("/viewer") || url.searchParams.get("title_no") !== series.searchParams.get("title_no") || /ico_(?:lock|fastpass)|data-locked=["']true/i.test(row)) continue;
+    if (!url || !id || !/^\d+$/.test(id) || !url.pathname.endsWith("/viewer") || url.searchParams.get("title_no") !== series.searchParams.get("title_no")) continue;
+    if (/ico_(?:lock|fastpass)|data-locked=["']true/i.test(row)) { locked.push(id); titles[id]=classText(block,"subj") || `Episode ${id}`; continue; }
     urls[id] = url.href; titles[id] = classText(block, "subj") || `Episode ${id}`;
   }
   const page = Number(series.searchParams.get("page") || 1);
@@ -54,7 +56,7 @@ export function parseWebtoonEpisodes(html: string, seriesUrl: string): { ids: st
       if (day) date = Date.UTC(Number(year), month, Number(day));
     }
   }
-  return { ids: Object.keys(urls).sort(chapterSort), urls, titles, next: pages[0]?.href, updatedAt: Number.isFinite(date) && date <= Date.now() ? new Date(date).toISOString() : undefined };
+  return { ids: Object.keys(urls).sort(chapterSort), urls, titles, locked, next: pages[0]?.href, updatedAt: Number.isFinite(date) && date <= Date.now() ? new Date(date).toISOString() : undefined };
 }
 export function parseWebtoonDetails(html: string, item: Series): Series {
   const canonical = webtoonUrl(meta(html, "og:url"));

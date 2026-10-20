@@ -9,8 +9,9 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=6, user-scalable=yes">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>html,body{touch-action:manipulation;margin:0;padding:0;background:${sepia ? "#f4ecd8" : "#08080b"};color:${sepia ? "#483b2c" : "#ded9e6"}}img{display:block;width:100%;height:auto;margin:0}.novel{max-width:720px;margin:auto;padding:24px 22px 50px}.novel p{font:${size}px/1.85 Georgia,serif;margin:0 0 1.2em;text-align:left;overflow-wrap:break-word}.novel h1{font:600 24px/1.4 sans-serif;margin:6px 0 30px}.end{font:12px sans-serif;text-align:center;padding:24px}</style></head><body>
-${novel ? `<main class="novel"><h1>${escape(novel.title)}</h1>${novel.paragraphs.map(text => `<p>${escape(text)}</p>`).join("")}</main>` : files.filter(uri => uri.startsWith("file://")).map((uri, index) => `<img src="${escape(uri)}" alt="Page ${index + 1}" decoding="async" onerror="window.ReactNativeWebView.postMessage(JSON.stringify({error:true}))">`).join("")}
+${novel ? `<main class="novel"><h1>${escape(novel.title)}</h1>${novel.paragraphs.map(text => `<p>${escape(text)}</p>`).join("")}</main>` : files.filter(uri => uri.startsWith("file://")).map((uri, index) => `<div class="reader-panel"><img src="${escape(uri)}" alt="Page ${index + 1}" decoding="async" onerror="this.hidden=true;this.nextElementSibling.hidden=false;window.ReactNativeWebView.postMessage(JSON.stringify({error:true,page:${index}}))"><button class="panel-repair" hidden onclick="window.ReactNativeWebView.postMessage(JSON.stringify({repair:${index}}))" aria-label="Repair page ${index + 1}">↻ Page ${index + 1} could not open · Tap to repair</button></div>`).join("")}
 <style>
+.reader-panel img[hidden],.panel-repair[hidden]{display:none}.panel-repair{display:block;width:100%;min-height:60vh;border:0;background:#17171f;color:#c9a7ff;font:14px/1.6 sans-serif;padding:24px;overflow-wrap:anywhere}
 #reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;padding:4px 20px 8px;background:#17171ff2;color:#aaa6b3;border-radius:16px;transform-origin:top left;font:11px/1.4 sans-serif;touch-action:none}
 #reader-scrubber[hidden],#scrub-preview[hidden],#scrub-crop[hidden],#scrub-text[hidden]{display:none}
 #scrub-range{display:block;width:100%;height:44px;margin:0;accent-color:#c9a7ff;touch-action:none}
@@ -90,7 +91,26 @@ range.addEventListener('change', () => {
 range.addEventListener('pointercancel', cancelScrub);
 range.addEventListener('touchcancel', cancelScrub);
 range.addEventListener('blur', cancelScrub);
-function scrubEvent(event) { return Boolean(event.target?.closest?.('#reader-scrubber')); }
+function scrubEvent(event) { return Boolean(event.target?.closest?.('#reader-scrubber,.panel-repair')); }
+window.readerPanelRepairState = (index, busy, message) => {
+  const button = images[index]?.nextElementSibling;
+  if (!button) return;
+  button.disabled = busy;
+  button.textContent = message || '↻ Page ' + (index + 1) + ' could not open · Tap to repair';
+};
+window.readerReloadPanel = index => {
+  const image = images[index]; if (!image) return;
+  const anchor = images.find(value => value.parentElement.getBoundingClientRect().bottom > 0)?.parentElement;
+  const top = anchor?.getBoundingClientRect().top || 0;
+  image.onload = () => {
+    image.hidden = false; image.nextElementSibling.hidden = true;
+    if (anchor) scrollTo(0,scrollY + anchor.getBoundingClientRect().top - top);
+    window.readerPanelRepairState(index,false); window.readerUpdateControls();
+    window.ReactNativeWebView.postMessage(JSON.stringify({repaired:index}));
+  };
+  window.readerPanelRepairState(index,true,'Opening repaired page…');
+  image.src = image.src.split('?')[0] + '?repair=' + Date.now();
+};
 function hideControls() { window.readerChromeVisible = false; window.readerUpdateControls(); window.ReactNativeWebView.postMessage(JSON.stringify({controls:'hide'})); }
 addEventListener('touchstart', event => {
   if (scrubEvent(event)) { touch = null; swipe = null; clearTimeout(tapTimer); tapTimer = undefined; return; }

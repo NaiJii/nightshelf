@@ -10,7 +10,6 @@ import { Chip, color, Cover, Icon, PageHeading, ui } from "../../components/ui";
 import { openSeries } from "../../components/series-card";
 import { PublicationStatus } from "../../components/story-row";
 import { unreadReleases } from "../../lib/release-policy";
-import { DownloadList } from "../../components/download-list";
 import { nextUnread, ReadingList, type Series } from "../../lib/parser";
 import { READING_LISTS } from "../../components/story-options";
 
@@ -87,7 +86,6 @@ export default function Library() {
     <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: updatesOnly }} onPress={() => setUpdatesOnly(value => !value)} style={[ui.row, { paddingVertical: 15, gap: 7, alignSelf: "flex-start" }]}><Icon name={updatesOnly ? "sparkles" : "sparkles-outline"} tint={color.lilac} size={16} /><Text style={{ color: updatesOnly ? color.lilac : color.muted, fontSize: 12 }}>New releases{updatedStories ? ` · ${updatedStories} ${updatedStories === 1 ? "story" : "stories"}` : ""}</Text></Pressable>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingBottom: 12 }}><Chip text="All lists" active={list === "all"} onPress={() => setList("all")} />{READING_LISTS.map(([key, text]) => <Chip key={key} text={text} active={list === key} onPress={() => setList(key)} />)}</ScrollView>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingBottom: 14 }}><Chip text="Unread downloads" active={unreadOnly} onPress={() => setUnreadOnly(value => !value)} />{([["activity", "Recent activity"], ["updated", "Recently updated"], ["title", "Title"]] as const).map(([key, text]) => <Chip key={key} text={text} active={sort === key} onPress={() => setSort(key)} />)}</ScrollView>
-    <DownloadList />
 </View></>}
     ListEmptyComponent={<View style={{ alignItems: "center", paddingHorizontal: 22, paddingVertical: 70 }}><Icon name={scope === "autoDownload" ? "cloud-download-outline" : scope === "downloads" ? "download-outline" : scope === "liked" ? "heart-outline" : "bookmark-outline"} tint={color.lilac} size={40} /><Text style={[ui.empty, { textAlign: "center" }]}>{!catalogReady ? "Loading your library…" : filtered ? "No stories match these filters." : scope === "autoDownload" ? "Enable the cloud-download icon on a story." : scope === "downloads" ? "Save a story’s chapters to read anywhere." : "Save stories from their detail page. They’ll appear here."}</Text>{filtered && <Pressable onPress={() => { setUpdatesOnly(false); setUnreadOnly(false); setList("all"); setQuery(""); }} style={[ui.primary, { marginTop: 16 }]}><Text style={ui.primaryText}>Clear filters</Text></Pressable>}</View>}
     renderItem={({ item }) => {
