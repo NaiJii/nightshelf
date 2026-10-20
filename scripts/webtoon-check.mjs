@@ -27,6 +27,7 @@ try {
   const details = parseWebtoonDetails(html, series);
   assert.equal(details.status, "Completed");
   assert.equal(details.summary, "The full summary.");
+  assert.deepEqual(parseWebtoonDetails(html + '<h2 class="genre g_fantasy">Fantasy</h2>',series).genres,['Fantasy']);
   const firstLoad = parseWebtoonDetails(html + `<ul id="_listUl">${ep("10", "Latest episode")}</ul>`, series);
   assert.equal(firstLoad.chapterCount, 10, 'first-load metadata reads episode links without requiring data-episode-no');
   assert.equal(firstLoad.latestChapter, '10');

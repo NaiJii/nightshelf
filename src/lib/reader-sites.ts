@@ -1,9 +1,9 @@
-import { chapterSort, decodeHtml, plainText } from "./parser";
+import { chapterSort, decodeHtml, plainText, parseGenreLinks } from "./parser";
 import type { Series, SortOrder } from "./parser";
 
 export type ReaderSite = "vortex" | "mangakakalot";
 export const SITE_HOME = { vortex: "https://vortexscans.org", mangakakalot: "https://www.mangakakalot.gg" };
-export function imageReferer(url: string, referer: string): string { return /(?:^|\.)2xstorage\.com$/.test(new URL(url).hostname) ? SITE_HOME.mangakakalot + "/" : referer; }
+export function imageReferer(url: string, referer: string): string { return /(?:^|\.)2xstorage\.com$/.test(new URL(url).hostname) || new URL(url).hostname === "storage.waitst.com" ? SITE_HOME.mangakakalot + "/" : referer; }
 export function attribute(tag: string, key: string): string {
   const match = tag.match(new RegExp(`(?:^|\\s)${key}\\s*=\\s*(?:"([^"<>]*)"|'([^'<>]*)')`, "i"));
   return decodeHtml(match?.[1] ?? match?.[2] ?? "");
@@ -151,7 +151,7 @@ export function parseVortexMetadata(html: string, item: Series): Series {
   const cover = safeUrl(attribute(coverImage, "data-fallback-src") || attribute(coverImage, "data-src") || attribute(coverImage, "src"), item.url);
   const summary = own?.summary || plainText(section(html, "itemProp", "description")) || plainText(metadata(html, "description"));
   const updatedAt = own?.updatedAt || date(metadata(html, "og:updated_time"));
-  return { ...item, ...own, slug: item.slug, title, summary, cover: own?.cover || cover || item.cover, rating: own?.rating || text.match(/([\d.]+)\s+Ratings?\b/i)?.[1] || "", bookmarks: own?.bookmarks || text.match(/([\d.,]+[KM]?)\s+Favorites\b/i)?.[1] || "", status: own?.status || fields.get("status") || "Unknown", type: own?.type || fields.get("type") || "Comic", chapterCount: own?.chapterCount || Number(fields.get("chapters")?.replace(/,/g, "")) || 0, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
+  return { ...item, ...own, slug: item.slug, title, summary, genres: parseGenreLinks(body), cover: own?.cover || cover || item.cover, rating: own?.rating || text.match(/([\d.]+)\s+Ratings?\b/i)?.[1] || "", bookmarks: own?.bookmarks || text.match(/([\d.,]+[KM]?)\s+Favorites\b/i)?.[1] || "", status: own?.status || fields.get("status") || "Unknown", type: own?.type || fields.get("type") || "Comic", chapterCount: own?.chapterCount || Number(fields.get("chapters")?.replace(/,/g, "")) || 0, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
 }
 export function parseVortexChapterPayload(raw: unknown, item: Series): Series {
   const payload = raw as { post?: { chapters?: unknown }; totalChapterCount?: number };
@@ -191,9 +191,13 @@ export function parseVortexDetails(html: string, item: Series): Series {
   if (!ids.length && own.chapterCount > 0 && !matches.length) throw new Error("Vortex chapter list could not be read. Pull down to retry.");
   return { ...own, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: own.chapterCount || ids.length, latestChapter: own.latestChapter || ids.at(-1) || "", updatedAt: updatedAt || own.updatedAt, sourceDates: Boolean(updatedAt || own.updatedAt), syncedAt: new Date().toISOString() };
 }
-export function parseKakalotChapters(raw: unknown, seriesUrl: string) {
-  const payload = raw as { success?: boolean; data?: { chapters?: unknown } };
+export function parseKakalotChapters(raw: unknown, seriesUrl: string, offset = 0) {
+  const payload = raw as { success?: boolean; data?: { chapters?: unknown; pagination?: { total: number; offset: number; has_more: boolean } } };
   if (payload?.success !== true || !Array.isArray(payload.data?.chapters)) throw new Error("MangaKakalot chapter list is unavailable. Verify the source and retry.");
+  const pagination = payload.data.pagination;
+  const received = payload.data.chapters.length;
+  if (pagination && (!Number.isSafeInteger(pagination.total) || pagination.total < 0 || pagination.offset !== offset || typeof pagination.has_more !== "boolean" || ((pagination.has_more || offset < pagination.total) && !received))) throw new Error("MangaKakalot chapter pagination is incomplete. Pull down to retry.");
+  const more = pagination && (pagination.has_more || offset + received < pagination.total);
   const urls: Record<string, string> = {}, titles: Record<string, string> = {};
   let updatedAt: string | undefined;
   for (const chapter of payload.data.chapters) {
@@ -202,14 +206,14 @@ export function parseKakalotChapters(raw: unknown, seriesUrl: string) {
     urls[id] = `${seriesUrl}/${chapter.chapter_slug}`; titles[id] = typeof chapter.chapter_name === "string" ? chapter.chapter_name : `Chapter ${id}`;
     const published = date(chapter.updated_at); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
   }
-  return { chapterUrls: urls, chapterTitles: titles, chapterIds: Object.keys(urls).sort(chapterSort), updatedAt, sourceDates: Boolean(updatedAt) };
+  return { chapterUrls: urls, chapterTitles: titles, chapterIds: Object.keys(urls).sort(chapterSort), updatedAt, sourceDates: Boolean(updatedAt), nextOffset: more ? offset + received : undefined };
 }
 export function parseKakalotDetails(html: string, item: Series): Series {
   const data: Record<string, unknown>[] = [];
   for (const [, text] of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     try { const parsed = JSON.parse(text.replace(/[\u0000-\u001f]/g, " ")); for (const value of [parsed, parsed.mainEntity, ...(parsed["@graph"] || [])]) if (value?.["@type"] === "Book") data.push(value); } catch { /* ignore unrelated invalid structured metadata */ }
   }
-  const book = Object.assign({}, ...data) as { name?: string; description?: string; image?: string; numberOfPages?: string; aggregateRating?: { ratingValue?: string; bestRating?: string } };
+  const book = Object.assign({}, ...data) as { name?: string; description?: string; image?: string; genre?: string[]; numberOfPages?: string; aggregateRating?: { ratingValue?: string; bestRating?: string } };
   const content = section(html, "class", "manga-info-top");
   const canonical = metadata(html, "og:url");
   if (canonical && siteStoryUrl(canonical, "mangakakalot") !== item.url.replace(/\/$/, "")) throw new Error("MangaKakalot redirected to another page. Verify the source and retry.");
@@ -219,7 +223,8 @@ export function parseKakalotDetails(html: string, item: Series): Series {
   const summary = book?.description || plainText(section(html, "id", "contentBox").replace(/<h2\b[\s\S]*?<\/h2>/i, ""));
   const visibleRating = text.match(/rate\s*:\s*([\d.]+)\s*\/\s*([\d.]+)/i);
   const rating = Number(book?.aggregateRating?.ratingValue || visibleRating?.[1]), scale = Number(book?.aggregateRating?.bestRating || visibleRating?.[2] || 5);
-  return { ...item, title, summary: summary === "N/A" ? "" : plainText(summary), cover: safeUrl(book?.image || metadata(html, "og:image"), item.url) || item.cover, rating: rating > 0 && scale > 0 ? `${rating.toFixed(2)}/${scale}` : "", chapterCount: Number(book?.numberOfPages) || item.chapterCount, status: text.match(/Status\s*:\s*(Ongoing|Completed|Hiatus|Dropped)/i)?.[1] || "Unknown", metadataSyncedAt: new Date().toISOString() };
+  const genres = parseGenreLinks(content);
+  return { ...item, title, genres: genres.length ? genres : Array.isArray(book.genre) ? book.genre.filter(value => typeof value === "string").map(plainText).filter(Boolean) : item.genres || [], summary: summary === "N/A" ? "" : plainText(summary), cover: safeUrl(book?.image || metadata(html, "og:image"), item.url) || item.cover, rating: rating > 0 && scale > 0 ? `${rating.toFixed(2)}/${scale}` : "", chapterCount: item.chapterListComplete && item.chapterIds ? item.chapterIds.length : Number(book?.numberOfPages) || item.chapterCount, status: text.match(/Status\s*:\s*(Ongoing|Completed|Hiatus|Dropped)/i)?.[1] || "Unknown", metadataSyncedAt: new Date().toISOString() };
 }
 export function parseReaderSiteImages(html: string, source: ReaderSite): string[] {
   const body = source === "vortex" ? html : section(html, "class", "container-chapter-reader");

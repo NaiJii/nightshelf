@@ -18,7 +18,7 @@ export function validateBackup(text: string) {
     if (!object(raw) || typeof raw.slug !== "string" || !part(raw.slug) || typeof raw.url !== "string" || typeof raw.title !== "string") throw new Error("Backup contains an invalid story.");
     const url = new URL(raw.url);
     if (url.protocol !== "https:" || url.port || url.username || url.password || !["asurascans.com", "www.webtoons.com", "vortexscans.org", "www.vortexscans.org", "www.mangakakalot.gg", "mangakakalot.gg"].includes(url.hostname)) throw new Error("Backup contains an unsupported source.");
-    return { slug: raw.slug, url: raw.url, title: raw.title.slice(0, 1000), summary: typeof raw.summary === "string" ? raw.summary.slice(0, 100_000) : "", cover: typeof raw.cover === "string" && raw.cover.startsWith("https://") ? raw.cover : "", rating: typeof raw.rating === "string" ? raw.rating : "", bookmarks: "", status: typeof raw.status === "string" ? raw.status : "", type: typeof raw.type === "string" ? raw.type : "", chapterCount: typeof raw.chapterCount === "number" && Number.isFinite(raw.chapterCount) ? raw.chapterCount : 0, latestChapter: typeof raw.latestChapter === "string" ? raw.latestChapter : "", language: typeof raw.language === "string" ? raw.language : undefined, kind: raw.kind === "novel" || url.pathname.startsWith("/novels/") ? "novel" : "comic", updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined, sourceDates: Boolean(raw.sourceDates), detailsCached: false };
+    return { genres: Array.isArray(raw.genres) ? raw.genres.filter((tag): tag is string => typeof tag === "string" && tag.length <= 100).slice(0, 100) : undefined, slug: raw.slug, url: raw.url, title: raw.title.slice(0, 1000), summary: typeof raw.summary === "string" ? raw.summary.slice(0, 100_000) : "", cover: typeof raw.cover === "string" && raw.cover.startsWith("https://") ? raw.cover : "", rating: typeof raw.rating === "string" ? raw.rating : "", bookmarks: "", status: typeof raw.status === "string" ? raw.status : "", type: typeof raw.type === "string" ? raw.type : "", chapterCount: typeof raw.chapterCount === "number" && Number.isFinite(raw.chapterCount) ? raw.chapterCount : 0, latestChapter: typeof raw.latestChapter === "string" ? raw.latestChapter : "", language: typeof raw.language === "string" ? raw.language : undefined, kind: raw.kind === "novel" || url.pathname.startsWith("/novels/") ? "novel" : "comic", updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined, sourceDates: Boolean(raw.sourceDates), detailsCached: false };
   });
   const known = new Set(catalog.map(item => item.slug));
   const saved: Record<string, SavedStory> = {}, read: Record<string, Record<string, string>> = {}, history: ReturnType<typeof readingHistory> = {};
@@ -31,6 +31,13 @@ export function validateBackup(text: string) {
   const preferences: Partial<Preferences> = {};
   if (object(data.preferences)) {
     for (const key of ["readerKeepAwake", "readerVolumeScroll", "deleteAfterReading", "autoSync", "hideDownloaded", "hideLiked", "hideBookmarked"] as const) if (typeof data.preferences[key] === "boolean") preferences[key] = data.preferences[key];
+    if (object(data.preferences.genreFilters)) {
+      preferences.genreFilters = {};
+      for (const source of ["asura", "webtoon", "vortex", "mangakakalot"] as const) {
+        const tags = data.preferences.genreFilters[source];
+        if (Array.isArray(tags)) preferences.genreFilters[source] = [...new Set(tags.filter((tag): tag is string => typeof tag === "string" && tag.length > 0 && tag.length <= 100))].slice(0, 100);
+      }
+    }
     if (typeof data.preferences.novelFontSize === "number") preferences.novelFontSize = Math.max(14, Math.min(30, data.preferences.novelFontSize));
     if (data.preferences.novelTheme === "sepia" || data.preferences.novelTheme === "dark") preferences.novelTheme = data.preferences.novelTheme;
     if (typeof data.preferences.readerBrightness === "number" && Number.isFinite(data.preferences.readerBrightness)) preferences.readerBrightness = Math.max(-1, Math.min(1, data.preferences.readerBrightness));

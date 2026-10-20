@@ -182,6 +182,7 @@ export function mergeCatalog(updates: Series[], rankings = false): void {
     const item = newer ? { ...update, ...current } : { ...current, ...update };
     if (current?.detailsCached && (!update.detailsCached || newer)) {
       item.detailsCached = true; item.chapterIds = current.chapterIds; item.chapterUrls = current.chapterUrls; item.chapterTitles = current.chapterTitles;
+      item.chapterListComplete = current.chapterListComplete;
       if (!update.metadataSyncedAt || newer) item.summary = current.summary;
     }
     item.localCover = update.localCover || current?.localCover;

@@ -22,6 +22,7 @@ try {
   assert.equal(visibleMetadata.title,'Example'); assert.equal(visibleMetadata.summary,'The displayed summary.');
   assert.equal(visibleMetadata.rating,'9.08','use the displayed rating rather than the site\'s hardcoded structured rating');
   assert.equal(visibleMetadata.status,'ONGOING'); assert.equal(visibleMetadata.chapterCount,4);
+  assert.deepEqual(sites.parseVortexMetadata(visibleStory + '<a itemProp="genre" href="/series?genres=%2B1">Action</a>', card).genres, ['Action']);
   assert.equal(visibleMetadata.slug,'vortex-url-legacy','metadata recovery preserves old bookmarks and read history');
   assert.equal(sites.vortexPostId(visibleStory,card.url),'42','public post identity does not depend on hydration variables');
   assert.equal(sites.parseVortexMetadata(visibleStory.replace(/<script\b[\s\S]*?<\/script>/g,''),card).rating,'9.08','metadata is readable with no inline scripts');
@@ -61,11 +62,19 @@ try {
   const kakalotMetadata=sites.parseKakalotDetails(structured,story);
   assert.equal(kakalotMetadata.rating,'4.43/5'); assert.equal(kakalotMetadata.chapterCount,17);
   assert.equal(kakalotMetadata.summary,'A summary with raw newline'); assert.equal(kakalotMetadata.chapterIds,undefined);
-  for(const host of ['img-r1.2xstorage.com','img-r2.2xstorage.com']) assert.equal(sites.imageReferer(`https://${host}/thumb/example.webp`,story.url),'https://www.mangakakalot.gg/','covers and panels use the CDN-required root referrer');
+  assert.equal(sites.parseKakalotDetails(structured,{...story,chapterListComplete:true,chapterIds:['0','1','2']}).chapterCount,3,'metadata cannot replace a complete chapter count with inaccurate structured numberOfPages');
+  for(const host of ['img-r1.2xstorage.com','img-r2.2xstorage.com','storage.waitst.com']) assert.equal(sites.imageReferer(`https://${host}/thumb/example.webp`,story.url),'https://www.mangakakalot.gg/','covers and panels use the CDN-required root referrer');
+  assert.equal(sites.imageReferer('https://storage.waitst.com.evil.test/cover.webp',story.url),story.url);
+  assert.deepEqual(sites.parseKakalotDetails(structured.replace('"numberOfPages"', '"genre":["Action","Fantasy"],"numberOfPages"'),story).genres, ['Action','Fantasy']);
+  assert.deepEqual(sites.parseKakalotDetails('<div class="manga-info-top"><h1>Example</h1><li class="genres"><a href="/genre/action">Action</a></li></div><a href="/genre/romance">Unrelated sidebar tag</a>',story).genres, ['Action']);
   assert.equal(sites.imageReferer('https://2xstorage.com.evil.test/panel.webp',story.url),story.url,'unrelated hosts do not receive a source referrer override');
   assert.ok(sites.directoryHasMore(kakalot, "mangakakalot", 'https://www.mangakakalot.gg/manga-list/hot-manga?page=1', 1, true));
   const chapters = sites.parseKakalotChapters({success:true,data:{chapters:[{chapter_num:3,chapter_slug:'chapter-3',chapter_name:'Chapter 3',updated_at:'2026-09-01T00:00:00Z'},{chapter_num:2,chapter_slug:'../../evil'}]}}, story.url);
   assert.deepEqual(chapters.chapterIds, ['3']);
+  const page = sites.parseKakalotChapters({success:true,data:{chapters:[{chapter_num:3,chapter_slug:'chapter-3'}],pagination:{total:2,offset:0,has_more:true}}},story.url);
+  assert.equal(page.nextOffset,1);
+  assert.throws(()=>sites.parseKakalotChapters({success:true,data:{chapters:[],pagination:{total:50,offset:0,has_more:true}}},story.url),/pagination is incomplete/);
+  assert.throws(()=>sites.parseKakalotChapters({success:true,data:{chapters:[{chapter_num:3,chapter_slug:'chapter-3'}],pagination:{total:2,offset:0,has_more:true}}},story.url,1),/pagination is incomplete/,'repeated or misaligned pages must not be cached as complete');
   assert.throws(()=>sites.parseKakalotChapters({success:false},story.url),/unavailable/);
   assert.deepEqual(sites.parseReaderSiteImages('<img src="https://img-r1.2xstorage.com/cover.webp"><div class="container-chapter-reader"><img src="https://img-r1.2xstorage.com/page.webp"><div>nested</div><img src="https://imgs-2.2xstorage.com/page2.webp"></div>', "mangakakalot"), ['https://img-r1.2xstorage.com/page.webp', 'https://imgs-2.2xstorage.com/page2.webp']);
   assert.equal(filterDiscovery([card, story], {source:'mangakakalot',contentMode:'novels',hideDownloaded:false,hideLiked:false,hideBookmarked:false}, {}).length,1);

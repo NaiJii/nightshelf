@@ -112,12 +112,13 @@ function useAppState() {
   const loadDetails = useCallback(async (slug: string, force = false) => {
     const item = loadCatalog().find(value => value.slug === slug);
     if (!item) return;
-    if (!force && chapterListCached(item)) return;
+    const cached = chapterListCached(item);
+    if (!force && cached && Array.isArray(item.genres)) return;
     if (detailLocks.current.has(slug)) return;
     detailLocks.current.add(slug); setDetailsLoading(current => [...current, slug]);
     setNetworkNotice("");
     try {
-      const fresh = await refreshSeries(item, networkGuard("Refresh this story’s details?"));
+      const fresh = await refreshSeries(item, networkGuard("Refresh this story’s details?"), undefined, force || !cached);
       mergeCatalog([fresh]);
       setCatalog(loadCatalog());
       setNetworkNotice("");

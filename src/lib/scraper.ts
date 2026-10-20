@@ -104,8 +104,17 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
       } else fresh = parseVortexDetails(html, fresh);
     }
     if (source === "mangakakalot" && loadChapters) {
-      const chapters = parseKakalotChapters(await getJson(`https://www.mangakakalot.gg/api/manga/${encodeURIComponent(siteSlug(item))}/chapters`, guard, signal), item.url);
-      fresh = { ...fresh, ...chapters, chapterCount: chapters.chapterIds.length, latestChapter: chapters.chapterIds.at(-1) || "" };
+      const urls: Record<string, string> = {}, titles: Record<string, string> = {};
+      let offset: number | undefined = 0, pages = 0, updatedAt: string | undefined;
+      while (offset !== undefined) {
+        if (pages++ >= 2000) throw new Error("MangaKakalot chapter pagination could not finish. Pull down to retry.");
+        const chapters = parseKakalotChapters(await getJson(`https://www.mangakakalot.gg/api/manga/${encodeURIComponent(siteSlug(item))}/chapters?limit=500&offset=${offset}`, guard, signal), item.url, offset);
+        Object.assign(urls, chapters.chapterUrls); Object.assign(titles, chapters.chapterTitles);
+        if (chapters.updatedAt && (!updatedAt || chapters.updatedAt > updatedAt)) updatedAt = chapters.updatedAt;
+        offset = chapters.nextOffset;
+      }
+      const ids = Object.keys(urls).sort(chapterSort);
+      fresh = { ...fresh, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterListComplete: true, chapterCount: ids.length, latestChapter: ids.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) };
     }
     try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
     return { ...fresh, detailsCached: loadChapters || item.detailsCached };
@@ -147,7 +156,7 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     if (loadChapters && fresh.chapterIds!.length < fresh.chapterCount) throw new Error("The website returned an incomplete chapter list. Pull down to retry; older chapters have not all loaded yet.");
   }
   if (!loadChapters) { delete fresh.chapterIds; delete fresh.chapterUrls; delete fresh.chapterTitles; }
-  return { ...item, ...fresh, summary: fresh.summary || item.summary, detailsCached: loadChapters || item.detailsCached, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, metadataSyncedAt: new Date().toISOString(), syncedAt: loadChapters ? new Date().toISOString() : item.syncedAt };
+  return { ...item, ...fresh, genres: fresh.genres?.length ? fresh.genres : item.genres || fresh.genres, summary: fresh.summary || item.summary, detailsCached: loadChapters || item.detailsCached, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, metadataSyncedAt: new Date().toISOString(), syncedAt: loadChapters ? new Date().toISOString() : item.syncedAt };
 }
 
 async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSignal, changed = () => {}) {
@@ -159,7 +168,7 @@ async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSign
       throwIfAborted(signal);
       let fresh = item;
       try {
-        if (!item.summary || (sourceOf(item) === "webtoon" && !item.chapterCount) || !(Date.now() - Date.parse(item.metadataSyncedAt || "") <= 6 * 3600_000)) fresh = await refreshSeries(item, guard, signal, false);
+        if (!item.summary || !Array.isArray(item.genres) || (sourceOf(item) === "webtoon" && !item.chapterCount) || !(Date.now() - Date.parse(item.metadataSyncedAt || "") <= 6 * 3600_000)) fresh = await refreshSeries(item, guard, signal, false);
       } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       throwIfAborted(signal);
@@ -203,7 +212,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
           const fresh = parseApiSeries(raw, kind);
           if (!fresh) return;
           const previous = [...items.values()].find(item => sourceOf(item) === "asura" && kindOf(item) === kind && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
-          const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt,
+          const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, genres: fresh.genres?.length ? fresh.genres : previous?.genres || fresh.genres, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt,
             rank: period === "week" ? index + 1 : previous?.rank, popularRanks: { ...previous?.popularRanks, [period]: index + 1 } };
           items.set(item.slug, item);
         });
@@ -269,7 +278,7 @@ export async function searchCatalog(query: string, mode: ContentMode, guard: Gua
   const ids: string[] = [];
   for (const fresh of found) {
     const previous = [...items.values()].find(item => sourceOf(item) === "asura" && kindOf(item) === kindOf(fresh) && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
-    const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", cover: fresh.cover || previous?.cover || "", localCover: previous?.localCover, rank: previous?.rank, popularRanks: previous?.popularRanks, syncedAt: previous?.syncedAt };
+    const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, genres: fresh.genres?.length ? fresh.genres : previous?.genres || fresh.genres, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", cover: fresh.cover || previous?.cover || "", localCover: previous?.localCover, rank: previous?.rank, popularRanks: previous?.popularRanks, syncedAt: previous?.syncedAt };
     try { item.localCover = await cacheCover(item, guard); } catch (error) { if (error instanceof NetworkPaused) throw error; }
     items.set(item.slug, item);
     ids.push(item.slug);
@@ -379,7 +388,7 @@ export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor
     for (const [index, raw] of data.entries()) {
       const fresh = parseApiSeries(raw, kind); if (!fresh) continue;
       const previous = existing.find(item => sourceOf(item) === "asura" && kindOf(item) === kind && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
-      const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt, rank: previous?.rank, popularRanks: previous?.popularRanks };
+      const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, genres: fresh.genres?.length ? fresh.genres : previous?.genres || fresh.genres, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt, rank: previous?.rank, popularRanks: previous?.popularRanks };
       if (options.sort === "trending" && !options.query) { item.popularRanks = { ...item.popularRanks, [options.period]: offset + index + 1 }; if (options.period === "week") item.rank = offset + index + 1; }
       try { item.localCover = await cacheCover(item, guard, signal); }
       catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }

@@ -11,6 +11,7 @@ export type Series = {
   title: string;
   summary: string;
   detailsCached?: boolean;
+  chapterListComplete?: boolean;
   metadataSyncedAt?: string;
   cover: string;
   localCover?: string;
@@ -35,7 +36,7 @@ export type Series = {
 export type Chapter = { id: string; url: string; locked?: boolean };
 export type Period = "week" | "month" | "all";
 export type ContentMode = "all" | "comics" | "novels";
-export type DiscoveryFilters = { source?: SourceId; webtoonLanguage?: string; webtoonCollection?: "originals" | "canvas"; contentMode: ContentMode; hideDownloaded: boolean; hideLiked: boolean; hideBookmarked: boolean };
+export type DiscoveryFilters = { source?: SourceId; webtoonLanguage?: string; webtoonCollection?: "originals" | "canvas"; genreFilters?: Partial<Record<SourceId, string[]>>; contentMode: ContentMode; hideDownloaded: boolean; hideLiked: boolean; hideBookmarked: boolean };
 export type ReadingList = "reading" | "planned" | "finished" | "hold";
 export type SavedStory = { liked?: boolean; bookmarked?: boolean; list?: ReadingList; autoDownload?: boolean };
 export function formatRating(value: string): string {
@@ -45,16 +46,28 @@ export function formatRating(value: string): string {
 }
 export type NovelText = { title: string; paragraphs: string[] };
 
+export function parseGenreLinks(html: string): string[] {
+  const names = new Map<string, string>();
+  for (const [, tag, content] of html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    if (!/(?:[?&]genres?=|\/genre\/)/i.test(attribute(tag, "href")) && attribute(tag, "itemProp").toLowerCase() !== "genre") continue;
+    const name = plainText(content);
+    if (name) names.set(name.toLowerCase(), name);
+  }
+  return [...names.values()];
+}
+
 export function mergeDiscovery(fresh: Series, previous?: Series): Series {
   const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, localCover: previous?.localCover, syncedAt: previous?.syncedAt };
   for (const key of ["summary", "rating", "cover", "status", "bookmarks", "latestChapter"] as const) if (!fresh[key]) item[key] = previous?.[key] || "";
   if (!fresh.chapterCount) item.chapterCount = previous?.chapterCount || 0;
+  if (!fresh.genres?.length) item.genres = previous?.genres;
   return item;
 }
 
 export function chapterListCached(item: Series): boolean {
   if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
   if (sourceOf(item) === "asura") return kindOf(item) === "novel" || new Set(item.chapterIds).size >= item.chapterCount;
+  if (sourceOf(item) === "mangakakalot" && item.chapterListComplete !== true) return false;
   return item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
 }
 export function chapterList(source: string[] = [], saved: string[] = [], read: Record<string, string> = {}, filter = "all", query = "", newest = true, titles: Record<string, string> = {}): string[] {
@@ -80,6 +93,7 @@ export function filterDiscovery(items: Series[], filters: DiscoveryFilters, save
     && (filters.source && filters.source !== "asura" || filters.contentMode === "all" || kindOf(item) === (filters.contentMode === "novels" ? "novel" : "comic"))
     && (!filters.hideDownloaded || (!item.localChapters?.length && !item.hasLocalFiles))
     && (!filters.hideLiked || !saved[item.slug]?.liked)
+    && (filters.genreFilters?.[sourceOf(item)] || []).every(tag => item.genres?.some(genre => genre.toLowerCase() === tag.toLowerCase()))
     && (!filters.hideBookmarked || !saved[item.slug]?.bookmarked));
 }
 export function publicationState(item: Series, now = Date.now()): { label: string; color: string } {
@@ -172,6 +186,7 @@ export function parseSeries(source: string, url: string): Series {
     kind: new URL(url).pathname.startsWith("/novels/") ? "novel" : "comic",
     updatedAt: dates[0],
     sourceDates: true,
+    genres: parseGenreLinks(source),
   };
 }
 

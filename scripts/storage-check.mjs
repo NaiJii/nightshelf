@@ -92,17 +92,21 @@ try {
   console.log("Storage deletion check passed");
   const tools = await import('../src/lib/library-tools.ts');
   const backup = await import('../src/lib/backup.ts');
-  const backupStory={...storage.SEED[0],slug:'backup-story',title:'Backup story',localChapters:['1']};
+  const backupStory={...storage.SEED[0],slug:'backup-story',title:'Backup story',localChapters:['1'],genres:['Action']};
   storage.saveCatalog([backupStory]);tools.updateStoryOptions('backup-story',{bookmarked:true,liked:true,list:'planned',autoDownload:true});
   storage.savePosition('backup-story','1',0.4);storage.setChaptersRead('backup-story',['1'],true);
+  storage.savePreferences({...storage.loadPreferences(),genreFilters:{asura:['Action'],vortex:['Fantasy']}});
   const exported=backup.createBackup(), decoded=backup.validateBackup(exported);
   assert.equal(decoded.saved['backup-story'].list,'planned');
   assert.equal(decoded.saved['backup-story'].autoDownload,undefined,'portable backups cannot silently enable new automatic transfers');
   assert.equal(decoded.catalog[0].localChapters,undefined,'phone-specific chapter paths are not portable');
+  assert.deepEqual(decoded.catalog[0].genres,['Action']);
+  assert.deepEqual(decoded.preferences.genreFilters,{asura:['Action'],vortex:['Fantasy']},'tag filters survive backup and restore');
   const roundTrip=JSON.parse(exported);roundTrip.history['backup-story'].readAt='2020-01-01T00:00:00Z';roundTrip.history['backup-story'].fraction=0.1;
   backup.restoreBackup(JSON.stringify(roundTrip));
   assert.equal(storage.readingHistory()['backup-story'].fraction,0.4,'newer local position survives import');
   assert.equal(storage.savedStories()['backup-story'].list,'planned');
+  storage.savePreferences({...storage.loadPreferences(),genreFilters:{}});
   assert.ok(storage.readChapters()['backup-story']['1']);
   for(const bad of [{...roundTrip,version:999},{...roundTrip,catalog:[{...backupStory,slug:'../bad'}]},{...roundTrip,catalog:[{...backupStory,slug:'__proto__'}]},{...roundTrip,catalog:[{...backupStory,url:'https://evil.test/manga'}]}])assert.throws(()=>backup.validateBackup(JSON.stringify(bad)));
   assert.throws(()=>backup.validateBackup('bad JSON'));
@@ -130,6 +134,7 @@ try {
 export const requests=[]; export let imagePending=false;
 export let verificationMode='open';export function setVerificationMode(mode){verificationMode=mode;}
 export let webtoonNew=false; export function releaseWebtoon(){webtoonNew=true;}
+export let kakalotPageFailure=false; export function failKakalotPage(value){kakalotPageFailure=value;}
 export async function fetch(url,options={}){
   requests.push(url); options.signal?.throwIfAborted();
   if(new URL(url).hostname==='www.mangakakalot.gg' && options.headers['User-Agent']!=='native-test-agent') throw Error('Source requests must use the verification browser identity');
@@ -160,12 +165,17 @@ export async function fetch(url,options={}){
     if(verificationMode==='blocked')return {ok:false,status:403};
     if(verificationMode==='challenge')return {ok:true,text:async()=>'<title>Just a moment...</title>'};
     const story='https://www.mangakakalot.gg/manga/example';
-    const card='<div class="comic-list"><div class="list-comic-item-wrap"><a href="'+story+'"><img src="https://img-r1.2xstorage.com/cover.webp"></a><h3><a href="'+story+'">Example</a></h3></div></div>';
-    const data=url.includes('/api/manga/')?{success:true,data:{chapters:[{chapter_num:1,chapter_slug:'chapter-1',chapter_name:'Chapter 1',updated_at:'2026-09-01T00:00:00Z'}]}}:url.includes('/chapter-')?'<div class="container-chapter-reader"><img src="https://img-r1.2xstorage.com/panel.webp"></div>':url.includes('/manga/example')?'<div class="manga-info-top"><h1>Example</h1><li>Status : Completed</li></div><div id="contentBox"><h2>Summary</h2><p>Full MangaKakalot summary.</p></div>':card;
+    const card='<div class="comic-list"><div class="list-comic-item-wrap"><a href="'+story+'"><img src="https://storage.waitst.com/cover.webp"></a><h3><a href="'+story+'">Example</a></h3></div></div>';
+    if(url.includes('/api/manga/')) {
+      if(kakalotPageFailure&&offset===2)return {ok:false,status:500};
+      const ids=offset===0?[2,1]:[0];
+      return {ok:true,text:async()=>JSON.stringify({success:true,data:{chapters:ids.map(id=>({chapter_num:id,chapter_slug:'chapter-'+id,chapter_name:'Chapter '+id,updated_at:'2026-09-01T00:00:00Z'})),pagination:{total:3,limit:2,offset,has_more:offset===0}}})};
+    }
+    const data=url.includes('/chapter-')?'<div class="container-chapter-reader"><img src="https://img-r1.2xstorage.com/panel.webp"></div>':url.includes('/manga/example')?'<div class="manga-info-top"><h1>Example</h1><li>Status : Completed</li></div><div id="contentBox"><h2>Summary</h2><p>Full MangaKakalot summary.</p></div>':card;
     return {ok:true,text:async()=>typeof data==='string'?data:JSON.stringify(data)};
   }
-  if(new URL(url).hostname==='img-r1.2xstorage.com' && options.headers.Referer!=='https://www.mangakakalot.gg/') throw Error('CDN requires the source root referrer');
-  if(['storage.vortexscans.org','img-r1.2xstorage.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
+  if(['img-r1.2xstorage.com','storage.waitst.com'].includes(new URL(url).hostname) && options.headers.Referer!=='https://www.mangakakalot.gg/') throw Error('CDN requires the source root referrer');
+  if(['storage.vortexscans.org','img-r1.2xstorage.com','storage.waitst.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(url==='https://asurascans.com/comics/repair')return {ok:true,text:async()=>'<meta property="og:title" content="Repair"><meta property="og:image" content="https://cdn/repair.webp"><div>9.7 Rating 1 Chapters</div><a href="/comics/repair/chapter/1">Chapter 1</a>'};
   if(url==='https://asurascans.com/comics/partial')return {ok:true,text:async()=>'<meta property="og:title" content="Partial"><meta property="og:image" content="https://cdn/cover.webp"><div>201 Chapters</div><a href="/comics/partial/chapter/199">199</a><a href="/comics/partial/chapter/200">200</a>'};
   if(url==='https://asurascans.com/comics/repair/chapter/1')return {ok:true,text:async()=>'<img data-page-index="0" src="https://cdn/a.webp"><img data-page-index="1" src="https://cdn/b.webp">'};
@@ -298,6 +308,18 @@ export async function fetch(url,options={}){
       assert.ok(fresh.detailsCached&&fresh.summary);
       assert.ok(fresh.chapterIds.includes('1'));
       if(source==='vortex') assert.ok(requests.slice(before).some(url=>url.startsWith('https://api.vortexscans.org/api/chapters?')),'Vortex chapters use its public API when inline hydration is unrecognized');
+      if(source==='mangakakalot') {
+        assert.deepEqual(fresh.chapterIds,['0','1','2'],'all MangaKakalot chapter pages load, including chapter zero');
+        assert.equal(fresh.chapterCount,3); assert.equal(fresh.chapterListComplete,true);
+        assert.ok(requests.slice(before).some(url=>url.includes('limit=500&offset=2')),'the next offset follows the actual received page length');
+        const metadataStart=requests.length;
+        const overview=await refreshSeries(fresh,async()=>{},undefined,false);
+        assert.deepEqual(overview.chapterIds,['0','1','2']); assert.equal(overview.chapterListComplete,true);
+        assert.ok(!requests.slice(metadataStart).some(url=>url.includes('/api/manga/')),'tag metadata updates reuse complete chapter lists');
+        http.failKakalotPage(true);
+        await assert.rejects(()=>refreshSeries(item,async()=>{}),/Request failed/,'failure on a later page cannot certify a partial list');
+        http.failKakalotPage(false);
+      }
       await downloadChapters(fresh,'1',()=>{},async()=>{});
       assert.equal(storage.chapterIntact(item.slug,'1'),true);
       assert.ok(!requests.slice(before).some(url=>url.includes('asurascans.com')||url.includes('webtoons.com')));
