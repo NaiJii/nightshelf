@@ -16,6 +16,10 @@ expo-env.d.ts
 *.p8
 *.p12
 *.key
+*.keystore
+/credentials.json
+/release-signing.json
+/artifacts/
 *.mobileprovision
 
 # Metro
@@ -39,3 +43,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Local EAS diagnostics
+*-build.json
+build-view.txt
+eas-build.log
+/native-modules-check.json
+/.research/

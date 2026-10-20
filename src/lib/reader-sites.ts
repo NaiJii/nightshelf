@@ -1,0 +1,179 @@
+import { chapterSort, decodeHtml, plainText } from "./parser";
+import type { Series, SortOrder } from "./parser";
+
+export type ReaderSite = "vortex" | "mangakakalot";
+export const SITE_HOME = { vortex: "https://vortexscans.org", mangakakalot: "https://www.mangakakalot.gg" };
+export function attribute(tag: string, key: string): string {
+  const match = tag.match(new RegExp(`(?:^|\\s)${key}\\s*=\\s*(?:"([^"<>]*)"|'([^'<>]*)')`, "i"));
+  return decodeHtml(match?.[1] ?? match?.[2] ?? "");
+}
+function metadata(html: string, key: string): string { return attribute([...html.matchAll(/<meta\b[^>]*>/gi)].find(([tag]) => attribute(tag, "property") === key || attribute(tag, "name") === key)?.[0] || "", "content"); }
+function safeUrl(value: string, base: string): string {
+  try { const url = new URL(decodeHtml(value), base); return url.protocol === "https:" && !url.username && !url.password ? url.href : ""; } catch { return ""; }
+}
+export function section(html: string, key: string, value: string): string {
+  const tags = [...html.matchAll(/<div\b[^>]*>/gi)];
+  const start = tags.find(match => key === "class" ? attribute(match[0], key).split(/\s+/).includes(value) : attribute(match[0], key) === value);
+  if (!start) return "";
+  const from = start.index! + start[0].length;
+  let depth = 1;
+  for (const match of html.slice(from).matchAll(/<\/?div\b[^>]*>/gi)) {
+    depth += /^<\//.test(match[0]) ? -1 : 1;
+    if (!depth) return html.slice(from, from + match.index!);
+  }
+  return "";
+}
+function scalar(block: string, name: string): string {
+  const literal = block.match(new RegExp(`(?:^|[,{}])\\s*"?${name}"?\\s*:\\s*("(?:\\\\.|[^"\\\\])*")`))?.[1];
+  if (!literal) return "";
+  // Decode a string literal only. Never execute the site's hydration JavaScript.
+  try { return JSON.parse(literal.replace(/\\x([\da-f]{2})/gi, "\\u00$1")); } catch { return ""; }
+}
+function hydrationRecords(html: string): { at: number; block: string }[] {
+  const starts = [...html.matchAll(/\$[A-Za-z_][\w$]*\[\d+\]\s*=\s*\{/g)];
+  return starts.map((match, index) => ({ at: match.index!, block: html.slice(match.index! + match[0].length - 1, starts[index + 1]?.index ?? html.length) }));
+}
+function numericField(block: string, name: string): string { return block.match(new RegExp(`(?:^|[,{}])\\s*"?${name}"?\\s*:\\s*(\\d+(?:\\.\\d+)?)`))?.[1] || ""; }
+function date(value: string): string | undefined { const parsed = Date.parse(value); return Number.isFinite(parsed) && parsed <= Date.now() ? new Date(parsed).toISOString() : undefined; }
+function siteStoryUrl(value: string, source: ReaderSite): string {
+  const url = safeUrl(value, SITE_HOME[source]);
+  if (!url) return "";
+  const parsed = new URL(url);
+  if (parsed.origin !== SITE_HOME[source]) return "";
+  return (source === "vortex" ? /^\/series\/[^/]+\/?$/ : /^\/manga\/[a-z\d_-]+\/?$/i).test(parsed.pathname) ? parsed.origin + parsed.pathname.replace(/\/$/, "") : "";
+}
+export function directoryUrl(source: ReaderSite, sort: SortOrder, query: string, page: number): string {
+  if (source === "vortex") {
+    if (!query && (sort === "smart" || sort === "trending")) return SITE_HOME.vortex + "/";
+    return `${SITE_HOME.vortex}/series/?${new URLSearchParams({ page: String(page), searchTerm: query, sortBy: "latest_chapters", sortDirection: "desc" })}`;
+  }
+  const path = query ? `/search/story/${encodeURIComponent(query.trim().toLowerCase().replace(/\s+/g, "_"))}` : `/manga-list/${sort === "updated" ? "latest-manga" : "hot-manga"}`;
+  return `${SITE_HOME.mangakakalot}${path}?page=${page}`;
+}
+export function parseVortexCards(html: string, popular = false, metadataOnly = false): Series[] {
+  const matches = hydrationRecords(html).filter(record => scalar(record.block, "postTitle") && scalar(record.block, "slug") && numericField(record.block, "id"));
+  const items = new Map<string, Series>();
+  for (const [index, match] of matches.entries()) {
+    const block = html.slice(match.at, matches[index + 1]?.at ?? html.length);
+    const route = scalar(match.block, "slug");
+    const title = scalar(match.block, "postTitle");
+    const url = siteStoryUrl(`/series/${route}`, "vortex");
+    if (!url || !title || /(?:^|,)\s*isNovel\s*:\s*(?:!0|true)/.test(match.block)) continue;
+    const updatedAt = date(scalar(block, "lastChapterAddedAt") || scalar(block, "createdAt"));
+    const rating = block.match(/averageRating:([\d.]+)/)?.[1] || "";
+    items.set(url, { source: "vortex", slug: `vortex-${numericField(match.block, "id")}`, url, title, summary: "", cover: safeUrl(scalar(match.block, "featuredImage"), SITE_HOME.vortex), rating, bookmarks: "", status: scalar(match.block, "seriesStatus"), type: scalar(match.block, "seriesType") || "Comic", kind: "comic", chapterCount: 0, latestChapter: "", updatedAt, sourceDates: Boolean(updatedAt) });
+  }
+  if (metadataOnly) return [...items.values()];
+  let body = html.slice(html.indexOf("<body"));
+  if (popular) {
+    const headings = [...body.matchAll(/<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/gi)];
+    const first = headings.find(match => /^popular\s+today$/i.test(plainText(match[1])));
+    const last = headings.find(match => match.index! > (first?.index ?? Infinity) && /^latest\s+releases$/i.test(plainText(match[1])));
+    body = first ? body.slice(first.index, last?.index) : "";
+  }
+  const ordered = new Map<string, Series>();
+  for (const [, tag, content] of body.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const url = siteStoryUrl(attribute(tag, "href"), "vortex");
+    if (!url) continue;
+    if (items.has(url)) { ordered.set(url, items.get(url)!); continue; }
+    const image = content.match(/<img\b[^>]*>/i)?.[0] || "";
+    const title = attribute(image, "alt") || attribute(tag, "aria-label").replace(/^Open\s+/i, "");
+    const cover = safeUrl(attribute(image, "data-fallback-src") || attribute(image, "data-src") || attribute(image, "src"), SITE_HOME.vortex);
+    if (!title || !cover || ordered.has(url)) continue;
+    // Keep identity deterministic if the site omits or rearranges its hydration data.
+    const route = new URL(url).pathname;
+    let left = 2166136261, right = 5381;
+    for (let i = 0; i < route.length; i++) { left = Math.imul(left ^ route.charCodeAt(i), 16777619); right = Math.imul(right, 33) ^ route.charCodeAt(i); }
+    ordered.set(url, { source: "vortex", slug: `vortex-url-${(left >>> 0).toString(16)}${(right >>> 0).toString(16)}`, url, title: plainText(title), cover, summary: "", rating: "", bookmarks: "", status: "Unknown", type: "Comic", kind: "comic", chapterCount: 0, latestChapter: "" });
+  }
+  return [...ordered.values()];
+}
+export function parseKakalotCards(html: string): Series[] {
+  const body = section(html, "class", "comic-list") || section(html, "class", "panel_story_list") || html;
+  const starts = [...body.matchAll(/<div\b[^>]*class=["'][^"']*\b(?:list-comic-item-wrap|story_item)\b[^"']*["'][^>]*>/gi)];
+  const items = new Map<string, Series>();
+  for (const [index, start] of starts.entries()) {
+    const block = body.slice(start.index!, starts[index + 1]?.index ?? body.length);
+    const anchors = [...block.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)];
+    const first = anchors.find(match => siteStoryUrl(attribute(match[1], "href"), "mangakakalot"));
+    if (!first) continue;
+    const url = siteStoryUrl(attribute(first[1], "href"), "mangakakalot");
+    const heading = block.match(/<h3\b[^>]*>([\s\S]*?)<\/h3>/i)?.[1] || "";
+    const image = block.match(/<img\b[^>]*>/i)?.[0] || "";
+    const title = plainText(heading) || attribute(first[1], "title") || attribute(image, "alt");
+    if (!title) continue;
+    const slug = new URL(url).pathname.split("/").at(-1)!;
+    const latestChapter = anchors.map(match => attribute(match[1], "href").match(/\/chapter-([\d.]+)/)?.[1]).find(Boolean) || "";
+    items.set(url, { source: "mangakakalot", slug: `mangakakalot-${slug}`, url, title, cover: safeUrl(attribute(image, "data-src") || attribute(image, "src"), url), summary: "", rating: "", bookmarks: "", status: "", type: "Manga", kind: "comic", chapterCount: 0, latestChapter });
+  }
+  return [...items.values()];
+}
+export function directoryHasMore(html: string, source: ReaderSite, url: string, count: number, popular: boolean): boolean {
+  if (source === "vortex") {
+    if (popular) return false;
+    const total = Number(html.match(/initialTotalCount:(\d+)/)?.[1]);
+    const perPage = Number(html.match(/itemsPerPage:(\d+)/)?.[1]);
+    const page = Number(new URL(url).searchParams.get("page") || 1);
+    return Number.isFinite(total) && perPage > 0 && page * perPage < total;
+  }
+  const current = new URL(url), page = Number(current.searchParams.get("page") || 1);
+  return [...html.matchAll(/<a\b[^>]*>/gi)].some(([tag]) => {
+    const href = safeUrl(attribute(tag, "href"), url);
+    if (!href) return false;
+    const next = new URL(href);
+    return next.origin === current.origin && next.pathname === current.pathname && Number(next.searchParams.get("page")) === page + 1;
+  });
+}
+export function parseVortexDetails(html: string, item: Series): Series {
+  const urls: Record<string, string> = {}, titles: Record<string, string> = {};
+  const matches = hydrationRecords(html).filter(record => scalar(record.block, "slug").startsWith("chapter-") && numericField(record.block, "number"));
+  let updatedAt: string | undefined;
+  for (const match of matches) {
+    const block = match.block;
+    if (!/(?:^|,)\s*"?isLocked"?\s*:\s*(?:!1|false)(?:\s*[,}])/.test(block) || /(?:^|,)\s*"?(?:isLockedByCoins|isShortLinkLocked|isPermanentlyLocked)"?\s*:\s*(?:!0|true)/.test(block)) continue;
+    const number = numericField(block, "number");
+    const slug = scalar(block, "slug");
+    if (!number || !/^\d+(?:\.\d+)?$/.test(number) || !/^chapter-[\w.-]+$/.test(slug)) continue;
+    urls[number] = `${item.url}/${encodeURIComponent(slug)}`;
+    const title = scalar(block, "title"); titles[number] = `Chapter ${number}${title ? ` · ${plainText(title)}` : ""}`;
+    const published = date(scalar(block, "createdAt")); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
+  }
+  const ids = Object.keys(urls).sort(chapterSort);
+  const own = parseVortexCards(html, false, true).find(value => value.url === item.url);
+  const summary = plainText(section(html, "itemProp", "description")) || plainText(metadata(html, "description"));
+  if (!own) throw new Error("Vortex story details are unavailable. Pull down to retry.");
+  return { ...item, ...own, slug: item.slug, summary, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: ids.length, latestChapter: ids.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt), syncedAt: new Date().toISOString() };
+}
+export function parseKakalotChapters(raw: unknown, seriesUrl: string) {
+  const payload = raw as { success?: boolean; data?: { chapters?: unknown } };
+  if (payload?.success !== true || !Array.isArray(payload.data?.chapters)) throw new Error("MangaKakalot chapter list is unavailable. Verify the source and retry.");
+  const urls: Record<string, string> = {}, titles: Record<string, string> = {};
+  let updatedAt: string | undefined;
+  for (const chapter of payload.data.chapters) {
+    if (!chapter || !/^\d+(?:\.\d+)?$/.test(String(chapter.chapter_num)) || !/^chapter-[\w.-]+$/.test(chapter.chapter_slug) || chapter.is_locked === true) continue;
+    const id = String(chapter.chapter_num);
+    urls[id] = `${seriesUrl}/${chapter.chapter_slug}`; titles[id] = typeof chapter.chapter_name === "string" ? chapter.chapter_name : `Chapter ${id}`;
+    const published = date(chapter.updated_at); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
+  }
+  return { chapterUrls: urls, chapterTitles: titles, chapterIds: Object.keys(urls).sort(chapterSort), updatedAt, sourceDates: Boolean(updatedAt) };
+}
+export function parseKakalotDetails(html: string, item: Series): Series {
+  const data: Record<string, unknown>[] = [];
+  for (const [, text] of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try { const parsed = JSON.parse(text); if (parsed?.mainEntity?.["@type"] === "Book") data.push(parsed.mainEntity); } catch { /* ignore unrelated invalid structured metadata */ }
+  }
+  const book = data[0] as { name?: string; description?: string; image?: string; aggregateRating?: { ratingValue?: string; bestRating?: string } } | undefined;
+  const content = section(html, "class", "manga-info-top");
+  const canonical = metadata(html, "og:url");
+  if (canonical && siteStoryUrl(canonical, "mangakakalot") !== item.url.replace(/\/$/, "")) throw new Error("MangaKakalot redirected to another page. Verify the source and retry.");
+  const title = plainText(content.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || book?.name || "");
+  if (!title) throw new Error("MangaKakalot story details are unavailable. Verify the source and retry.");
+  const text = plainText(content);
+  const summary = book?.description || plainText(section(html, "id", "contentBox").replace(/<h2\b[\s\S]*?<\/h2>/i, ""));
+  const rating = Number(book?.aggregateRating?.ratingValue), scale = Number(book?.aggregateRating?.bestRating || 5);
+  return { ...item, title, summary: summary === "N/A" ? "" : plainText(summary), cover: safeUrl(book?.image || metadata(html, "og:image"), item.url) || item.cover, rating: rating > 0 && scale > 0 ? `${rating.toFixed(2)}/${scale}` : "", status: text.match(/Status\s*:\s*(Ongoing|Completed|Hiatus|Dropped)/i)?.[1] || "Unknown", detailsCached: true, syncedAt: new Date().toISOString() };
+}
+export function parseReaderSiteImages(html: string, source: ReaderSite): string[] {
+  const body = source === "vortex" ? html : section(html, "class", "container-chapter-reader");
+  return [...new Set([...body.matchAll(/<img\b[^>]*>/gi)].filter(([tag]) => source !== "vortex" || attribute(tag, "data-reader-page-image") === "true").map(([tag]) => safeUrl(attribute(tag, "data-src") || attribute(tag, "src"), SITE_HOME[source])).filter(value => value && (source === "vortex" ? new URL(value).hostname === "storage.vortexscans.org" : /(?:^|\.)2xstorage\.com$/.test(new URL(value).hostname))))];
+}

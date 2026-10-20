@@ -1,0 +1,15 @@
+{
+  "cli": {"version": ">= 24.0.0", "appVersionSource": "local"},
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
+      }
+    },
+    "production": {
+      "android": {"buildType": "app-bundle"}
+    }
+  }
+}

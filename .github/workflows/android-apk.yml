@@ -1,0 +1,52 @@
+name: Android APK (ARM64)
+
+# Manual only: no automatic builds on commits, PRs or schedules.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightshelf-android-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install dependencies
+        run: npm ci
+      - name: Check app
+        run: |
+          npm test
+          npm run typecheck
+          npm run lint
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+      - name: Build and verify signed ARM64 APK
+        env:
+          ANDROID_SIGNING_CREDENTIALS: ${{ secrets.ANDROID_SIGNING_CREDENTIALS }}
+        run: node scripts/build-android-ci.mjs
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NightShelf-arm64
+          path: artifacts/*.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
