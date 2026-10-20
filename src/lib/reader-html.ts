@@ -14,23 +14,23 @@ ${novel ? `<main class="novel"><h1>${escape(novel.title)}</h1>${novel.paragraphs
 let timer; const images = [...document.images]; let restored = false, finished = false, endSince = 0;
 window.readerActive = false;
 window.readerChromeVisible = false;
-let tapTimer, tapPoint, touch, lastScroll = -Infinity, lastTouchEnd = -Infinity, scrolling = false;
+let tapTimer, tapPoint, touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
 function hideControls() { window.readerChromeVisible = false; window.ReactNativeWebView.postMessage(JSON.stringify({controls:'hide'})); }
 addEventListener('touchstart', event => {
   if (event.touches.length > 1) hideControls();
   const finger = event.touches[0];
   const secondTap = Boolean(tapTimer && finger && tapPoint && Math.hypot(finger.clientX - tapPoint.x, finger.clientY - tapPoint.y) < 32);
   clearTimeout(tapTimer); tapTimer = undefined;
-  touch = event.touches.length === 1 && Date.now() - lastScroll > 250
+  touch = event.touches.length === 1
     ? {x:finger.clientX, y:finger.clientY, at:Date.now(), double:secondTap} : null;
 }, {passive:true});
 addEventListener('touchmove', event => {
-  if (touch && (event.touches.length !== 1 || Math.hypot(event.touches[0].clientX - touch.x, event.touches[0].clientY - touch.y) > 10)) { touch = null; hideControls(); }
+  if (touch && (event.touches.length !== 1 || Math.hypot(event.touches[0].clientX - touch.x, event.touches[0].clientY - touch.y) > 10)) { touch = null; chromeSettlesUntil = 0; hideControls(); }
 }, {passive:true});
 addEventListener('touchcancel', () => { touch = null; clearTimeout(tapTimer); tapTimer = undefined; });
 addEventListener('touchend', event => {
   lastTouchEnd = Date.now();
-  if (touch && !event.touches.length && Date.now() - touch.at < 350 && Date.now() - lastScroll > 250) {
+  if (touch && !event.touches.length && Date.now() - touch.at < 350) {
     if (touch.double && window.readerActive) {
       hideControls();
       const scale = window.visualViewport?.scale || 1;
@@ -39,7 +39,8 @@ addEventListener('touchend', event => {
       tapPoint = {x:touch.x, y:touch.y};
       tapTimer = setTimeout(() => {
       tapTimer = undefined;
-      if (window.readerActive && Date.now() - lastScroll > 250) {
+      if (window.readerActive) {
+        chromeSettlesUntil = Date.now() + 400;
         window.readerChromeVisible = !window.readerChromeVisible;
         window.ReactNativeWebView.postMessage(JSON.stringify({controls:window.readerChromeVisible ? 'show' : 'hide'}));
       }
@@ -50,7 +51,8 @@ addEventListener('touchend', event => {
 }, {passive:true});
 // Screen-reader activation and mouse clicks do not generate touch events.
 addEventListener('click', () => {
-  if (Date.now() - lastTouchEnd > 600 && Date.now() - lastScroll > 250 && window.readerActive) {
+  if (Date.now() - lastTouchEnd > 600 && window.readerActive) {
+    chromeSettlesUntil = Date.now() + 400;
     window.readerChromeVisible = !window.readerChromeVisible;
     window.ReactNativeWebView.postMessage(JSON.stringify({controls:window.readerChromeVisible ? 'show' : 'hide'}));
   }
@@ -65,8 +67,8 @@ function report() {
 }
 addEventListener('load', () => { scrollTo(0, ${safeFraction} * Math.max(0, document.documentElement.scrollHeight - innerHeight)); restored = true; report(); });
 function onScroll() {
-  lastScroll = Date.now(); touch = null; clearTimeout(tapTimer); tapTimer = undefined;
-  if (!scrolling) hideControls();
+  // Momentum is not finger movement. Preserve intentional taps, including the viewport resize when chrome appears.
+  if (!touch && !tapTimer && Date.now() >= chromeSettlesUntil && !scrolling) hideControls();
   scrolling = true;
   clearTimeout(timer); timer = setTimeout(() => { scrolling = false; if (restored) report(); }, 400);
 }
