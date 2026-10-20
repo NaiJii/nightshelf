@@ -380,7 +380,10 @@ export async function fetch(url,options={}){
     await downloadChapters(repairStory,'1',()=>{},async()=>{});
     assert.deepEqual(requests.slice(beforeRepair).filter(url=>url.startsWith('https://cdn/')),['https://cdn/a.webp'],'repair only downloads the damaged panel and keeps valid originals');
     const native=await import('nightshelf-native-test');native.enable();
-    await downloadChapters(repairStory,'1',()=>{},async()=>{});
+    const preparation=[];
+    await downloadChapters(repairStory,'1',(message)=>preparation.push(message),async()=>{});
+    assert.ok(preparation.includes('Preparing chapters \u00b7 0/1 prepared'));
+    assert.ok(preparation.includes('Preparing chapters \u00b7 1/1 prepared'));
     assert.equal(native.plans.length,1);assert.equal(native.plans[0].chapters[0].files.length,2);
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.target.startsWith(storage.LIBRARY.uri+'/')));
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.hash),'native repair plans carry existing checksums');

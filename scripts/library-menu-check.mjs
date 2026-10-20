@@ -11,15 +11,16 @@ const shelf = { catalog: [story], saved: {}, read: {}, updates: {}, deleting: fa
 const element = (type, props) => ({ type, props });
 const modules = {
   "react/jsx-runtime": { jsx: element, jsxs: element },
-  react: { useState: initial => [typeof initial === "function" ? initial() : initial, () => {}], useCallback: value => value },
-  "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", Alert: { alert: (...args) => alerts.push(args) } },
+  react: { useState: initial => [typeof initial === "function" ? initial() : initial, () => {}], useMemo: fn => fn(), useCallback: value => value },
+  "react-native": { FlatList: "FlatList", RefreshControl: "RefreshControl", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", Alert: { alert: (...args) => alerts.push(args) } },
+  "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
   "expo-router": { router: { push: route => routes.push(route) }, useFocusEffect: () => {} },
   "../../lib/app-state": { useShelf: () => shelf },
   "../../components/action-sheet": { useActionSheet: () => (...args) => alerts.push(args) },
   "../../lib/storage": { readingHistory: () => ({}) },
   "../../lib/parser": { nextUnread: () => "1" },
   "../../lib/release-policy": { unreadReleases: () => [] },
-  "../../components/ui": { Page: "Page", Chip: "Chip", Cover: "Cover", Icon: "Icon", color: {}, ui: {} },
+  "../../components/ui": { PageHeading: "PageHeading", Chip: "Chip", Cover: "Cover", Icon: "Icon", color: {}, ui: {} },
   "../../components/series-card": { openSeries: () => {} },
   "../../components/story-row": { PublicationStatus: "PublicationStatus" },
   "../../components/download-list": { DownloadList: "DownloadList" },
@@ -29,7 +30,18 @@ const compiled = ts.transpileModule(readFileSync(new URL("../src/app/(tabs)/libr
 const exports = {};
 vm.runInNewContext(compiled, { exports, require: name => { assert.ok(modules[name], name); return modules[name]; } });
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
-const button = nodes(exports.default()).find(node => node.props?.accessibilityLabel === "Library actions for Example");
+const root = exports.default();
+const list = nodes(root).find(node => node.type === "FlatList");
+assert.ok(list, "library uses a virtualized list");
+assert.equal(list.props.data.length, 1);
+assert.ok(nodes(list.props.ListHeaderComponent).some(node => node.type === "DownloadList"), "download controls stay in the list header");
+assert.equal(list.props.refreshControl.type, "RefreshControl");
+assert.ok(!nodes(root).some(node => node.props?.accessibilityLabel === "Library actions for Example"), "rows are created lazily");
+shelf.catalog = Array.from({length: 1500}, (_, index) => ({...story, slug: `story-${index}`}));
+const large = nodes(exports.default()).find(node => node.type === "FlatList");
+assert.equal(large.props.data.length, 1500);
+assert.equal(large.props.initialNumToRender, 8);
+const button = nodes(list.props.renderItem({item: story})).find(node => node.props?.accessibilityLabel === "Library actions for Example");
 assert.ok(button?.props.onPress, "library dots expose a working action handler");
 button.props.onPress();
 const actions = alerts.at(-1)[2];

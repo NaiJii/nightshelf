@@ -32,7 +32,7 @@ export async function stopTransfer(id: string): Promise<void> {
 export async function waitForTransfer(id: string, progress: (message: string, fraction: number) => void, saved: () => void, signal?: AbortSignal): Promise<void> {
   const stop = () => { void backgroundTransfers?.pause(id).catch(() => {}); };
   signal?.addEventListener("abort", stop, { once: true });
-  let last = "", missing = 0;
+  let last = "", missing = 0, interrupted = 0;
   try {
     if (signal?.aborted) stop();
     while (true) {
@@ -41,6 +41,11 @@ export async function waitForTransfer(id: string, progress: (message: string, fr
         missing = 0;
         progress(value.message, value.progress);
         if (value.message !== last) { last = value.message; saved(); }
+        if (!value.active) throwIfAborted(signal);
+        // A queued job can legitimately wait for Android constraints. Running jobs
+        // with no writer across multiple polls were interrupted by the service.
+        interrupted = !value.active && (value.state === "running" || value.state === "preparing") ? interrupted + 1 : 0;
+        if (interrupted >= 3) throw new DownloadPaused("Transfer interrupted - resume when ready");
         // Wait for the native writer to close before allowing cancellation/deletion.
         if (!value.active && value.state !== "preparing" && value.state !== "running" && value.state !== "queued") {
           throwIfAborted(signal);
@@ -49,7 +54,10 @@ export async function waitForTransfer(id: string, progress: (message: string, fr
           if (value.state === "waiting") throw new NetworkPaused(value.message);
           throw new Error(value.message);
         }
-      } else if (++missing > 15) throw new Error("Android download service did not respond.");
+      } else {
+        throwIfAborted(signal);
+        if (++missing > 15) throw new Error("Android download service did not respond.");
+      }
       await new Promise(resolve => setTimeout(resolve, 750));
     }
   } finally { signal?.removeEventListener("abort", stop); }

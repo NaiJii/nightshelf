@@ -426,9 +426,9 @@ export async function downloadChapters(series: Series, selector: string, onProgr
   onPlan(chapters.map(chapter => chapter.id));
   if (backgroundTransfers) {
     const batch: NativeChapter[] = [];
+    onProgress(`Preparing chapters · 0/${chapters.length} prepared`, 0);
     for (const [index, chapter] of chapters.entries()) {
       throwIfAborted(signal);
-      onProgress(`Preparing chapter ${index + 1}/${chapters.length}…`, 0);
       const folder = chapterDirectory(series.slug, chapter.id); folder.create({ intermediates: true, idempotent: true });
       const marker = new File(folder, ".complete");
       if (novel) {
@@ -441,6 +441,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
         let previous: { urls?: string[]; hashes?: string[] } = {}; try { previous = JSON.parse(marker.textSync()); } catch { /* first download */ }
         batch.push({ id: chapter.id, marker: marker.uri, files: images.map((url, page) => ({ url, target: new File(folder, `${String(page + 1).padStart(3, "0")}${extension(url)}`).uri, original: new File(folder, `.original-${page + 1}`).uri, referer: imageReferer(url, chapter.url), agent: webtoon || readerSite ? SOURCE_AGENT : HEADERS["User-Agent"], hash: previous.urls?.[page] === url ? previous.hashes?.[page] : undefined })) });
       }
+      onProgress(`Preparing chapters · ${index + 1}/${chapters.length} prepared`, 0);
     }
     await guard(); throwIfAborted(signal);
     const network = await NetInfo.fetch();
