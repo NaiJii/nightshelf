@@ -6,7 +6,7 @@ import { chapterDirectory, chapterIntact, COVERS, initializeStorage, loadCatalog
 import { parseWebtoonCards, parseWebtoonDetails, parseWebtoonEpisodes, parseWebtoonImages, webtoonLanguage, webtoonSearchHasNext } from "./webtoon";
 import { NetworkPaused } from "./network";
 import { throwIfAborted, withAbort } from "./request-control";
-import { directoryHasMore, directoryUrl, imageReferer, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexChapterPayload, parseVortexDetails, parseVortexMetadata, vortexPostId } from "./reader-sites";
+import { directoryHasMore, directoryUrl, imageReferer, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexChapterPayload, parseVortexPostPayload } from "./reader-sites";
 import type { ReaderSite } from "./reader-sites";
 import { isVerificationHost, requireSourceVerification, SOURCE_AGENT, verificationCookies, verificationUserAgent } from "./source-session";
 import { backgroundTransfers, waitForTransfer } from "./background-downloads";
@@ -93,28 +93,18 @@ function siteSlug(item: Series): string { return new URL(item.url).pathname.spli
 
 export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSignal, loadChapters = true): Promise<Series> {
   const source = sourceOf(item);
-  if (source === "vortex" || source === "mangakakalot") {
-    const knownId = source === "vortex" ? item.vortexId || item.slug.match(/^vortex-(\d+)$/)?.[1] : undefined;
-    let html = "";
-    try { html = await getText(item.url, guard, undefined, signal); }
-    catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused || !loadChapters || !knownId) throw error; }
-    let fresh = item;
-    if (source === "vortex") {
-      try { fresh = parseVortexMetadata(html, item); }
-      catch (error) { if (!loadChapters) throw error; }
-    } else fresh = parseKakalotDetails(html, item);
-    if (source === "vortex" && loadChapters) {
-      const id = vortexPostId(html, item.url) || knownId;
-      if (id) {
-        try { fresh = parseVortexChapterPayload(await getJson(`https://api.vortexscans.org/api/chapters?postId=${id}&skip=0&take=all&order=asc`, guard, signal), fresh, id); }
-        catch (error) {
-          throwIfAborted(signal); if (error instanceof NetworkPaused) throw error;
-          try { fresh = parseVortexDetails(html, fresh); }
-          catch { throw error; }
-        }
-      } else fresh = parseVortexDetails(html, fresh);
-    }
-    if (source === "mangakakalot" && loadChapters) {
+  if (source === "vortex") {
+    const id = item.vortexId || item.slug.match(/^vortex-(\d+)$/)?.[1];
+    const query = id ? `postId=${encodeURIComponent(id)}` : `postSlug=${encodeURIComponent(siteSlug(item))}`;
+    let fresh = parseVortexPostPayload(await getJson(`https://api.vortexscans.org/api/post?${query}`, guard, signal), item);
+    if (loadChapters) fresh = parseVortexChapterPayload(await getJson(`https://api.vortexscans.org/api/chapters?postId=${fresh.vortexId}&skip=0&take=all&order=asc`, guard, signal), fresh);
+    try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
+    return { ...fresh, detailsCached: loadChapters || item.detailsCached };
+  }
+  if (source === "mangakakalot") {
+    const html = await getText(item.url, guard, undefined, signal);
+    let fresh = parseKakalotDetails(html, item);
+    if (loadChapters) {
       const urls: Record<string, string> = {}, titles: Record<string, string> = {};
       let offset: number | undefined = 0, pages = 0, updatedAt: string | undefined;
       while (offset !== undefined) {

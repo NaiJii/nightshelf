@@ -25,6 +25,13 @@ try {
   assert.deepEqual(sites.parseVortexMetadata(visibleStory + '<a itemProp="genre" href="/series?genres=%2B1">Action</a>', card).genres, ['Action']);
   assert.equal(visibleMetadata.slug,'vortex-url-legacy','metadata recovery preserves old bookmarks and read history');
   assert.equal(visibleMetadata.vortexId,'42','public series identity is retained separately from legacy library keys');
+  const publicPost={totalChapterCount:4,post:{id:42,slug:'example',postTitle:'Example',postContent:'<p>API summary.</p>',averageRating:9.08,genres:[{name:'Action'}],_count:{bookmarks:12}}};
+  const postDetails=sites.parseVortexPostPayload(publicPost,{...card,slug:'vortex-url-legacy'});
+  assert.equal(postDetails.vortexId,'42');assert.equal(postDetails.summary,'API summary.');assert.deepEqual(postDetails.genres,['Action']);
+  assert.equal(postDetails.chapterIds,undefined,'public metadata does not falsely cache the empty post.chapters field');
+  assert.throws(()=>sites.parseVortexPostPayload({...publicPost,post:{...publicPost.post,id:99}},card),/different story/);
+  assert.throws(()=>sites.parseVortexPostPayload({post:{id:42}},card),/invalid story details/);
+
   assert.equal(sites.vortexPostId(visibleStory,card.url),'42','public post identity does not depend on hydration variables');
   assert.equal(sites.parseVortexMetadata(visibleStory.replace(/<script\b[\s\S]*?<\/script>/g,''),card).rating,'9.08','metadata is readable with no inline scripts');
   assert.throws(()=>sites.parseVortexMetadata('<h1>Page not found</h1>',card),/without story details/);

@@ -160,11 +160,13 @@ try {
   const fakeFetch = `
 export const requests=[]; export let imagePending=false;
 export let verificationMode='open';export function setVerificationMode(mode){verificationMode=mode;}
+export let vortexLive=false;export function setVortexLive(value){vortexLive=value;}
 export let vortexPageMode='normal';export function setVortexPageMode(value){vortexPageMode=value;}
 export let webtoonNew=false; export function releaseWebtoon(){webtoonNew=true;}
 export let kakalotPageFailure=false; export function failKakalotPage(value){kakalotPageFailure=value;}
 export async function fetch(url,options={}){
   requests.push(url); options.signal?.throwIfAborted();
+  if(vortexLive && ['api.vortexscans.org','storage.vortexscans.org'].includes(new URL(url).hostname))return globalThis.fetch(url,options);
   if(new URL(url).hostname==='www.mangakakalot.gg' && options.headers['User-Agent']!=='native-test-agent') throw Error('Source requests must use the verification browser identity');
   if(['www.webtoons.com','vortexscans.org'].includes(new URL(url).hostname) && options.headers['User-Agent']!=='test') throw Error('WEBTOON must retain its separate desktop layout agent');
   const params=new URL(url).searchParams, offset=Number(params.get('offset')||0);
@@ -181,6 +183,7 @@ export async function fetch(url,options={}){
   if(new URL(url).hostname==='webtoon-phinf.pstatic.net')return {ok:true,headers:{get:()=> 'image/jpeg'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(new URL(url).hostname==='api.vortexscans.org') {
     if(params.has('view')||params.has('userId'))throw Error('Only anonymous public chapter requests are supported');
+    if(new URL(url).pathname==='/api/post')return {ok:true,text:async()=>JSON.stringify({totalChapterCount:2,post:{id:42,slug:'example',postTitle:'Example',postContent:'<p>Full Vortex summary.</p>',featuredImage:'https://storage.vortexscans.org/cover.webp',averageRating:9,seriesStatus:'ONGOING',seriesType:'MANHWA',genres:[]}})};
     return {ok:true,text:async()=>JSON.stringify({totalChapterCount:2,post:{chapters:[{number:1,slug:'chapter-1',isLocked:false,isAccessible:true},{number:2,slug:'chapter-2',isLocked:false,isAccessible:true}]}})};
   }
   if(new URL(url).hostname==='vortexscans.org') {
@@ -357,9 +360,12 @@ export async function fetch(url,options={}){
       if(source==='vortex') {
         for(const mode of ['error','unrecognized']) {
           http.setVortexPageMode(mode);
-          const recovered=await refreshSeries({...item,slug:'vortex-url-legacy',vortexId:'42'},async()=>{});
+          const recoveryStart=requests.length;
+          const recovered=await refreshSeries({...item,slug:'vortex-url-legacy',vortexId:undefined},async()=>{});
           assert.deepEqual(recovered.chapterIds,['1','2'],'public chapters load even when the summary page fails: '+mode);
           assert.equal(recovered.chapterListComplete,true);
+          assert.ok(requests.slice(recoveryStart).some(url=>url.includes('/api/chapters?postId=42')),'legacy entries resolve the numeric ID through the public post API');
+          assert.ok(!requests.slice(recoveryStart).some(url=>new URL(url).hostname==='vortexscans.org'),'chapter loading no longer depends on inline HTML scripts');
         }
         http.setVortexPageMode('normal');
       }
@@ -386,6 +392,16 @@ export async function fetch(url,options={}){
     }
     storage.savePreferences({...storage.loadPreferences(),source:'asura'});
     console.log('Vortex and MangaKakalot source routing, offline downloads, read history, deletion and sync checks passed');
+    if(process.env.LIVE_VORTEX==='1') {
+      http.setVortexLive(true);
+      try {
+        const live=await refreshSeries({...storage.SEED[0],url:'https://vortexscans.org/series/regressing-as-the-reincarnated-bastard',slug:'vortex-url-live-legacy',vortexId:undefined,cover:''},async()=>{});
+        assert.equal(live.vortexId,'274');assert.ok(live.chapterIds.includes('1'));assert.ok(live.chapterIds.length>=117);
+        assert.equal(live.chapterListComplete,true);assert.ok(live.summary&&live.rating&&live.localCover);
+        console.log('Live Vortex legacy-ID recovery: '+live.chapterIds.length+' chapters, rating '+live.rating);
+      } finally { http.setVortexLive(false); }
+    }
+
     await assert.rejects(()=>verifySourceSession('https://vortexscans.org/',async()=>{}),/Unsupported source verification/);
     const verificationUrl='https://www.mangakakalot.gg/manga/example';
     await verifySourceSession(verificationUrl,async()=>{});
