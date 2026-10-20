@@ -1,5 +1,6 @@
+import { useActionSheet } from "../components/action-sheet";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { Page, ui, color, Icon } from "../components/ui";
 import { useShelf } from "../lib/app-state";
@@ -7,6 +8,7 @@ import { formatBytes, storageSummary, verifyChapterFiles } from "../lib/library-
 import type { Series } from "../lib/parser";
 
 export default function StorageManager() {
+  const showSheet = useActionSheet();
   const { read, removeDownloads, downloadBusy, downloads, startDownload, deleting, catalog } = useShelf();
   const [summary, setSummary] = useState<ReturnType<typeof storageSummary> | null>(null);
   const [busy, setBusy] = useState("");
@@ -22,16 +24,16 @@ export default function StorageManager() {
         try { const value = verifyChapterFiles(item.slug, id); checked += value.checked; if (value.legacy) legacy++; if (value.damaged) bad.push(id); } catch { bad.push(id); }
       }
       setReport(`${item.title}: ${checked} files checked. ${bad.length} chapters need repair.${legacy ? ` ${legacy} older chapters lack checksums; repair will add them.` : ""}`);
-      if (bad.length || legacy) Alert.alert("Chapter check complete", bad.length ? `${bad.length} chapters need repair. Valid original panels will be kept.` : "Older chapters can be checked by Android and given checksums without downloading valid panels again.", [{ text: "Later", style: "cancel" }, { text: "Repair", onPress: () => startDownload(item, (bad.length ? bad : item.localChapters || []).join(",")) }]);
+      if (bad.length || legacy) showSheet("Chapter check complete", bad.length ? `${bad.length} chapters need repair. Valid original panels will be kept.` : "Older chapters can be checked by Android and given checksums without downloading valid panels again.", [{ text: "Later", style: "cancel" }, { text: "Repair", onPress: () => startDownload(item, (bad.length ? bad : item.localChapters || []).join(",")) }]);
     } finally { setBusy(""); }
   }
   function erase(item: Series, all = false) {
     const ids = (item.localChapters || []).filter(id => read[item.slug]?.[id]);
-    Alert.alert(all ? "Delete all downloads for this story?" : `Delete ${ids.length} read chapters?`, "Bookmarks, lists and read history will stay.", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: () => void removeDownloads(item, ids, all).then(() => setSummary(storageSummary())) }]);
+    showSheet(all ? "Delete all downloads for this story?" : `Delete ${ids.length} read chapters?`, "Bookmarks, lists and read history will stay.", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: () => void removeDownloads(item, ids, all).then(() => setSummary(storageSummary())) }]);
   }
   function clearAllRead() {
     const stories = catalog.filter(item => item.localChapters?.some(id => read[item.slug]?.[id]));
-    Alert.alert("Delete all read downloads?", `${stories.length} stories contain read chapters. Active or queued downloads will be skipped. Your reading history stays.`, [{ text: "Cancel", style: "cancel" }, { text: "Delete read", style: "destructive", onPress: () => { void (async () => { for (const item of stories) await removeDownloads(item, (item.localChapters || []).filter(id => read[item.slug]?.[id])); setSummary(storageSummary()); })(); } }]);
+    showSheet("Delete all read downloads?", `${stories.length} stories contain read chapters. Active or queued downloads will be skipped. Your reading history stays.`, [{ text: "Cancel", style: "cancel" }, { text: "Delete read", style: "destructive", onPress: () => { void (async () => { for (const item of stories) await removeDownloads(item, (item.localChapters || []).filter(id => read[item.slug]?.[id])); setSummary(storageSummary()); })(); } }]);
   }
   return <Page title="Storage" subtitle="ON THIS PHONE" action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>}><View style={{ paddingHorizontal: 22 }}>
     {!summary ? <ActivityIndicator color={color.lilac} /> : <><Text style={ui.title}>{formatBytes(summary.stories.reduce((sum, row) => sum + row.bytes, 0))} of chapters</Text><Text style={[ui.muted, { marginVertical: 10 }]}>{formatBytes(summary.free)} free on phone · {formatBytes(summary.covers)} cached covers</Text></>}

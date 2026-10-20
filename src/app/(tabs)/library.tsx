@@ -1,5 +1,6 @@
+import { useActionSheet } from "../../components/action-sheet";
 import { useCallback, useState } from "react";
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useShelf } from "../../lib/app-state";
 import { readingHistory } from "../../lib/storage";
@@ -12,6 +13,7 @@ import { nextUnread, ReadingList, type Series } from "../../lib/parser";
 import { READING_LISTS } from "../../components/story-options";
 
 export default function Library() {
+  const showSheet = useActionSheet();
   const { catalog, saved, read, updates, removeDownloads, deleting, downloadBusy } = useShelf();
   const [scope, setScope] = useState<"downloads" | "bookmarked" | "liked" | "lists">("downloads");
   const [updatesOnly, setUpdatesOnly] = useState(false);
@@ -25,11 +27,11 @@ export default function Library() {
   const library = catalog.filter(item => (scope === "downloads" ? item.hasLocalFiles : scope === "lists" ? saved[item.slug]?.list : saved[item.slug]?.[scope]) && (!updatesOnly || updateCount(item.slug, item.chapterIds) > 0) && (list === "all" || saved[item.slug]?.list === list) && (!unreadOnly || item.localChapters?.some(id => !read[item.slug]?.[id]))).sort((a, b) => sort === "title" ? a.title.localeCompare(b.title) : (Date.parse(sort === "updated" ? b.updatedAt || "" : history[b.slug]?.readAt || b.syncedAt || "") || 0) - (Date.parse(sort === "updated" ? a.updatedAt || "" : history[a.slug]?.readAt || a.syncedAt || "") || 0));
   const filtered = updatesOnly || unreadOnly || list !== "all";
   function showActions(item: Series) {
-    Alert.alert(item.title, "Manage the chapters saved on this phone.", [
+    showSheet(item.title, "Manage the chapters saved on this phone.", [
       { text: "Saved chapters", onPress: () => router.push({ pathname: "/series/[slug]", params: { slug: item.slug, filter: "downloaded" } }) },
       { text: "Delete saved files", style: "destructive", onPress: () => {
-        if (downloadBusy(item.slug)) { Alert.alert("Download in progress", "Pause or cancel this story’s download before deleting saved files."); return; }
-        Alert.alert("Delete all saved files?", "Chapters and partial files for this story will be deleted. Bookmarks and read history stay.", [
+        if (downloadBusy(item.slug)) { showSheet("Download in progress", "Pause or cancel this story’s download before deleting saved files."); return; }
+        showSheet("Delete all saved files?", "Chapters and partial files for this story will be deleted. Bookmarks and read history stay.", [
           { text: "Cancel", style: "cancel" },
           { text: "Delete", style: "destructive", onPress: () => { void removeDownloads(item, [], true); } },
         ]);

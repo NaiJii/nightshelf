@@ -15,6 +15,7 @@ const modules = {
   "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", Alert: { alert: (...args) => alerts.push(args) } },
   "expo-router": { router: { push: route => routes.push(route) }, useFocusEffect: () => {} },
   "../../lib/app-state": { useShelf: () => shelf },
+  "../../components/action-sheet": { useActionSheet: () => (...args) => alerts.push(args) },
   "../../lib/storage": { readingHistory: () => ({}) },
   "../../lib/parser": { nextUnread: () => "1" },
   "../../lib/release-policy": { unreadReleases: () => [] },
@@ -32,7 +33,7 @@ const button = nodes(exports.default()).find(node => node.props?.accessibilityLa
 assert.ok(button?.props.onPress, "library dots expose a working action handler");
 button.props.onPress();
 const actions = alerts.at(-1)[2];
-assert.equal(actions.length, 3, "Android alerts support at most three actions");
+assert.ok(actions.some(action => action.style === "cancel"), "the action sheet can be dismissed without choosing an operation");
 actions.find(action => action.text === "Saved chapters").onPress();
 assert.equal(routes.at(-1).params.filter, "downloaded");
 const erase = actions.find(action => action.text === "Delete saved files");

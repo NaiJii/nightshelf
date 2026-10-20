@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import { loadCatalog } from "../lib/storage";
 import { StatusBar } from "expo-status-bar";
 import { AppProvider } from "../lib/app-state";
+import { ActionSheetProvider } from "../components/action-sheet";
 
 export default function RootLayout() {
   useEffect(() => {
@@ -24,8 +25,10 @@ export default function RootLayout() {
   }, []);
   return (
     <AppProvider>
-      <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0b0b10" } }} />
+      <ActionSheetProvider>
+        <StatusBar style="light" />
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0b0b10" } }} />
+      </ActionSheetProvider>
     </AppProvider>
   );
 }

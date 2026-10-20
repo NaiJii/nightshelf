@@ -1,4 +1,5 @@
-import { ActivityIndicator, Alert, Pressable, Text, View } from "react-native";
+import { useActionSheet } from "./action-sheet";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { useShelf } from "../lib/app-state";
 import { openSeries } from "./series-card";
 import { color, Icon, ui } from "./ui";
@@ -7,6 +8,7 @@ import { router } from "expo-router";
 import { queueSummary } from "../lib/background-downloads";
 
 export function DownloadList({ slug: scope }: { slug?: string } = {}) {
+  const showSheet = useActionSheet();
   const { downloads: allDownloads, pauseDownload, resumeDownload, cancelDownload } = useShelf();
   const downloads = scope ? allDownloads.filter(job => job.series.slug === scope) : allDownloads;
   if (!downloads.length) return null;
@@ -15,7 +17,7 @@ export function DownloadList({ slug: scope }: { slug?: string } = {}) {
   const paused = allDownloads.filter(job => job.status === "paused").length;
   const waiting = allDownloads.filter(job => job.status === "waiting").length;
   function cancel(slug: string) {
-    Alert.alert("Stop this download?", "Keep the chapters already saved, or delete ALL saved chapters and partial files for this story, including earlier downloads. Bookmarks and read history stay.", [
+    showSheet("Stop this download?", "Keep the chapters already saved, or delete ALL saved chapters and partial files for this story, including earlier downloads. Bookmarks and read history stay.", [
       { text: "Continue", style: "cancel" },
       { text: "Stop · keep files", onPress: () => void cancelDownload(slug) },
       { text: "Stop · delete all", style: "destructive", onPress: () => void cancelDownload(slug, true) },
