@@ -54,7 +54,8 @@ export function mergeDiscovery(fresh: Series, previous?: Series): Series {
 
 export function chapterListCached(item: Series): boolean {
   if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
-  return sourceOf(item) === "asura" || item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
+  if (sourceOf(item) === "asura") return kindOf(item) === "novel" || new Set(item.chapterIds).size >= item.chapterCount;
+  return item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
 }
 export function chapterList(source: string[] = [], saved: string[] = [], read: Record<string, string> = {}, filter = "all", query = "", newest = true, titles: Record<string, string> = {}): string[] {
   const owned = new Set(saved);
@@ -165,7 +166,7 @@ export function parseSeries(source: string, url: string): Series {
     bookmarks: beforeLabel(text, "Bookmarks"),
     status: afterLabel(text, "Status"),
     type: afterLabel(text, "Type"),
-    chapterCount: chapters.length,
+    chapterCount: Number(text.match(/\b([\d,]+)\s+Chapters\b/i)?.[1].replace(/,/g, "")) || chapters.length,
     chapterIds: chapters.map(chapter => chapter.id),
     latestChapter: chapters.at(-1)?.id ?? "",
     kind: new URL(url).pathname.startsWith("/novels/") ? "novel" : "comic",

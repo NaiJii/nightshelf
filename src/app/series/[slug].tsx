@@ -6,7 +6,7 @@ import { useShelf } from "../../lib/app-state";
 import { Chip, color, Cover, Icon, ui } from "../../components/ui";
 import { PublicationStatus, SaveActions } from "../../components/story-row";
 import { DownloadList } from "../../components/download-list";
-import { chapterList, kindOf, nextUnread, sourceOf, formatRating } from "../../lib/parser";
+import { chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating } from "../../lib/parser";
 import { readingHistory } from "../../lib/storage";
 import { estimateDownload, formatBytes, freeBytes } from "../../lib/library-tools";
 import { StoryOptions } from "../../components/story-options";
@@ -29,6 +29,8 @@ export default function SeriesDetails() {
   const rating = formatRating(item.rating);
   const ledger = read[slug] || {};
   const all = chapterList(item.chapterIds, owned);
+  const fullList = chapterListCached(item);
+  const loadingChapters = detailsLoading.includes(slug);
   const visible = chapterList(item.chapterIds, owned, ledger, filter, query, newest, item.chapterTitles);
   const chosen = selected.filter(id => all.includes(id));
   const missing = chosen.filter(id => !owned.includes(id));
@@ -77,10 +79,11 @@ export default function SeriesDetails() {
         <DownloadList slug={slug} />
         <View style={[ui.row, { marginTop: 18, justifyContent: "space-between" }]}><Text style={ui.title}>Chapters</Text><Pressable accessibilityLabel="Chapter actions" onPress={() => Alert.alert("Chapter actions", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Mark all read / unread", onPress: () => mark(all) }, ...(item.hasLocalFiles ? [{ text: "Delete all saved files", style: "destructive" as const, onPress: () => { if (blocked) Alert.alert("Download in progress", "Pause or cancel this story’s download first."); else erase([], true); } }] : [])])} style={{ padding: 12 }}><Icon name="ellipsis-horizontal" /></Pressable></View>
         <Text style={[ui.muted, { fontSize: 12 }]}>{owned.length} saved · {all.filter(id => ledger[id]).length} read · {all.length} available</Text>
+        {loadingChapters && <View accessibilityLiveRegion="polite" style={[ui.row, { paddingVertical: 12 }]}><ActivityIndicator size="small" color={color.lilac} /><Text style={ui.muted}>{fullList ? "Refreshing chapters…" : "Loading the full chapter list…"}</Text></View>}
         <Text style={[ui.muted, { fontSize: 11 }]}>{kindOf(item) === "novel" ? "Public chapters only. " : ""}Tap saved to read; use checkboxes to select.</Text>
         <TextInput accessibilityLabel="Search chapters" placeholder="Find a chapter…" placeholderTextColor={color.muted} value={query} onChangeText={setQuery} style={{ color: color.text, padding: 14, borderRadius: 12, backgroundColor: color.surface, marginTop: 14 }} />
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, marginVertical: 12 }}>{[["all", "All"], ["unread", "Unread"], ["saved", "Saved"]].map(([key, label]) => <Chip key={key} text={label} active={filter === key} onPress={() => setFilter(key)} />)}<Chip text={newest ? "Newest ↓" : "Oldest ↑"} onPress={() => setNewest(value => !value)} /></View>
-        <View style={[ui.row, { flexWrap: "wrap", paddingBottom: 12 }]}><Pressable disabled={deleting || !visible.length} onPress={() => setSelected(current => [...new Set([...current, ...visible])])} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Select filtered ({visible.length})</Text></Pressable><Pressable disabled={deleting} onPress={() => setSelected(chapterList(item.chapterIds, owned, ledger, "unread", "", false).filter(id => !owned.includes(id)).slice(0, 5))} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Next 5 unread</Text></Pressable></View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, marginVertical: 12 }}>{[["all", "All chapters"], ["unread", "Unread"], ["saved", "Saved only"]].map(([key, label]) => <Chip key={key} text={label} active={filter === key} onPress={() => setFilter(key)} />)}<Chip text="Newest first" active={newest} onPress={() => setNewest(true)} /><Chip text="Oldest first" active={!newest} onPress={() => setNewest(false)} /></View>
+        <View style={[ui.row, { flexWrap: "wrap", paddingBottom: 12 }]}><Pressable disabled={deleting || !visible.length || (loadingChapters && !fullList)} onPress={() => setSelected(current => [...new Set([...current, ...visible])])} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Select filtered ({visible.length})</Text></Pressable><Pressable disabled={deleting || !fullList} accessibilityState={{ disabled: deleting || !fullList }} onPress={() => setSelected(chapterList(item.chapterIds, owned, ledger, "unread", "", false).filter(id => !owned.includes(id)).slice(0, 5))} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Next 5 unread</Text></Pressable></View>
       </>}
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes are listed on WEBTOON for this story. App-only and restricted episodes are unavailable here." : "No chapters cached yet. Pull down while online to load them.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {

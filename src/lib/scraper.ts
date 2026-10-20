@@ -137,6 +137,7 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     const html = await getText(item.url, guard, undefined, signal);
     fresh = { ...parseSeries(html, item.url), chapterIds: parseChapters(html, item.url).map(chapter => chapter.id) };
     if (!fresh.chapterCount || !fresh.cover) throw new Error("Story details are unavailable.");
+    if (loadChapters && fresh.chapterIds!.length < fresh.chapterCount) throw new Error("The website returned an incomplete chapter list. Pull down to retry; older chapters have not all loaded yet.");
   }
   if (!loadChapters) { delete fresh.chapterIds; delete fresh.chapterUrls; delete fresh.chapterTitles; }
   return { ...item, ...fresh, summary: fresh.summary || item.summary, detailsCached: loadChapters || item.detailsCached, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, metadataSyncedAt: new Date().toISOString(), syncedAt: loadChapters ? new Date().toISOString() : item.syncedAt };

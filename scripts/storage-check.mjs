@@ -163,6 +163,7 @@ export async function fetch(url,options={}){
   if(new URL(url).hostname==='img-r1.2xstorage.com' && options.headers.Referer!=='https://www.mangakakalot.gg/') throw Error('CDN requires the source root referrer');
   if(['storage.vortexscans.org','img-r1.2xstorage.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(url==='https://asurascans.com/comics/repair')return {ok:true,text:async()=>'<meta property="og:title" content="Repair"><meta property="og:image" content="https://cdn/repair.webp"><div>9.7 Rating 1 Chapters</div><a href="/comics/repair/chapter/1">Chapter 1</a>'};
+  if(url==='https://asurascans.com/comics/partial')return {ok:true,text:async()=>'<meta property="og:title" content="Partial"><meta property="og:image" content="https://cdn/cover.webp"><div>201 Chapters</div><a href="/comics/partial/chapter/199">199</a><a href="/comics/partial/chapter/200">200</a>'};
   if(url==='https://asurascans.com/comics/repair/chapter/1')return {ok:true,text:async()=>'<img data-page-index="0" src="https://cdn/a.webp"><img data-page-index="1" src="https://cdn/b.webp">'};
   if(['https://cdn/a.webp','https://cdn/b.webp'].includes(url))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([1,2,3,4])};
   if(url==='https://cdn/image.webp')return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>{imagePending=true;return new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));}};
@@ -190,6 +191,11 @@ export async function fetch(url,options={}){
     storage.saveCatalog([{...cached,title:'Example',url:'https://asurascans.com/comics/example',summary:'',detailsCached:false,syncedAt:new Date().toISOString()}]);
     const {syncCatalog,downloadChapters,browseCatalog,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
     const http = await import('expo/fetch'); const {requests} = http;
+    const partialStory={...cached,slug:'partial',url:'https://asurascans.com/comics/partial',detailsCached:false,chapterIds:undefined};
+    await assert.rejects(()=>refreshSeries(partialStory,async()=>{}),/incomplete chapter list/,'partial source responses cannot be saved as complete lists');
+    const partialOverview=await refreshSeries(partialStory,async()=>{},undefined,false);
+    assert.equal(partialOverview.chapterCount,201,'overview totals use the published count rather than the two visible chapter links');
+    assert.equal(partialOverview.chapterIds,undefined,'overview metadata does not certify a partial chapter list');
     let synced = await syncCatalog(()=>{},async()=>{});
     assert.equal(synced.find(item=>item.slug==='example').summary,fullSummary,'ranked stories fetch and persist full summaries without opening them');
     assert.equal(synced.find(item=>item.slug==='novel--example').summary,'The full novel summary.');

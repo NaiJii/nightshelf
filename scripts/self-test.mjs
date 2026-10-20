@@ -26,13 +26,19 @@ assert.equal(formatRating("10"), "10.0");
 assert.equal(formatRating(""), "");
 assert.equal(formatRating("NaN"), "");
 assert.equal(formatRating("4/0"), "");
-import { chapterList } from "../src/lib/parser.ts";
+import { chapterList, chapterListCached } from "../src/lib/parser.ts";
 
 assert.deepEqual(chapterList(["2", "10", "1", "2.5"], ["3", "2"]), ["10", "3", "2.5", "2", "1"]);
 assert.deepEqual(chapterList(undefined, ["3", "1"]), ["3", "1"]);
 assert.deepEqual(chapterList(["1", "2", "3"], ["2"], { "3": "date" }, "unread", "", false), ["1", "2"]);
 assert.deepEqual(chapterList(["1", "2", "12"], ["1", "12"], {}, "saved", "Chapter 1"), ["12", "1"]);
 assert.deepEqual(chapterList(["1"], [], {}, "saved"), []);
+const soloIds=Array.from({length:201},(_,index)=>String(index));
+const soloStory={url:'https://asurascans.com/comics/solo-leveling',kind:'comic',detailsCached:true,chapterCount:201,chapterIds:soloIds.slice(-6)};
+assert.equal(chapterListCached(soloStory),false,'a recent-chapters-only cache cannot stand in for all Solo Leveling chapters');
+assert.equal(chapterListCached({...soloStory,chapterIds:soloIds}),true);
+assert.deepEqual(chapterList(soloIds,soloIds.slice(-6),{},'all','',false).slice(0,3),['0','1','2'],'oldest-first uses the full available list, including chapter zero');
+assert.deepEqual(chapterList(soloIds,soloIds.slice(-6),{},'saved','',false),soloIds.slice(-6),'saved-only intentionally remains restricted to downloaded chapters');
 assert.deepEqual(chapterList(["414", "413"], [], {}, "all", "395", true, { "414": "Episode 395", "413": "Episode 394" }), ["414"]);
 
 const series = `<title>Example | Asura Scans</title><meta property="og:title" content="Example | Asura Scans"><meta property="og:image" content="https://cdn/cover.webp"><div>9.7 Rating 12 Chapters 2K Bookmarks Status ongoing Type manhwa</div><a href="/comics/example/chapter/2">Chapter 2</a><a href="/comics/example/chapter/1">Chapter 1</a>`;
