@@ -37,7 +37,7 @@ jobs:
           npm run typecheck
           npm run lint
       - name: Install Android build tools
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"'
       - name: Build and verify signed ARM64 APK
         env:
           ANDROID_SIGNING_CREDENTIALS: ${{ secrets.ANDROID_SIGNING_CREDENTIALS }}
