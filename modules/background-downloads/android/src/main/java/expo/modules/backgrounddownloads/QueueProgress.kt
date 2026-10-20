@@ -21,6 +21,8 @@ object QueueProgress {
       if (job.optBoolean("native") && job.getString("id") !in ids && state(context, job.getString("id")).optString("state") == "done") completed++
     }
     DownloadService.atomic(file(context), JSONObject().put("jobs", jobs).put("completed", completed).toString())
+    val order = (0 until jobs.length()).map { jobs.getJSONObject(it).getString("id") }
+    if (order != (0 until old.length()).map { old.getJSONObject(it).getString("id") }) DownloadService.reorder(order)
   }
   @Synchronized fun register(context: Context, id: String) {
     val current = read(context)

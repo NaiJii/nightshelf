@@ -481,6 +481,11 @@ export async function fetch(url,options={}){
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.target.startsWith(storage.LIBRARY.uri+'/')));
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.hash),'native repair plans carry existing checksums');
     assert.equal(native.plans[0].allowMetered,false,'a Wi-Fi download does not silently authorize future metered transfers');
+    new File(storage.chapterDirectory('repair','1'),'001.webp').write('damaged');
+    const nativePlanCount=native.plans.length;
+    await downloadChapters(repairStory,'1',()=>{},async()=>{},undefined,['1'],undefined,undefined,false,false,false);
+    assert.equal(native.plans.length,nativePlanCount,'reader downloads do not replace an existing Android series plan');
+    assert.equal(storage.chapterIntact('repair','1'),true,'reader fallback saves complete verified original panels');
     const kakalotStory=storage.loadCatalog().find(item=>item.slug==='mangakakalot-example');
     await downloadChapters(kakalotStory,'1',()=>{},async()=>{});
     assert.equal(native.plans.at(-1).chapters[0].files[0].referer,'https://www.mangakakalot.gg/','Android transfer plans use the same working image referrer as covers');

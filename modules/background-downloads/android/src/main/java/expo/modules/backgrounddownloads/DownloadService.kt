@@ -15,11 +15,19 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class DownloadService : Service() {
-  private val executor = Executors.newFixedThreadPool(2)
+  private class TransferTask(val id: String, val action: () -> Unit) : Runnable { override fun run() = action() }
+  private val executor = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue<Runnable>())
+  @Synchronized private fun reorder() {
+    val pending = ArrayList<Runnable>()
+    executor.queue.drainTo(pending)
+    pending.sortedBy { task -> queueOrder.indexOf((task as TransferTask).id).let { if (it < 0) Int.MAX_VALUE else it } }.forEach { executor.execute(it) }
+  }
   private val serviceJobs = ConcurrentHashMap<String, AtomicBoolean>()
   private val started = ConcurrentHashMap<String, AtomicBoolean>()
   private val preparing = ConcurrentHashMap.newKeySet<String>()
@@ -27,15 +35,16 @@ class DownloadService : Service() {
   override fun onBind(intent: Intent?) = null
   override fun onCreate() {
     super.onCreate(); instance = this
+    try { val jobs = JSONObject(File(directory(this), "queue.json").readText()).getJSONArray("jobs"); queueOrder = (0 until jobs.length()).map { jobs.getJSONObject(it).getString("id") } } catch (_: Exception) {}
     val manager = getSystemService(NotificationManager::class.java)
     if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Offline downloads", NotificationManager.IMPORTANCE_LOW))
     val notification = notification("Preparing offline downloads…", 0)
     if (Build.VERSION.SDK_INT >= 29) startForeground(NOTICE, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) else startForeground(NOTICE, notification)
     wake = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NightShelf:Downloads").apply { acquire(6 * 60 * 60 * 1000L) }
     // Android may recreate a killed service. Persisted batches resume without JS.
-    directory(this).listFiles()?.filter { it.name.endsWith(".plan") }?.forEach { file ->
+    directory(this).listFiles()?.filter { it.name.endsWith(".plan") }?.sortedBy { queueOrder.indexOf(it.name.removeSuffix(".plan")).let { rank -> if (rank < 0) Int.MAX_VALUE else rank } }?.forEach { file ->
       val id = file.name.removeSuffix(".plan")
-      try { if (JSONObject(File(directory(this), "$id.state").readText()).optString("state") == "running") run(id) } catch (_: Exception) {}
+      try { if (JSONObject(File(directory(this), "$id.state").readText()).optString("state") in listOf("running", "queued")) run(id) } catch (_: Exception) {}
     }
   }
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -64,23 +73,27 @@ class DownloadService : Service() {
   private fun run(id: String) {
     val cancelled = acquire(id) ?: return
     serviceJobs[id] = cancelled
-    state(this, id, "running", "Saving chapters…", 0.0)
-    executor.execute {
+    state(this, id, "queued", "Queued by Android", 0.0)
+    executor.execute(TransferTask(id) {
       var retry = false
       try {
         if (cancelled.get()) throw InterruptedException("Paused")
         started[id] = cancelled
+        state(this, id, "running", "Saving chapters…", 0.0)
         TransferEngine(this).execute(id, cancelled) { message, progress -> update(message, progress) }
       } catch (error: Exception) {
         if (running[id] === cancelled) state(this, id, if (cancelled.get() || error is InterruptedException) "paused" else if (error is NetworkWait) "waiting" else "error", error.message ?: "Download failed", 0.0)
         retry = error is NetworkWait && !wasUserPaused(id)
       } finally { started.remove(id, cancelled); serviceJobs.remove(id, cancelled); running.remove(id, cancelled); if (retry && !wasUserPaused(id)) DownloadWorker.enqueue(this, id); Handler(Looper.getMainLooper()).post { stopIfIdle() } }
-    }
+    })
+    reorder()
   }
   private fun stopIfIdle() { Handler(Looper.getMainLooper()).postDelayed({ if (serviceJobs.isEmpty() && preparing.isEmpty()) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() } }, 5000) }
   override fun onTimeout(startId: Int, fgsType: Int) { serviceJobs.keys.toList().forEach { pause(it) }; preparing.clear(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
   override fun onDestroy() { serviceJobs.keys.toList().forEach { pause(it) }; wake?.let { if (it.isHeld) it.release() }; instance = null; executor.shutdown(); super.onDestroy() }
   companion object {
+    @Volatile private var queueOrder: List<String> = emptyList()
+    fun reorder(ids: List<String>) { queueOrder = ids; instance?.reorder() }
     fun makeNotification(context: Context, message: String, progress: Int): Notification {
     if (Build.VERSION.SDK_INT >= 26) context.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Offline downloads", NotificationManager.IMPORTANCE_LOW))
     val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.let { PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT) }

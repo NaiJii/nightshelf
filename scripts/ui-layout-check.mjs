@@ -27,7 +27,7 @@ function component(file, extraModules = {}) {
   const exports = {};
   const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, require: name => { if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; assert.ok(modules[name], name); return modules[name]; } });
-  return { effects, render(name, props) { cursor = 0; effects.length = 0; return exports[name](props); } };
+  return { effects, render(name, ...args) { cursor = 0; effects.length = 0; return exports[name](...args); } };
 }
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
 const touch=component('../src/components/pressable.tsx');
@@ -295,3 +295,73 @@ assert.equal(feedNodes.filter(node=>node.type==='Pressable'&&node.props?.accessi
 const feedStory=feedNodes.find(node=>node.props?.accessibilityLabel==='Example, 1 new chapter');assert.ok(feedStory,'read chapters and duplicate releases are excluded');
 feedStory.props.onPress();assert.equal(releaseRoutes.at(-1).params.filter,'unread');
 console.log('Auto-download icon, release alert proposal, grouped feed and unread navigation checks passed');
+
+const readerSheets=[], readerRoutes=[], readerFetches=[];
+const readerSaved=new Set(['1']);let readerFocus;
+const readerShelf={preferences:{readerContinuous:true,readerPrefetch:true},fetchReaderChapter:(slug,chapter,automatic,signal,progress)=>new Promise((resolve,reject)=>{
+  readerFetches.push({slug,chapter,automatic,signal,progress,resolve:()=>{readerSaved.add(chapter);resolve();}});
+  signal.addEventListener('abort',()=>reject(Object.assign(new Error('Cancelled'),{name:'AbortError'})),{once:true});
+})};
+const readerNavigation=component('../src/components/use-reader-navigation.ts',{
+  'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
+  'expo-router':{router:{replace:route=>readerRoutes.push(route)},useFocusEffect:callback=>{readerFocus=callback;}},
+  '../lib/app-state':{useShelf:()=>readerShelf},
+  '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter)},
+  './action-sheet':{useActionSheet:()=>(...args)=>readerSheets.push(args)},
+});
+const readerNav=()=>readerNavigation.render('useReaderNavigation','example','Example','2');
+let nav=readerNav();const leaveReader=readerFocus();
+nav.go('2');assert.equal(readerFetches.length,0,'missing manual navigation requests consent first');
+readerSheets.at(-1)[2].find(action=>action.text==='Download and read').onPress();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerFetches[0].automatic,false);assert.equal(readerRoutes.length,0,'reader stays put until saved');
+readerFetches[0].resolve();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.at(-1).params.chapter,'2');assert.equal(readerRoutes.at(-1).params.entry,'start');
+readerSaved.delete('2');readerFetches.length=0;
+nav=readerNav();nav.prefetch(.7);nav.prefetch(.8);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerFetches.length,1,'prefetch does not launch duplicate writers');assert.equal(readerFetches[0].automatic,true);
+nav.go('2',true);readerFetches[0].resolve();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerFetches.length,1,'edge navigation reuses in-flight prefetch');
+nav=readerNav();nav.go('1',true,true);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.at(-1).params.entry,'end','continuous backward navigation lands at the previous end');
+readerShelf.preferences.readerContinuous=false;nav=readerNav();const routesBefore=readerRoutes.length;nav.go('1',true);
+assert.equal(readerRoutes.length,routesBefore,'continuous navigation can be disabled');
+readerShelf.preferences.readerContinuous=true;readerSaved.delete('2');nav=readerNav();nav.go('2');readerSheets.at(-1)[2].find(action=>action.text==='Download and read').onPress();await new Promise(resolve=>setTimeout(resolve,0));
+leaveReader();assert.ok(readerFetches.at(-1).signal.aborted,'leaving the reader aborts its writer');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.length,routesBefore,'an aborted download never navigates after leaving');
+console.log('Reader download consent, prefetch deduplication, continuous settings and cancellation checks passed');
+
+let readerNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}}, closeReaderWriter;
+const directReaderCalls=[], readerDeletions=[];
+const intactReaderChapters=new Set(['1']);
+const readerStory={...story,chapterIds:['1','2'],localChapters:['1']};
+const readerProvider=component('../src/lib/app-state.tsx',{
+  'expo-router':{usePathname:()=>'/reader/example/1'},
+  'react-native':{AppState:{currentState:'active'}},
+  '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>readerNetwork}},
+  './parser':parser,'./release-policy':releasePolicy,
+  './storage':{catalogMetadata:()=>[readerStory],loadCatalogAsync:async()=>[readerStory],loadPreferences:()=>({source:'asura',deleteAfterReading:true,autoDownloadLimitMB:2048}),savedStories:()=>({}),readChapters:()=>({example:{'1':'read'}}),releaseUpdates:()=>({}),loadDownloads:()=>[],localChapters:()=>['1'],chapterIntact:(_,chapter)=>intactReaderChapters.has(chapter),deleteChapters:(...args)=>readerDeletions.push(args)},
+  './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});intactReaderChapters.add(args[1]);}},
+  './network':{networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
+  './network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
+  './releases':{},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];isBusy(){return false;}}},
+  './request-control':requestControl,'./background-downloads':{transferStates:()=>({})},
+  './library-tools':{freeBytes:()=>1024**3,libraryBytesAsync:async()=>0},
+});
+const readerApp=()=>readerProvider.render('AppProvider',{}).props.value;
+const directSignal=new AbortController();
+const directDownload=readerApp().fetchReaderChapter('example','2',true,directSignal.signal,()=>{});
+const duplicateDownload=readerApp().fetchReaderChapter('example','2',true,directSignal.signal,()=>{});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(directReaderCalls.length,1,'the app enforces a single reader writer per story');
+assert.equal(directReaderCalls[0][10],false,'reader transfer cannot replace Android queue plans');
+assert.equal(readerApp().downloadBusy('example'),true);
+assert.equal(await readerApp().removeDownloads(readerStory,[],true),false,'deletion is blocked while a reader writer is active');
+readerApp().leaveChapter('example','1');
+assert.equal(readerDeletions.length,1,'delete-after-reading remains available while a different chapter is prefetched');
+closeReaderWriter();await Promise.all([directDownload,duplicateDownload]);
+assert.equal(readerApp().downloadBusy('example'),false,'writer lock is released after saving');
+intactReaderChapters.delete('2');readerNetwork={type:'cellular',isConnected:true};
+await assert.rejects(()=>readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{}),/unmetered Wi-Fi/);
+assert.equal(directReaderCalls.length,1,'speculative downloads never use cellular');
+console.log('Reader writer locks, deletion safety and Wi-Fi prefetch policy checks passed');

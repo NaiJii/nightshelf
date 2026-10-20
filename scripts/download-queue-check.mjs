@@ -138,3 +138,19 @@ const interrupted=new DownloadQueue([nativeJob],async()=>"native",()=>{},()=>{},
 interrupted.reconcileNative({reopened:{state:'running',active:false,hasPlan:true,message:'Saving',progress:.25}});
 assert.equal(interrupted.jobs[0].status,'waiting','an interrupted native writer must offer resume instead of an endless spinner');
 console.log('Restart, background recovery, terminal completion, pause intent and metered-resume regression checks passed');
+
+let allowPriority=false;const priorityOrder=[];
+const priority=new DownloadQueue([],async(job)=>{priorityOrder.push(job.series.slug);return new Promise(()=>{});},()=>{},()=>{},()=>allowPriority);
+for(const id of ['first','second','third'])priority.enqueue(series(id),'1');
+const prioritySnapshot=priority.getStatusSnapshot();
+priority.move('third',-1);priority.move('third',-1);
+assert.deepEqual(priority.jobs.map(job=>job.series.slug),['third','first','second']);
+assert.notEqual(priority.getStatusSnapshot(),prioritySnapshot,'order changes reach status subscribers and persistence');
+allowPriority=true;priority.pump();await tick();
+assert.deepEqual(priorityOrder,['third','first'],'promoted jobs are prepared first');
+priority.move('third',1);
+assert.deepEqual(priorityOrder,['third','first'],'reordering does not interrupt active work');
+const nativePriority=new DownloadQueue([{series:series('native-a'),status:'queued',native:true},{series:series('native-b'),status:'queued',native:true}],async()=>{},()=>{},()=>{},()=>false);
+nativePriority.move('native-b',-1);
+assert.deepEqual(nativePriority.jobs.map(job=>job.series.slug),['native-b','native-a'],'Android-waiting jobs can be reordered after handoff');
+console.log('Download priority checks passed');

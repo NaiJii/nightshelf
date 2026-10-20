@@ -10,7 +10,7 @@ import { queueSummary } from "../lib/background-downloads";
 
 export function DownloadList({ slug: scope }: { slug?: string } = {}) {
   const showSheet = useActionSheet();
-  const { pauseDownload, resumeDownload, cancelDownload } = useShelf();
+  const { pauseDownload, resumeDownload, cancelDownload, moveDownload } = useShelf();
   const allDownloads = useDownloads();
   const downloads = scope ? allDownloads.filter(job => job.series.slug === scope) : allDownloads;
   if (!downloads.length) return null;
@@ -18,6 +18,7 @@ export function DownloadList({ slug: scope }: { slug?: string } = {}) {
   const percent = Math.floor((scope ? downloads[0].progress : overall.progress) * 100);
   const paused = allDownloads.filter(job => job.status === "paused").length;
   const waiting = allDownloads.filter(job => job.status === "waiting").length;
+  const queued = allDownloads.filter(job => job.status === "queued");
   function cancel(slug: string) {
     showSheet("Stop this download?", "Keep the chapters already saved, or delete ALL saved chapters and partial files for this story, including earlier downloads. Bookmarks and read history stay.", [
       { text: "Continue", style: "cancel" },
@@ -35,6 +36,10 @@ export function DownloadList({ slug: scope }: { slug?: string } = {}) {
       {job.status === "error" && sourceOf(job.series) === "mangakakalot" && /verification/i.test(job.message) && <Pressable onPress={() => router.push({ pathname: "/verify-source", params: { source: sourceOf(job.series) } })} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify source</Text></Pressable>}
       <View accessibilityRole="progressbar" accessibilityLabel={`${job.series.title} download`} accessibilityValue={{ min: 0, max: 100, now: Math.floor(job.progress * 100) }} style={{ height: 3, backgroundColor: color.raised, borderRadius: 3, marginTop: 9 }}><View style={{ width: `${job.progress * 100}%`, height: 3, backgroundColor: color.lilac, borderRadius: 3 }} /></View>
       <View style={[ui.row, { justifyContent: "flex-end", gap: 8 }]}>{job.status !== "cancelling" && <>
+        {queued.some(value => value.series.slug === slug) && queued.length > 1 && <>
+          <Pressable accessibilityLabel={`Move ${job.series.title} earlier in queue`} disabled={queued[0].series.slug === slug} onPress={() => moveDownload(slug, -1)} style={{ padding: 12, opacity: queued[0].series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-up" size={18} tint={color.lilac} /></Pressable>
+          <Pressable accessibilityLabel={`Move ${job.series.title} later in queue`} disabled={queued.at(-1)?.series.slug === slug} onPress={() => moveDownload(slug, 1)} style={{ padding: 12, opacity: queued.at(-1)?.series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-down" size={18} tint={color.lilac} /></Pressable>
+        </>}
         {job.status === "downloading" || job.status === "queued" ? <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={[ui.row, { padding: 12, gap: 5 }]}><Icon name="pause" size={15} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12 }}>Pause</Text></Pressable> : <Pressable accessibilityLabel={`Resume ${job.series.title}`} onPress={() => resumeDownload(slug)} style={[ui.row, { padding: 12, gap: 5 }]}><Icon name="play" size={15} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12 }}>{job.status === "error" ? "Retry" : "Resume"}</Text></Pressable>}
         {job.status === "waiting" && <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{ padding: 12, minHeight: 44 }}><Text style={{ color: color.lilac, fontSize: 12 }}>Pause</Text></Pressable>}
         <Pressable accessibilityLabel={`Stop ${job.series.title}`} onPress={() => cancel(slug)} style={{ padding: 12, minHeight: 44 }}><Text style={{ color: color.muted, fontSize: 12 }}>Stop</Text></Pressable>

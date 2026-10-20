@@ -14,22 +14,35 @@ ${novel ? `<main class="novel"><h1>${escape(novel.title)}</h1>${novel.paragraphs
 let timer; const images = [...document.images]; let restored = false, finished = false;
 window.readerActive = false;
 window.readerChromeVisible = false;
+window.readerContinuous = false;
+let swipe;
 let tapTimer, tapPoint, touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
 function hideControls() { window.readerChromeVisible = false; window.ReactNativeWebView.postMessage(JSON.stringify({controls:'hide'})); }
 addEventListener('touchstart', event => {
   if (event.touches.length > 1) hideControls();
   const finger = event.touches[0];
+  swipe = event.touches.length === 1 && (window.visualViewport?.scale || 1) <= 1.05
+    ? {x:finger.clientX,y:finger.clientY,dx:0,dy:0,top:scrollY <= 2,bottom:scrollY + innerHeight >= document.documentElement.scrollHeight - 2} : null;
   const secondTap = Boolean(tapTimer && finger && tapPoint && Math.hypot(finger.clientX - tapPoint.x, finger.clientY - tapPoint.y) < 32);
   clearTimeout(tapTimer); tapTimer = undefined;
   touch = event.touches.length === 1
     ? {x:finger.clientX, y:finger.clientY, at:Date.now(), double:secondTap} : null;
 }, {passive:true});
 addEventListener('touchmove', event => {
+  if (swipe) {
+    if (event.touches.length !== 1 || (window.visualViewport?.scale || 1) > 1.05) swipe = null;
+    else { swipe.dx = event.touches[0].clientX - swipe.x; swipe.dy = event.touches[0].clientY - swipe.y; }
+  }
   if (touch && (event.touches.length !== 1 || Math.hypot(event.touches[0].clientX - touch.x, event.touches[0].clientY - touch.y) > 10)) { touch = null; chromeSettlesUntil = 0; hideControls(); }
 }, {passive:true});
-addEventListener('touchcancel', () => { touch = null; clearTimeout(tapTimer); tapTimer = undefined; });
+addEventListener('touchcancel', () => { swipe = null; touch = null; clearTimeout(tapTimer); tapTimer = undefined; });
 addEventListener('touchend', event => {
   lastTouchEnd = Date.now();
+  if (swipe && !event.touches.length && window.readerContinuous && window.readerActive && !document.hidden && !window.readerChromeVisible && Math.abs(swipe.dy) > 60 && Math.abs(swipe.dy) > Math.abs(swipe.dx) * 1.5) {
+    if (swipe.bottom && swipe.dy < 0 && finished) window.ReactNativeWebView.postMessage(JSON.stringify({boundary:'next'}));
+    else if (swipe.top && swipe.dy > 0) window.ReactNativeWebView.postMessage(JSON.stringify({boundary:'previous'}));
+  }
+  swipe = null;
   if (touch && !event.touches.length && Date.now() - touch.at < 350) {
     if (touch.double && window.readerActive) {
       hideControls();

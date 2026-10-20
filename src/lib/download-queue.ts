@@ -48,6 +48,14 @@ export class DownloadQueue {
     this.changed(this.snapshot); this.removed.clear(); this.listeners.forEach(listener => listener());
   }
   isBusy(slug?: string) { return slug ? this.running.has(slug) || this.cancelling.has(slug) : this.running.size > 0 || this.cancelling.size > 0; }
+  move(slug: string, direction: -1 | 1) {
+    const waiting = this.jobs.filter(job => job.status === "queued" && !this.running.has(job.series.slug));
+    const index = waiting.findIndex(job => job.series.slug === slug), other = waiting[index + direction];
+    if (index < 0 || !other) return;
+    const from = this.jobs.indexOf(waiting[index]), to = this.jobs.indexOf(other);
+    [this.jobs[from], this.jobs[to]] = [this.jobs[to], this.jobs[from]];
+    this.publish(); this.pump();
+  }
   enqueue(series: Series, selection: string, autoBookmark = false): boolean {
     if (this.jobs.some(job => job.series.slug === series.slug)) return false;
     this.jobs.push({ series, selection, autoBookmark, status: "queued", message: "Queued", progress: 0 }); this.publish(); this.pump(); return true;

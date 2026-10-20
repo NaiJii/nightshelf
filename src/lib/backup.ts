@@ -36,7 +36,7 @@ export function validateBackup(text: string) {
   }
   const preferences: Partial<Preferences> = {};
   if (object(data.preferences)) {
-    for (const key of ["readerKeepAwake", "readerVolumeScroll", "deleteAfterReading", "autoSync", "hideDownloaded", "hideLiked", "hideBookmarked"] as const) if (typeof data.preferences[key] === "boolean") preferences[key] = data.preferences[key];
+    for (const key of ["readerContinuous", "readerPrefetch", "readerKeepAwake", "readerVolumeScroll", "deleteAfterReading", "autoSync", "hideDownloaded", "hideLiked", "hideBookmarked"] as const) if (typeof data.preferences[key] === "boolean") preferences[key] = data.preferences[key];
     if (object(data.preferences.genreFilters)) {
       preferences.genreFilters = {};
       for (const source of ["asura", "webtoon", "vortex", "mangakakalot"] as const) {

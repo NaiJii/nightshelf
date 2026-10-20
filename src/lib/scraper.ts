@@ -420,7 +420,7 @@ export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor
   return { ids: updates.map(item => item.slug), cursor: next, hasMore: !next.comicDone || !next.novelDone };
 }
 
-export async function downloadChapters(series: Series, selector: string, onProgress: (message: string, fraction: number) => void, guard: Guard, signal?: AbortSignal, planned?: string[], onPlan: (chapters: string[]) => void = () => {}, onChapterSaved: () => void = () => {}, automaticBookmark = false, detachAutomatic = false): Promise<void> {
+export async function downloadChapters(series: Series, selector: string, onProgress: (message: string, fraction: number) => void, guard: Guard, signal?: AbortSignal, planned?: string[], onPlan: (chapters: string[]) => void = () => {}, onChapterSaved: () => void = () => {}, automaticBookmark = false, detachAutomatic = false, nativeTransfer = true): Promise<void> {
   onProgress("Saving story details…", 0);
   const fresh = await refreshSeries(series, guard, signal);
   throwIfAborted(signal);
@@ -435,7 +435,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
   if (planned && chapters.length !== planned.length) throw new Error("Some queued chapters are no longer available. Cancel this job and choose chapters again.");
   if (!chapters.length) throw new Error("No chapters match that selection");
   onPlan(chapters.map(chapter => chapter.id));
-  if (backgroundTransfers) {
+  if (backgroundTransfers && nativeTransfer) {
     const batch: NativeChapter[] = [];
     onProgress(`Preparing chapters · 0/${chapters.length} prepared`, 0);
     for (const [index, chapter] of chapters.entries()) {

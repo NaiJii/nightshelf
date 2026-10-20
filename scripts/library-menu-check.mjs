@@ -7,15 +7,16 @@ import ts from "typescript";
 const alerts = [], routes = [], deletions = [];
 let busy = false, cursor = 0; const slots=[];
 const story = { slug: "example", title: "Example", hasLocalFiles: true, localChapters: ["1"] };
-const shelf = { catalog: [story], saved: {}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
+const edits=[];
+const shelf = { setStoryOptions:(...args)=>edits.push(args),pauseDownload:()=>{}, catalog: [story], saved: {}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
 const element = (type, props) => ({ type, props });
 const modules = {
   "react/jsx-runtime": { jsx: element, jsxs: element },
-  react: { useState: initial => {const at=cursor++;if(!(at in slots))slots[at]=typeof initial==="function"?initial():initial;return [slots[at],value=>{slots[at]=typeof value==="function"?value(slots[at]):value;}];}, useMemo: fn => fn(), useCallback: value => value },
-  "react-native": { FlatList: "FlatList", RefreshControl: "RefreshControl", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", Alert: { alert: (...args) => alerts.push(args) } },
+  react: { useState: initial => {const at=cursor++;if(!(at in slots))slots[at]=typeof initial==="function"?initial():initial;return [slots[at],value=>{slots[at]=typeof value==="function"?value(slots[at]):value;}];}, useDeferredValue: value => value, useMemo: fn => fn(), useCallback: value => value },
+  "react-native": { TextInput:"TextInput",ActivityIndicator:"ActivityIndicator",FlatList: "FlatList", RefreshControl: "RefreshControl", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", Alert: { alert: (...args) => alerts.push(args) } },
   "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
   "expo-router": { router: { push: route => routes.push(route) }, useFocusEffect: () => {}, useLocalSearchParams: () => ({}) },
-  "../../lib/app-state": { useShelf: () => shelf },
+  "../../lib/app-state": { useDownloads:()=>[],useShelf: () => shelf },
   "../../components/action-sheet": { useActionSheet: () => (...args) => alerts.push(args) },
   "../../lib/storage": { readingHistory: () => ({}) },
   "../../lib/parser": { nextUnread: () => "1" },
@@ -24,7 +25,7 @@ const modules = {
   "../../components/series-card": { openSeries: () => {} },
   "../../components/story-row": { PublicationStatus: "PublicationStatus" },
   "../../components/download-list": { DownloadList: "DownloadList" },
-  "../../components/story-options": { READING_LISTS: [] },
+  "../../components/story-options": { READING_LISTS: [["reading","Reading"]] },
 };
 const compiled = ts.transpileModule(readFileSync(new URL("../src/app/(tabs)/library.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const exports = {};
@@ -65,3 +66,21 @@ shelf.saved={automatic:{bookmarked:true,autoDownload:true}};
 const autoTab=nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).find(node=>node.props?.accessibilityRole==='tab'&&nodes(node).some(child=>child.props?.children==='Auto-downloads'));
 assert.ok(autoTab);autoTab.props.onPress();
 assert.deepEqual(nodes(render()).find(node=>node.type==='FlatList').props.data.map(item=>item.slug),['automatic'],'Auto-downloads contains only enabled stories');
+
+const findList=()=>nodes(render()).find(node=>node.type==='FlatList');
+const libraryHeader=()=>nodes(findList().props.ListHeaderComponent);
+libraryHeader().find(node=>node.props?.accessibilityRole==='tab'&&nodes(node).some(child=>child.props?.children==='Downloads')).props.onPress();
+libraryHeader().find(node=>node.props?.accessibilityLabel==='Search your library').props.onChangeText('auto');
+assert.deepEqual(findList().props.data.map(item=>item.slug),['automatic'],'search filters the active shelf');
+libraryHeader().find(node=>node.props?.accessibilityLabel==='Clear library search').props.onPress();
+assert.equal(findList().props.data.length,2);
+libraryHeader().find(node=>node.type==='PageHeading').props.action.props.onPress();
+let selectable=findList();
+nodes(selectable.props.renderItem({item:story})).find(node=>node.props?.accessibilityLabel==='Select Example').props.onPress();
+let selectionNodes=nodes(render());
+selectionNodes.find(node=>node.props?.accessibilityLabel==='Select visible stories').props.onPress();
+nodes(render()).find(node=>node.props?.accessibilityLabel==='Bulk library actions').props.onPress();
+alerts.at(-1)[2].find(action=>action.text==='Move to Reading').onPress();
+assert.deepEqual(edits.map(([slug,change])=>[slug,change.list]),[['example','reading'],['automatic','reading']]);
+assert.ok(!nodes(render()).some(node=>node.props?.accessibilityLabel==='Bulk library actions'),'bulk list changes exit selection mode');
+console.log('Library search, selection and bulk list changes passed');

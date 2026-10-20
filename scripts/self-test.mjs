@@ -323,3 +323,26 @@ if (process.argv.includes("--live")) {
   assert.ok(ranking.data.length>20);
   console.log(JSON.stringify({liveOffsetPagination:true,popularRankingSize:ranking.data.length}));
 }
+
+// Chapter changes require a deliberate, unzoomed swipe beyond a visible edge.
+const edges = readerSession(); edges.window.readerContinuous = true;
+edges.setBottom(750); edges.tick();
+assert.ok(edges.messages.some(message=>message.complete));
+function swipe(session,x,y,dx,dy) {
+  session.emit('touchstart',{touches:[{clientX:x,clientY:y}]});
+  session.emit('touchmove',{touches:[{clientX:x+dx,clientY:y+dy}]});
+  session.emit('touchend',{touches:[]});
+}
+assert.ok(!edges.messages.some(message=>message.boundary),'completion alone never skips chapters');
+swipe(edges,100,400,0,-90);
+assert.equal(edges.messages.at(-1).boundary,'next');
+edges.setScroll(0); swipe(edges,100,200,0,90);
+assert.equal(edges.messages.at(-1).boundary,'previous');
+const boundaryCount=()=>edges.messages.filter(message=>message.boundary).length;
+const beforeEdges=boundaryCount();
+edges.window.readerContinuous=false;swipe(edges,100,200,0,90);
+edges.window.readerContinuous=true;edges.window.visualViewport.scale=2;swipe(edges,100,200,0,90);
+edges.window.visualViewport.scale=1;swipe(edges,100,200,100,90);
+edges.setScroll(200);swipe(edges,100,200,0,90);
+assert.equal(boundaryCount(),beforeEdges,'disabled continuous reading, zoom, horizontal movement and midchapter scrolls cannot change chapters');
+console.log('Continuous reader edge gesture checks passed');
