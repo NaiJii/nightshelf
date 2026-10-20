@@ -107,19 +107,20 @@ await assert.rejects(()=>applyActivity(activity,"java"), /Kotlin/);
 await assert.rejects(()=>applyActivity("class UnknownActivity {}"), /locate MainActivity/);
 // Execute the actual WebView script: a near-end scroll, zoom, failed image or
 // background timer must never falsely mark a chapter as read.
-function readerSession(novel = false) {
+function readerSession(novel = false, imageCount = 2) {
   let now = 1000, rect = { top: 400, bottom: 850, left: 0, right: 400 };
-  let tick, timerId = 0;
+  let tick, timerId = 0, firstBottom = -10;
   const events = {}, timers = new Map();
   const advance = ms => { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.callback(); };
   const messages = [];
   const image = { complete: true, naturalWidth: 1000, getBoundingClientRect: () => rect };
   const window = { readerActive: false, visualViewport: { offsetTop: 0, offsetLeft: 0, height: 800, width: 400, scale: 1, addEventListener(type, callback) { events[`viewport-${type}`] = callback; } }, ReactNativeWebView: { postMessage: data => messages.push(JSON.parse(data)) } };
-  const document = { hidden: false, images: novel ? [] : [image], documentElement: { scrollHeight: 1600 }, querySelector: () => novel ? image : null };
+  const firstImage = {complete:true,naturalWidth:1000,getBoundingClientRect:()=>({top:-500,bottom:firstBottom,left:0,right:400})};
+  const document = { hidden: false, images: novel ? [] : imageCount === 1 ? [image] : [firstImage,image], documentElement: { scrollHeight: 1600 }, querySelector: () => novel ? image : null };
   const context = { window, document, Date: { now: () => now }, innerHeight: 800, innerWidth: 400, scrollY: 800, scrollTo() {}, addEventListener: (type, callback) => { events[type] = callback; }, setInterval: callback => { tick = callback; }, setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id; }, clearTimeout(id) { timers.delete(id); } };
   vm.runInNewContext((novel ? readerHtml([], 0, {title:"Chapter",paragraphs:["Last paragraph"]}) : reader).match(/<script>([\s\S]*?)<\/script>/)[1], context);
   events.load(); window.readerActive = true;
-  return { image, window, document, messages, advance, emit(type, event = {}) { events[type](event); }, setBottom(value) { rect.bottom = value; }, tick(ms = 250) { advance(ms); tick(); } };
+  return { image, window, document, messages, advance, emit(type, event = {}) { events[type](event); }, setBottom(value) { rect.bottom = value; }, setFirstBottom(value) { firstBottom = value; }, setScroll(value) { context.scrollY = value; }, tick(ms = 250) { advance(ms); tick(); } };
 }
 const gestures = readerSession();
 const finger = {clientX:100, clientY:200};
@@ -191,11 +192,23 @@ session.window.readerActive = true; session.window.visualViewport.height = 400;
 for (let i = 0; i < 10; i++) session.tick();
 assert.ok(!session.messages.some(message => message.complete), "zoomed viewport must actually expose the last panel bottom");
 session.window.visualViewport.height = 800;
-session.tick(); session.tick(1000); session.setBottom(850); session.tick();
-session.setBottom(750); session.tick(); session.tick(1000);
-assert.ok(!session.messages.some(message => message.complete), "leaving the end resets the visibility dwell");
-session.tick(500); session.tick(3000);
-assert.equal(session.messages.filter(message => message.complete).length, 1, "one completion after continuous final-panel visibility");
+session.tick();
+assert.equal(session.messages.filter(message => message.complete).length, 1, "reaching the visible final panel completes immediately without a dwell");
+assert.equal(session.messages.find(message => message.complete).fraction,1,"completion saves exactly 100 percent");
+session.tick(3000);
+assert.equal(session.messages.filter(message => message.complete).length, 1, "completion is emitted once");
+const start = readerSession(); start.setScroll(0); start.setFirstBottom(500);
+start.emit('scroll'); start.advance(400);
+assert.equal(start.messages.at(-1).fraction,0,'a newly opened chapter starts at zero');
+start.setBottom(750); start.setScroll(100); start.emit('scroll'); start.advance(400);
+assert.equal(start.messages.at(-1).fraction,0,'remaining on the first page keeps zero progress');
+assert.ok(!start.messages.some(message=>message.complete));
+start.setFirstBottom(-1); start.emit('scroll'); start.advance(400);
+assert.ok(start.messages.at(-1).fraction>0,'progress begins after leaving the first page');
+const short = readerSession(false,1); short.setScroll(0); short.setBottom(750); short.tick(3000);
+assert.ok(!short.messages.some(message=>message.complete),'a short first page cannot complete merely by opening it');
+short.setScroll(20); short.emit('scroll');
+assert.ok(short.messages.some(message=>message.complete),'scrolling to the end of a single-page chapter completes it');
 const novelSession = readerSession(true); novelSession.setBottom(750); novelSession.tick(); novelSession.tick(1500);
 assert.equal(novelSession.messages.filter(message => message.complete).length, 1, "novels require the final paragraph");
 assert.deepEqual(selectChapters([{id: "0"}, {id: "1"}, {id: "1.5"}, {id: "2"}, {id: "3"}, {id: "4"}], "@latest").map(item => item.id), ["1", "1.5", "2", "3", "4"]);

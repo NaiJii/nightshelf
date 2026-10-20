@@ -11,7 +11,7 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 <style>html,body{touch-action:manipulation;margin:0;padding:0;background:${sepia ? "#f4ecd8" : "#08080b"};color:${sepia ? "#483b2c" : "#ded9e6"}}img{display:block;width:100%;height:auto;margin:0}.novel{max-width:720px;margin:auto;padding:24px 22px 50px}.novel p{font:${size}px/1.85 Georgia,serif;margin:0 0 1.2em;text-align:left;overflow-wrap:break-word}.novel h1{font:600 24px/1.4 sans-serif;margin:6px 0 30px}.end{font:12px sans-serif;text-align:center;padding:24px}</style></head><body>
 ${novel ? `<main class="novel"><h1>${escape(novel.title)}</h1>${novel.paragraphs.map(text => `<p>${escape(text)}</p>`).join("")}</main>` : files.filter(uri => uri.startsWith("file://")).map((uri, index) => `<img src="${escape(uri)}" alt="Page ${index + 1}" decoding="async" onerror="window.ReactNativeWebView.postMessage(JSON.stringify({error:true}))">`).join("")}
 <p class="end">End of chapter</p><script>
-let timer; const images = [...document.images]; let restored = false, finished = false, endSince = 0;
+let timer; const images = [...document.images]; let restored = false, finished = false;
 window.readerActive = false;
 window.readerChromeVisible = false;
 let tapTimer, tapPoint, touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
@@ -60,28 +60,37 @@ addEventListener('click', () => {
 function finalPanelVisible(rect, viewport) {
   return rect.bottom > viewport.top && rect.bottom <= viewport.bottom + 1 && rect.right > viewport.left && rect.left < viewport.right;
 }
+function checkCompletion() {
+  if (finished || !restored || !window.readerActive || window.readerChromeVisible || document.hidden) return false;
+  const last = images.at(-1) || document.querySelector('.novel p:last-child');
+  const viewport = window.visualViewport;
+  const top = viewport ? viewport.offsetTop : 0, left = viewport ? viewport.offsetLeft : 0;
+  // Opening a short chapter or remaining on its first page is not a completed read.
+  const firstPage = images.length > 1 && images[0].getBoundingClientRect().bottom > top;
+  if (scrollY + top <= 1 || firstPage || !last || !finalPanelVisible(last.getBoundingClientRect(), {top, left, bottom:top + (viewport ? viewport.height : innerHeight), right:left + (viewport ? viewport.width : innerWidth)}) || !images.every(image => image.complete && image.naturalWidth > 0)) return false;
+  finished = true;
+  window.ReactNativeWebView.postMessage(JSON.stringify({complete:true, fraction:1}));
+  return true;
+}
 function report() {
+  if (checkCompletion()) return;
+  const viewport = window.visualViewport;
+  const top = viewport ? viewport.offsetTop : 0;
   const max = Math.max(1, document.documentElement.scrollHeight - innerHeight);
-  const page = Math.max(0, images.findIndex(image => image.getBoundingClientRect().bottom > 0));
-  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: Math.min(1, scrollY / max), page: page + 1}));
+  const page = Math.max(0, images.findIndex(image => image.getBoundingClientRect().bottom > top));
+  const atStart = images.length > 1 ? page === 0 : scrollY + top <= 1;
+  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: atStart ? 0 : Math.max(0, Math.min(1, (scrollY + top) / max)), page: page + 1}));
 }
 addEventListener('load', () => { scrollTo(0, ${safeFraction} * Math.max(0, document.documentElement.scrollHeight - innerHeight)); restored = true; report(); });
 function onScroll() {
   // Momentum is not finger movement. Preserve intentional taps, including the viewport resize when chrome appears.
   if (!touch && !tapTimer && Date.now() >= chromeSettlesUntil && !scrolling) hideControls();
+  checkCompletion();
   scrolling = true;
   clearTimeout(timer); timer = setTimeout(() => { scrolling = false; if (restored) report(); }, 400);
 }
 addEventListener('scroll', onScroll, {passive:true});
 window.visualViewport?.addEventListener('scroll', onScroll, {passive:true});
-setInterval(() => {
-  const last = images.at(-1) || document.querySelector('.novel p:last-child');
-  const viewport = window.visualViewport;
-  const top = viewport ? viewport.offsetTop : 0, left = viewport ? viewport.offsetLeft : 0;
-  const visible = restored && window.readerActive && !window.readerChromeVisible && !document.hidden && last && images.every(image => image.complete && image.naturalWidth > 0) && finalPanelVisible(last.getBoundingClientRect(), {top, left, bottom:top + (viewport ? viewport.height : innerHeight), right:left + (viewport ? viewport.width : innerWidth)});
-  if (!visible) { endSince = 0; return; }
-  if (!endSince) endSince = Date.now();
-  if (!finished && Date.now() - endSince >= 1500) { finished = true; window.ReactNativeWebView.postMessage(JSON.stringify({complete:true})); }
-}, 250);
+setInterval(checkCompletion, 250);
 </script></body></html>`;
 }
