@@ -74,7 +74,7 @@ export function parseVortexCards(html: string, popular = false, metadataOnly = f
     const counts = block.slice(block.indexOf("_count:"));
     const chapterCount = block.includes("_count:") ? Number(numericField(counts, "chapters")) : 0;
     const numbers = [...block.matchAll(/(?:^|[,{}])\s*"?number"?\s*:\s*(\d+(?:\.\d+)?)/g)].map(value => value[1]).sort(chapterSort);
-    items.set(url, { source: "vortex", slug: `vortex-${numericField(match.block, "id")}`, url, title, summary: plainText(scalar(match.block, "postContent")), cover: safeUrl(scalar(match.block, "featuredImage"), SITE_HOME.vortex), rating, bookmarks: block.includes("_count:") ? numericField(counts, "bookmarks") : "", status: scalar(match.block, "seriesStatus"), type: scalar(match.block, "seriesType") || "Comic", kind: "comic", chapterCount, latestChapter: numbers.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) });
+    items.set(url, { source: "vortex", vortexId: numericField(match.block, "id"), slug: `vortex-${numericField(match.block, "id")}`, url, title, summary: plainText(scalar(match.block, "postContent")), cover: safeUrl(scalar(match.block, "featuredImage"), SITE_HOME.vortex), rating, bookmarks: block.includes("_count:") ? numericField(counts, "bookmarks") : "", status: scalar(match.block, "seriesStatus"), type: scalar(match.block, "seriesType") || "Comic", kind: "comic", chapterCount, latestChapter: numbers.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) });
   }
   if (metadataOnly) return [...items.values()];
   let body = html.slice(html.indexOf("<body"));
@@ -151,25 +151,30 @@ export function parseVortexMetadata(html: string, item: Series): Series {
   const cover = safeUrl(attribute(coverImage, "data-fallback-src") || attribute(coverImage, "data-src") || attribute(coverImage, "src"), item.url);
   const summary = own?.summary || plainText(section(html, "itemProp", "description")) || plainText(metadata(html, "description"));
   const updatedAt = own?.updatedAt || date(metadata(html, "og:updated_time"));
-  return { ...item, ...own, slug: item.slug, title, summary, genres: parseGenreLinks(body), cover: own?.cover || cover || item.cover, rating: own?.rating || text.match(/([\d.]+)\s+Ratings?\b/i)?.[1] || "", bookmarks: own?.bookmarks || text.match(/([\d.,]+[KM]?)\s+Favorites\b/i)?.[1] || "", status: own?.status || fields.get("status") || "Unknown", type: own?.type || fields.get("type") || "Comic", chapterCount: own?.chapterCount || Number(fields.get("chapters")?.replace(/,/g, "")) || 0, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
+  return { ...item, ...own, slug: item.slug, vortexId: vortexPostId(html, item.url) || own?.vortexId || item.vortexId, title, summary, genres: parseGenreLinks(body), cover: own?.cover || cover || item.cover, rating: own?.rating || text.match(/([\d.]+)\s+Ratings?\b/i)?.[1] || "", bookmarks: own?.bookmarks || text.match(/([\d.,]+[KM]?)\s+Favorites\b/i)?.[1] || "", status: own?.status || fields.get("status") || "Unknown", type: own?.type || fields.get("type") || "Comic", chapterCount: own?.chapterCount || Number(fields.get("chapters")?.replace(/,/g, "")) || 0, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
 }
-export function parseVortexChapterPayload(raw: unknown, item: Series): Series {
+export function parseVortexChapterPayload(raw: unknown, item: Series, postId = item.vortexId || item.slug.match(/^vortex-(\d+)$/)?.[1]): Series {
   const payload = raw as { post?: { chapters?: unknown }; totalChapterCount?: number };
   if (!Array.isArray(payload?.post?.chapters) || (payload.totalChapterCount !== undefined && (!Number.isSafeInteger(payload.totalChapterCount) || payload.totalChapterCount < 0 || payload.post.chapters.length < payload.totalChapterCount))) throw new Error("Vortex returned an incomplete chapter list. Pull down to retry.");
   const chapterUrls: Record<string, string> = {}, chapterTitles: Record<string, string> = {};
-  let updatedAt: string | undefined;
+  let updatedAt: string | undefined, seriesUrl = item.url.replace(/\/$/, "");
   const route = decodeURIComponent(new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!);
   for (const chapter of payload.post.chapters) {
     if (!chapter || chapter.isLocked !== false || chapter.isAccessible === false || chapter.isPermanentlyLocked || chapter.isLockedByCoins || chapter.isShortLinkLocked) continue;
-    if (chapter.mangaPost?.slug && chapter.mangaPost.slug !== route) continue;
+    if (postId && chapter.mangaPostId !== undefined && String(chapter.mangaPostId) !== postId) throw new Error("Vortex returned chapters for a different story. Pull down to retry.");
+    if (chapter.mangaPost?.slug && chapter.mangaPost.slug !== route) {
+      // A renamed series keeps its numeric identity, while cached URLs can use the old slug.
+      if (!postId || String(chapter.mangaPostId) !== postId || !/^[a-z\d_-]+$/i.test(chapter.mangaPost.slug)) throw new Error("Vortex story address changed. Refresh the story from Explore.");
+      seriesUrl = `${SITE_HOME.vortex}/series/${encodeURIComponent(chapter.mangaPost.slug)}`;
+    }
     const id = String(chapter.number);
     if (!/^\d+(?:\.\d+)?$/.test(id) || typeof chapter.slug !== "string" || !/^chapter-[\w.-]+$/.test(chapter.slug)) continue;
-    chapterUrls[id] = `${item.url.replace(/\/$/, "")}/${encodeURIComponent(chapter.slug)}`;
+    chapterUrls[id] = `${seriesUrl}/${encodeURIComponent(chapter.slug)}`;
     chapterTitles[id] = `Chapter ${id}${chapter.title ? ` · ${plainText(String(chapter.title))}` : ""}`;
     const published = date(chapter.createdAt); if (published && (!updatedAt || published > updatedAt)) updatedAt = published;
   }
   const chapterIds = Object.keys(chapterUrls).sort(chapterSort);
-  return { ...item, chapterUrls, chapterTitles, chapterIds, chapterCount: payload.totalChapterCount ?? payload.post.chapters.length, latestChapter: chapterIds.at(-1) || "", updatedAt: updatedAt || item.updatedAt, sourceDates: Boolean(updatedAt || item.updatedAt), detailsCached: true, syncedAt: new Date().toISOString() };
+  return { ...item, url: seriesUrl, vortexId: postId, chapterListComplete: true, chapterUrls, chapterTitles, chapterIds, chapterCount: payload.totalChapterCount ?? payload.post.chapters.length, latestChapter: chapterIds.at(-1) || "", updatedAt: updatedAt || item.updatedAt, sourceDates: Boolean(updatedAt || item.updatedAt), detailsCached: true, syncedAt: new Date().toISOString() };
 }
 export function parseVortexDetails(html: string, item: Series): Series {
   const urls: Record<string, string> = {}, titles: Record<string, string> = {};
@@ -189,7 +194,7 @@ export function parseVortexDetails(html: string, item: Series): Series {
   const own = parseVortexMetadata(html, item);
   if (matches.length && own.chapterCount > matches.length) throw new Error("Vortex returned only part of the chapter list. Pull down to retry.");
   if (!ids.length && own.chapterCount > 0 && !matches.length) throw new Error("Vortex chapter list could not be read. Pull down to retry.");
-  return { ...own, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: own.chapterCount || ids.length, latestChapter: own.latestChapter || ids.at(-1) || "", updatedAt: updatedAt || own.updatedAt, sourceDates: Boolean(updatedAt || own.updatedAt), syncedAt: new Date().toISOString() };
+  return { ...own, detailsCached: true, chapterListComplete: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: own.chapterCount || ids.length, latestChapter: own.latestChapter || ids.at(-1) || "", updatedAt: updatedAt || own.updatedAt, sourceDates: Boolean(updatedAt || own.updatedAt), syncedAt: new Date().toISOString() };
 }
 export function parseKakalotChapters(raw: unknown, seriesUrl: string, offset = 0) {
   const payload = raw as { success?: boolean; data?: { chapters?: unknown; pagination?: { total: number; offset: number; has_more: boolean } } };

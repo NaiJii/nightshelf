@@ -16,7 +16,7 @@ import { ReadingListAction, StoryOptions } from "../../components/story-options"
 export default function SeriesDetails() {
   const showSheet = useActionSheet();
   const { slug, filter: initialFilter } = useLocalSearchParams<{ slug: string; filter?: string }>();
-  const { catalog, startDownload, downloads, loadDetails, detailsLoading, saved, preferences, notificationBusy, setReleaseNotifications, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, sourceSessionRevision } = useShelf();
+  const { catalog, startDownload, downloads, loadDetails, detailsLoading, detailsErrors, saved, preferences, notificationBusy, setReleaseNotifications, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, sourceSessionRevision } = useShelf();
   const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : "all");
   const [query, setQuery] = useState("");
   const [newest, setNewest] = useState(true);
@@ -33,6 +33,7 @@ export default function SeriesDetails() {
   const all = chapterList(item.chapterIds, owned);
   const fullList = chapterListCached(item);
   const loadingChapters = detailsLoading.includes(slug);
+  const chapterError = detailsErrors?.[slug];
   const visible = chapterList(item.chapterIds, owned, ledger, filter, query, newest, item.chapterTitles);
   const unread = chapterList(item.chapterIds, owned, ledger, "unread", "", false);
   const unreadToDownload = unread.filter(id => !owned.includes(id));
@@ -84,6 +85,7 @@ export default function SeriesDetails() {
         <View style={[ui.row, { marginTop: 18, justifyContent: "space-between" }]}><Text style={ui.title}>Chapters</Text><Pressable accessibilityLabel="Chapter actions" onPress={() => showSheet("Chapter actions", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Mark all read / unread", onPress: () => mark(all) }, ...(item.hasLocalFiles ? [{ text: "Delete all saved files", style: "destructive" as const, onPress: () => { if (blocked) showSheet("Download in progress", "Pause or cancel this story’s download first."); else erase([], true); } }] : [])])} style={{ padding: 12 }}><Icon name="ellipsis-horizontal" /></Pressable></View>
         <Text style={[ui.muted, { fontSize: 12 }]}>{owned.length} saved · {all.filter(id => ledger[id]).length} read · {all.length} {fullList ? "available" : "loaded"}</Text>
         {loadingChapters && <View accessibilityLiveRegion="polite" style={[ui.row, { paddingVertical: 12 }]}><ActivityIndicator size="small" color={color.lilac} /><Text style={ui.muted}>{fullList ? "Refreshing chapters…" : "Loading the full chapter list…"}</Text></View>}
+        {chapterError && !loadingChapters && <View accessibilityLiveRegion="polite" style={{ paddingVertical: 12 }}><Text style={{ color: "#f08080", fontSize: 12 }}>{chapterError}</Text><Pressable accessibilityLabel="Retry loading chapters" onPress={() => void loadDetails(slug, true)} style={{ minHeight: 44, justifyContent: "center", alignSelf: "flex-start" }}><Text style={{ color: color.lilac, fontWeight: "700" }}>Retry chapters</Text></Pressable></View>}
         <Text style={[ui.muted, { fontSize: 11 }]}>{kindOf(item) === "novel" ? "Public chapters only. " : ""}Tap saved to read; use checkboxes to select.</Text>
         <TextInput accessibilityLabel="Search chapters" placeholder="Find a chapter…" placeholderTextColor={color.muted} value={query} onChangeText={setQuery} style={{ color: color.text, padding: 14, borderRadius: 12, backgroundColor: color.surface, marginTop: 14 }} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, marginVertical: 12 }}>{[["all", "All chapters"], ["unread", "Unread"], ["saved", "Saved only"]].map(([key, label]) => <Chip key={key} text={label} active={filter === key} onPress={() => setFilter(key)} />)}<Pressable accessibilityLabel={`Chapter order: ${newest ? "newest first" : "oldest first"}. Tap to reverse.`} onPress={() => { setNewest(value => !value); listRef.current?.scrollToOffset({ offset: 0, animated: true }); }} style={[ui.chip, ui.row]}><Icon name="swap-vertical-outline" size={16} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12, fontWeight: "700" }}>{newest ? "Newest first" : "Oldest first"}</Text></Pressable></View>

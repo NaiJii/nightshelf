@@ -26,6 +26,7 @@ function useAppState() {
   const [read, setRead] = useState(readChapters);
   const [updates, setUpdates] = useState(releaseUpdates);
   const [detailsLoading, setDetailsLoading] = useState<string[]>([]);
+  const [detailsErrors, setDetailsErrors] = useState<Record<string, string>>({});
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [sourceSessionRevision, setSourceSessionRevision] = useState(0);
@@ -118,13 +119,17 @@ function useAppState() {
     if (!force && cached && Array.isArray(item.genres)) return;
     if (detailLocks.current.has(slug)) return;
     detailLocks.current.add(slug); setDetailsLoading(current => [...current, slug]);
+    setDetailsErrors(current => { const next = { ...current }; delete next[slug]; return next; });
     setNetworkNotice("");
     try {
       const fresh = await refreshSeries(item, networkGuard("Refresh this story’s details?"), undefined, force || !cached);
       mergeCatalog([fresh]);
       setCatalog(loadCatalog());
       setNetworkNotice("");
-    } catch (error) { showFailure(error); }
+    } catch (error) {
+      setDetailsErrors(current => ({ ...current, [slug]: error instanceof Error ? error.message : String(error) }));
+      showFailure(error);
+    }
     finally { detailLocks.current.delete(slug); setDetailsLoading(current => current.filter(value => value !== slug)); }
   }, [showFailure]);
 
@@ -256,7 +261,7 @@ function useAppState() {
     return () => { clearTimeout(recovery); clearInterval(timer); app.remove(); unsubscribe(); };
   }, [sync, queue, showFailure, cancelDownload]);
 
-  return { connection, setStoryOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloads, downloadBusy, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
+  return { connection, setStoryOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloads, downloadBusy, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
 }
 const AppContext = createContext<ReturnType<typeof useAppState> | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) { return <AppContext.Provider value={useAppState()}>{children}</AppContext.Provider>; }

@@ -2,6 +2,7 @@ export type SourceId = "asura" | "webtoon" | "vortex" | "mangakakalot";
 export const SOURCES: { id: SourceId; name: string }[] = [{ id: "asura", name: "Asura" }, { id: "webtoon", name: "WEBTOON" }, { id: "vortex", name: "Vortex" }, { id: "mangakakalot", name: "MangaKakalot" }];
 export type Series = {
   source?: SourceId;
+  vortexId?: string;
   language?: string;
   chapterUrls?: Record<string, string>;
   chapterTitles?: Record<string, string>;
@@ -67,7 +68,7 @@ export function mergeDiscovery(fresh: Series, previous?: Series): Series {
 export function chapterListCached(item: Series): boolean {
   if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
   if (sourceOf(item) === "asura") return kindOf(item) === "novel" || new Set(item.chapterIds).size >= item.chapterCount;
-  if (sourceOf(item) === "mangakakalot" && item.chapterListComplete !== true) return false;
+  if (["vortex", "mangakakalot"].includes(sourceOf(item)) && item.chapterListComplete !== true) return false;
   return item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
 }
 export function chapterList(source: string[] = [], saved: string[] = [], read: Record<string, string> = {}, filter = "all", query = "", newest = true, titles: Record<string, string> = {}): string[] {

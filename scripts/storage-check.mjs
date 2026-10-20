@@ -137,6 +137,7 @@ try {
   const fakeFetch = `
 export const requests=[]; export let imagePending=false;
 export let verificationMode='open';export function setVerificationMode(mode){verificationMode=mode;}
+export let vortexPageMode='normal';export function setVortexPageMode(value){vortexPageMode=value;}
 export let webtoonNew=false; export function releaseWebtoon(){webtoonNew=true;}
 export let kakalotPageFailure=false; export function failKakalotPage(value){kakalotPageFailure=value;}
 export async function fetch(url,options={}){
@@ -160,6 +161,8 @@ export async function fetch(url,options={}){
     return {ok:true,text:async()=>JSON.stringify({totalChapterCount:2,post:{chapters:[{number:1,slug:'chapter-1',isLocked:false,isAccessible:true},{number:2,slug:'chapter-2',isLocked:false,isAccessible:true}]}})};
   }
   if(new URL(url).hostname==='vortexscans.org') {
+    if(vortexPageMode==='error')return {ok:false,status:503};
+    if(vortexPageMode==='unrecognized')return {ok:true,text:async()=>'<html>Changed summary markup</html>'};
     const ep=id=>'$R['+(id+10)+']={id:'+id+',slug:"chapter-'+id+'",number:'+id+',title:"",createdAt:"2026-09-01T00:00:00Z",isLocked:!1,isLockedByCoins:!1,mangaPost:$R['+(id+100)+']={id:void 0}}';
     const record='window.publicPost={id:42,slug:"example",postTitle:"Example",featuredImage:"https://storage.vortexscans.org/cover.webp",seriesStatus:"ONGOING",seriesType:"MANHWA",averageRating:9}';
     const data=url.includes('/chapter-')?'<img data-reader-page-image="true" src="https://storage.vortexscans.org/panel.webp">':'<body><h2>Popular Today</h2><a href="/series/example"><img alt="Cover of Example" src="https://storage.vortexscans.org/cover.webp"></a><h2>Latest Releases</h2><h1>Example</h1><span>9 Ratings</span><dl><dt>Status</dt><dd>ONGOING</dd><dt>Type</dt><dd>Manhwa</dd><dt>Chapters</dt><dd>2</dd></dl><div itemProp="description"><p>Full Vortex summary.</p></div></body><script>'+record+ep(1)+ep(2)+'</script>';
@@ -328,6 +331,16 @@ export async function fetch(url,options={}){
       assert.ok(fresh.detailsCached&&fresh.summary);
       assert.ok(fresh.chapterIds.includes('1'));
       if(source==='vortex') assert.ok(requests.slice(before).some(url=>url.startsWith('https://api.vortexscans.org/api/chapters?')),'Vortex chapters use its public API when inline hydration is unrecognized');
+      if(source==='vortex') {
+        for(const mode of ['error','unrecognized']) {
+          http.setVortexPageMode(mode);
+          const recovered=await refreshSeries({...item,slug:'vortex-url-legacy',vortexId:'42'},async()=>{});
+          assert.deepEqual(recovered.chapterIds,['1','2'],'public chapters load even when the summary page fails: '+mode);
+          assert.equal(recovered.chapterListComplete,true);
+        }
+        http.setVortexPageMode('normal');
+      }
+
       if(source==='mangakakalot') {
         assert.deepEqual(fresh.chapterIds,['0','1','2'],'all MangaKakalot chapter pages load, including chapter zero');
         assert.equal(fresh.chapterCount,3); assert.equal(fresh.chapterListComplete,true);

@@ -84,3 +84,10 @@ const screen = nodes(details.render('default',{}));
 screen.find(node => node.type === 'Pressable' && nodes(node).some(child => child.props?.children?.join?.('') === 'Download (1)')).props.onPress();
 assert.deepEqual(requested,['2'],'downloading an unread selection does not re-download chapters already saved');
 console.log("Measured summary overflow, themed sheets and read/unread selection checks passed");
+
+shelf.detailsErrors={example:'Vortex request failed (503)'};
+shelf.loadDetails=(...args)=>requested.push(args);
+const retry=header().find(node=>node.props?.accessibilityLabel==='Retry loading chapters');
+assert.ok(retry,'chapter failures remain visible independently of global sync notices');
+retry.props.onPress();
+assert.equal(JSON.stringify(requested.at(-1)),JSON.stringify(['example',true]));

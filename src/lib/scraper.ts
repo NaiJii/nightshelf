@@ -94,13 +94,24 @@ function siteSlug(item: Series): string { return new URL(item.url).pathname.spli
 export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSignal, loadChapters = true): Promise<Series> {
   const source = sourceOf(item);
   if (source === "vortex" || source === "mangakakalot") {
-    const html = await getText(item.url, guard, undefined, signal);
-    let fresh = source === "vortex" ? parseVortexMetadata(html, item) : parseKakalotDetails(html, item);
+    const knownId = source === "vortex" ? item.vortexId || item.slug.match(/^vortex-(\d+)$/)?.[1] : undefined;
+    let html = "";
+    try { html = await getText(item.url, guard, undefined, signal); }
+    catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused || !loadChapters || !knownId) throw error; }
+    let fresh = item;
+    if (source === "vortex") {
+      try { fresh = parseVortexMetadata(html, item); }
+      catch (error) { if (!loadChapters) throw error; }
+    } else fresh = parseKakalotDetails(html, item);
     if (source === "vortex" && loadChapters) {
-      const id = vortexPostId(html, item.url) || item.slug.match(/^vortex-(\d+)$/)?.[1];
+      const id = vortexPostId(html, item.url) || knownId;
       if (id) {
-        try { fresh = parseVortexChapterPayload(await getJson(`https://api.vortexscans.org/api/chapters?postId=${id}&skip=0&take=all&order=asc`, guard, signal), fresh); }
-        catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; fresh = parseVortexDetails(html, fresh); }
+        try { fresh = parseVortexChapterPayload(await getJson(`https://api.vortexscans.org/api/chapters?postId=${id}&skip=0&take=all&order=asc`, guard, signal), fresh, id); }
+        catch (error) {
+          throwIfAborted(signal); if (error instanceof NetworkPaused) throw error;
+          try { fresh = parseVortexDetails(html, fresh); }
+          catch { throw error; }
+        }
       } else fresh = parseVortexDetails(html, fresh);
     }
     if (source === "mangakakalot" && loadChapters) {

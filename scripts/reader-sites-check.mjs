@@ -24,11 +24,19 @@ try {
   assert.equal(visibleMetadata.status,'ONGOING'); assert.equal(visibleMetadata.chapterCount,4);
   assert.deepEqual(sites.parseVortexMetadata(visibleStory + '<a itemProp="genre" href="/series?genres=%2B1">Action</a>', card).genres, ['Action']);
   assert.equal(visibleMetadata.slug,'vortex-url-legacy','metadata recovery preserves old bookmarks and read history');
+  assert.equal(visibleMetadata.vortexId,'42','public series identity is retained separately from legacy library keys');
   assert.equal(sites.vortexPostId(visibleStory,card.url),'42','public post identity does not depend on hydration variables');
   assert.equal(sites.parseVortexMetadata(visibleStory.replace(/<script\b[\s\S]*?<\/script>/g,''),card).rating,'9.08','metadata is readable with no inline scripts');
   assert.throws(()=>sites.parseVortexMetadata('<h1>Page not found</h1>',card),/without story details/);
   const publicChapters=sites.parseVortexChapterPayload({totalChapterCount:4,post:{chapters:[{number:0,slug:'chapter-0',isLocked:false,isAccessible:true},{number:1,slug:'chapter-1',isLocked:false,isAccessible:true},{number:2,slug:'chapter-2',isLocked:true,isAccessible:false},{number:3,slug:'chapter-3',isAccessible:true}]}},visibleMetadata);
   assert.deepEqual(publicChapters.chapterIds,['0','1'],'only explicitly public and accessible API chapters are included');
+  const renamed=sites.parseVortexChapterPayload({totalChapterCount:1,post:{chapters:[{number:1,slug:'chapter-1',isLocked:false,isAccessible:true,mangaPostId:42,mangaPost:{slug:'renamed-example'}}]}},visibleMetadata,'42');
+  assert.deepEqual(renamed.chapterIds,['1'],'a renamed story must not silently discard every chapter');
+  assert.equal(renamed.chapterUrls['1'],'https://vortexscans.org/series/renamed-example/chapter-1');
+  assert.equal(renamed.slug,visibleMetadata.slug,'canonical URL changes preserve local reading history');
+  assert.throws(()=>sites.parseVortexChapterPayload({post:{chapters:[{number:1,slug:'chapter-1',isLocked:false,mangaPostId:99,mangaPost:{slug:'example'}}]}},visibleMetadata,'42'),/different story/);
+  assert.equal(chapterListCached({...renamed,chapterListComplete:undefined}),false,'old unverified Vortex caches are refreshed once');
+
   assert.throws(()=>sites.parseVortexChapterPayload({totalChapterCount:50,post:{chapters:[]}},card),/incomplete/);
   assert.throws(()=>sites.parseVortexChapterPayload({totalChapterCount:-1,post:{chapters:[]}},card),/incomplete/);
   const overview = sites.parseVortexMetadata(html.replace('averageRating:9.5', 'averageRating:9.5,_count:$R[300]={chapters:2,bookmarks:14}'), card);
