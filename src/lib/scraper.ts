@@ -159,7 +159,7 @@ async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSign
       throwIfAborted(signal);
       let fresh = item;
       try {
-        if (!item.metadataSyncedAt || Date.now() - Date.parse(item.metadataSyncedAt) > 6 * 3600_000) fresh = await refreshSeries(item, guard, signal, false);
+        if (!item.summary || (sourceOf(item) === "webtoon" && !item.chapterCount) || !(Date.now() - Date.parse(item.metadataSyncedAt || "") <= 6 * 3600_000)) fresh = await refreshSeries(item, guard, signal, false);
       } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       throwIfAborted(signal);

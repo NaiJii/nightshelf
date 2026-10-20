@@ -249,8 +249,15 @@ export async function fetch(url,options={}){
     const webtoonItem=storage.loadCatalog().find(item=>item.slug==='webtoon-en-42');
     assert.equal(webtoonItem.title,'Example');
     assert.equal(webtoonItem.summary,'Full WEBTOON summary.','WEBTOON cards get summaries before opening');
+    assert.equal(webtoonItem.chapterCount,10,'WEBTOON episode counts appear on the first discovery load');
+    assert.ok(webtoonItem.updatedAt && webtoonItem.sourceDates,'WEBTOON update dates appear on the first discovery load');
     assert.equal(webtoonItem.chapterIds,undefined,'WEBTOON discovery does not load the chapter list');
     assert.ok(!requests.slice(webtoonStart).some(url=>url.includes('page=2')),'metadata fetching does not paginate WEBTOON episodes');
+    storage.mergeCatalog([{...webtoonItem,summary:'',chapterCount:0,metadataSyncedAt:new Date().toISOString()}]);
+    await browseCatalog({...options,source:'webtoon',language:'en'},FIRST_PAGE,async()=>{});
+    const repairedWebtoon=storage.loadCatalog().find(item=>item.slug===webtoonItem.slug);
+    assert.equal(repairedWebtoon.summary,'Full WEBTOON summary.','recent but incomplete metadata retries without a manual refresh');
+    assert.equal(repairedWebtoon.chapterCount,10);
     assert.ok(storage.loadCatalog().some(item=>item.slug==='example'),'identical titles from different sources keep separate identities');
     const webtoonFull=await refreshSeries(webtoonItem,async()=>{});
     assert.deepEqual(webtoonFull.chapterIds,['1','9','10'],'initial WEBTOON details follow the real episode pagination');

@@ -27,6 +27,11 @@ try {
   const details = parseWebtoonDetails(html, series);
   assert.equal(details.status, "Completed");
   assert.equal(details.summary, "The full summary.");
+  const firstLoad = parseWebtoonDetails(html + `<ul id="_listUl">${ep("10", "Latest episode")}</ul>`, series);
+  assert.equal(firstLoad.chapterCount, 10, 'first-load metadata reads episode links without requiring data-episode-no');
+  assert.equal(firstLoad.latestChapter, '10');
+  assert.ok(firstLoad.updatedAt && firstLoad.sourceDates, 'publication status is available before a full chapter refresh');
+  assert.equal(firstLoad.chapterIds, undefined, 'metadata reads only the current page and does not cache an incomplete chapter list');
   assert.throws(() => parseWebtoonDetails(html, { ...series, language: "fr" }), /unavailable/);
   const panels = `<img class="_images" src="https://webtoons-static.pstatic.net/placeholder.png" data-url="https://webtoon-phinf.pstatic.net/panel.jpg?type=q90"><img class="_thumbnailImages" data-url="https://webtoon-phinf.pstatic.net/thumb.jpg"><img class="_images" data-url="https://evil.test/panel.jpg">`;
   assert.deepEqual(parseWebtoonImages(panels), ["https://webtoon-phinf.pstatic.net/panel.jpg?type=q90"]);
