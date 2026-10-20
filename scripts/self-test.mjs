@@ -12,7 +12,20 @@ import "./library-menu-check.mjs";
 import "./background-wait-check.mjs";
 import "./ui-layout-check.mjs";
 import { formatRating } from "../src/lib/parser.ts";
-import { withLinkedAbort } from "../src/lib/request-control.ts";
+import { withLinkedAbort, withForeground, yieldToForeground } from "../src/lib/request-control.ts";
+
+let finishForeground, backgroundContinued=false;
+const focusedDetails=withForeground(()=>new Promise(resolve=>{finishForeground=resolve;}));
+const metadataWaiting=yieldToForeground().then(()=>{backgroundContinued=true;});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(backgroundContinued,false,'background metadata yields while an opened story is loading');
+const cancelledMetadata=new AbortController();
+const cancelledWait=yieldToForeground(cancelledMetadata.signal);cancelledMetadata.abort();
+await assert.rejects(cancelledWait,{name:'AbortError'});
+finishForeground();await focusedDetails;await metadataWaiting;
+assert.equal(backgroundContinued,true,'background metadata resumes when the opened story finishes');
+await assert.rejects(withForeground(async()=>{throw Error('Unavailable story');}),/Unavailable/);
+await yieldToForeground();
 
 const automatic = {bookmarked:true,autoDownload:true,autoDownloadBaseline:['1','2']};
 const available = {chapterIds:['1','2','3','4'],localChapters:['4']};

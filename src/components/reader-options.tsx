@@ -1,5 +1,6 @@
+import { Pressable } from "./pressable";
 import { RefObject, useCallback, useState } from "react";
-import { AppState, Pressable, Switch, Text, View } from "react-native";
+import { AppState, Switch, Text, View } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { WebView } from "react-native-webview";
 import { readerControls } from "../lib/reader-controls";

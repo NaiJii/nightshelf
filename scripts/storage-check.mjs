@@ -87,6 +87,12 @@ try {
   storage.mergeCatalog([cached]);
   assert.equal(reads.directories,scansBeforeMetadata,'metadata commits do not synchronously rescan downloaded chapter folders');
   storage.saveCatalog([cached]);
+  const scansBeforeAsync=reads.directories;
+  const catalogPending=storage.loadCatalogAsync();
+  assert.equal(reads.directories,scansBeforeAsync,'catalog hydration yields before accessing chapter folders');
+  assert.deepEqual(await catalogPending,storage.loadCatalog(),'batched hydration retains the same saved chapter information');
+  const stoppedScan=new AbortController();const scanToCancel=storage.loadCatalogAsync(stoppedScan.signal);stoppedScan.abort();
+  await assert.rejects(scanToCancel,{name:'AbortError'},'large scans can be stopped between batches');
   assert.equal(storage.loadCatalog()[0].summary, cached.summary, "series details are available after reopening from storage");
   const complete = new File(storage.chapterDirectory("example", "1"), ".complete");
   complete.write(JSON.stringify({ quality: 2, urls: ["https://cdn/1.webp", "https://cdn/2.webp"] }));
@@ -107,6 +113,8 @@ try {
   assert.ok(outside.exists && cover.exists, "deletion stays inside the story's download folder");
   console.log("Storage deletion check passed");
   const tools = await import('../src/lib/library-tools.ts');
+  assert.equal(await tools.libraryBytesAsync(),tools.libraryBytes(),'batched size accounting matches exact recursive totals');
+  assert.deepEqual(await tools.storageSummaryAsync(),tools.storageSummary());
   const backup = await import('../src/lib/backup.ts');
   const backupStory={...storage.SEED[0],slug:'backup-story',title:'Backup story',localChapters:['1'],genres:['Action']};
   storage.saveCatalog([backupStory]);tools.updateStoryOptions('backup-story',{bookmarked:true,liked:true,list:'planned',autoDownload:true});
@@ -265,7 +273,7 @@ export async function fetch(url,options={}){
   try {
     storage.toggleSaved('example','bookmarked');
     storage.saveCatalog([{...cached,title:'Example',url:'https://asurascans.com/comics/example',summary:'',detailsCached:false,syncedAt:new Date().toISOString()}]);
-    const {syncCatalog,downloadChapters,browseCatalog,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
+    const {syncCatalog,downloadChapters,browseCatalog,enrichCatalogIds,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
     const http = await import('expo/fetch'); const {requests} = http;
     const partialStory={...cached,slug:'partial',url:'https://asurascans.com/comics/partial',detailsCached:false,chapterIds:undefined};
     await assert.rejects(()=>refreshSeries(partialStory,async()=>{}),/incomplete chapter list/,'partial source responses cannot be saved as complete lists');
@@ -328,6 +336,10 @@ export async function fetch(url,options={}){
     storage.deleteChapters('example',[],true);
     console.log('Catalog merge, pagination, repair and in-flight abort checks passed');
     const webtoonStart=requests.length;
+    const quickPage=await browseCatalog({...options,source:'webtoon',language:'en'},FIRST_PAGE,async()=>{},undefined,()=>{},false);
+    assert.deepEqual(quickPage.ids,['webtoon-en-42']);
+    assert.ok(!requests.slice(webtoonStart).some(url=>url.includes('/list?title_no=')),'interactive discovery returns cards before requesting detailed metadata');
+    await enrichCatalogIds(quickPage.ids,async()=>{});
     const webtoonPage=await browseCatalog({...options,source:'webtoon',language:'en'},FIRST_PAGE,async()=>{});
     assert.deepEqual(webtoonPage.ids,['webtoon-en-42']);
     const webtoonItem=storage.loadCatalog().find(item=>item.slug==='webtoon-en-42');

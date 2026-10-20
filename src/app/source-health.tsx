@@ -1,5 +1,6 @@
+import { Pressable } from "../components/pressable";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { SOURCES, SourceId } from "../lib/parser";
 import { recordSourceHealth, sourceHealth } from "../lib/library-tools";

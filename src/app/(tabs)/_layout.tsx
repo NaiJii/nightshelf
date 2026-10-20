@@ -1,11 +1,12 @@
 import { Tabs } from "expo-router";
 import { View } from "react-native";
 import { Icon, color } from "../../components/ui";
-import { useShelf } from "../../lib/app-state";
+import { useDownloads, useShelf } from "../../lib/app-state";
 import { unreadReleases } from "../../lib/release-policy";
 
 export default function TabLayout() {
-  const { downloads, catalog, updates, read, saved } = useShelf();
+  const { catalog, updates, read, saved } = useShelf();
+  const downloads = useDownloads(true);
   const updatedStories = catalog.filter(item => saved[item.slug]?.bookmarked && unreadReleases(updates[item.slug], read[item.slug], item.chapterIds).length).length;
   return <View style={{ flex: 1, backgroundColor: color.bg }}>
     <Tabs screenOptions={{ headerShown: false, tabBarActiveTintColor: color.lilac, tabBarInactiveTintColor: color.muted, tabBarStyle: { backgroundColor: "#111118", borderTopColor: color.line }, tabBarLabelStyle: { fontSize: 10, fontWeight: "700" } }}>

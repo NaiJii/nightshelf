@@ -1,6 +1,7 @@
+import { Pressable } from "../components/pressable";
 import { useActionSheet } from "../components/action-sheet";
 import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import { router } from "expo-router";
 import { File } from "expo-file-system";
 import * as DocumentPicker from "expo-document-picker";

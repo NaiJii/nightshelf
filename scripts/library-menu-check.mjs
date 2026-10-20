@@ -28,7 +28,7 @@ const modules = {
 };
 const compiled = ts.transpileModule(readFileSync(new URL("../src/app/(tabs)/library.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const exports = {};
-vm.runInNewContext(compiled, { exports, require: name => { assert.ok(modules[name], name); return modules[name]; } });
+vm.runInNewContext(compiled, { exports, require: name => { if(name.endsWith("/pressable"))return {Pressable:"Pressable"}; assert.ok(modules[name], name); return modules[name]; } });
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
 const render=()=>{cursor=0;return exports.default();};
 const root = render();

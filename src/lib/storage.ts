@@ -2,6 +2,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import { chapterSort, DEFAULT_WEIGHTS } from "./parser";
 import type { DiscoveryFilters, NovelText, Period, SavedStory, Series, SortOrder, SortWeights } from "./parser";
 import type { DownloadJob } from "./download-queue";
+import { throwIfAborted } from "./request-control";
 
 export const ROOT = new Directory(Paths.document, "nightshelf");
 export const LIBRARY = new Directory(ROOT, "library");
@@ -168,7 +169,7 @@ export function localChapters(slug: string): string[] {
     .sort(chapterSort);
 }
 
-function catalogMetadata(): Series[] {
+export function catalogMetadata(): Series[] {
   initializeStorage();
   let items = SEED;
   if (CATALOG.exists) {
@@ -178,10 +179,29 @@ function catalogMetadata(): Series[] {
 }
 
 export function loadCatalog(): Series[] {
-  return catalogMetadata().map(item => {
+  return catalogMetadata().map(localMetadata);
+}
+function localMetadata(item: Series): Series {
     const folder = safePart(item.slug) ? new Directory(LIBRARY, item.slug) : null;
     return { ...item, updatedAt: item.sourceDates ? item.updatedAt : undefined, localChapters: localChapters(item.slug), hasLocalFiles: Boolean(folder?.exists && folder.list().length) };
-  });
+}
+export async function loadCatalogAsync(signal?: AbortSignal): Promise<Series[]> {
+  const items = catalogMetadata(), result: Series[] = [];
+  for (let start = 0; start < items.length; start += 8) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    throwIfAborted(signal);
+    for (const item of items.slice(start, start + 8)) {
+      const folder = safePart(item.slug) ? new Directory(LIBRARY, item.slug) : null;
+      const entries = folder?.exists ? folder.list() : [];
+      const chapters: string[] = [];
+      for (let index = 0; index < entries.length; index += 32) {
+        await new Promise(resolve => setTimeout(resolve, 0)); throwIfAborted(signal);
+        for (const entry of entries.slice(index, index + 32)) if (entry instanceof Directory && entry.name.startsWith("chapter-") && new File(entry, ".complete").exists) chapters.push(entry.name.slice(8));
+      }
+      result.push({ ...item, updatedAt: item.sourceDates ? item.updatedAt : undefined, localChapters: chapters.sort(chapterSort), hasLocalFiles: entries.length > 0 });
+    }
+  }
+  return result;
 }
 
 export function saveCatalog(items: Series[]): void {

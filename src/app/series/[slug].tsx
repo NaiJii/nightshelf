@@ -1,10 +1,11 @@
+import { Pressable } from "../../components/pressable";
 import { ExpandableSummary } from "../../components/expandable-summary";
 import { useActionSheet } from "../../components/action-sheet";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useShelf } from "../../lib/app-state";
+import { useDownloads, useShelf } from "../../lib/app-state";
 import { Chip, color, Cover, Icon, ui } from "../../components/ui";
 import { PublicationStatus, SaveActions } from "../../components/story-row";
 import { DownloadList } from "../../components/download-list";
@@ -16,11 +17,16 @@ import { ReadingListAction, ReleaseActions } from "../../components/story-option
 function useDownloadEstimate(slug: string, count: number, novel: boolean, sampleIds: string) {
   return useMemo(() => estimateDownload(slug, count, novel, sampleIds ? sampleIds.split(",") : []), [slug, count, novel, sampleIds]);
 }
+function DownloadStatus({ slug, showControls }: { slug: string; showControls: () => void }) {
+  const job = useDownloads().find(value => value.series.slug === slug);
+  return job ? <Pressable accessibilityLabel="Show download controls" onPress={showControls} style={[ui.row, { padding: 14, borderTopWidth: 1, borderColor: color.line }]}><Icon name="download-outline" tint={color.lilac} size={18} /><Text numberOfLines={1} style={[ui.muted, { flex: 1 }]}>{job.message} · {Math.round(job.progress * 100)}%</Text><Text style={{ color: color.lilac }}>Controls ↑</Text></Pressable> : null;
+}
 
 export default function SeriesDetails() {
   const showSheet = useActionSheet();
   const { slug, filter: initialFilter } = useLocalSearchParams<{ slug: string; filter?: string }>();
-  const { catalog, startDownload, downloads, loadDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, sourceSessionRevision } = useShelf();
+  const { catalog, startDownload, loadDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, sourceSessionRevision } = useShelf();
+  const downloads = useDownloads(true);
   const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : initialFilter === "unread" ? "unread" : "all");
   const [query, setQuery] = useState("");
   const [newest, setNewest] = useState(true);
@@ -111,7 +117,7 @@ export default function SeriesDetails() {
           <Pressable accessibilityRole="checkbox" accessibilityLabel={`Chapter ${chapter} read`} accessibilityState={{ checked: isRead }} onPress={() => { setReadStatus(slug, [chapter], !isRead); setHistory(readingHistory()); }} style={{ padding: 14 }}><Icon name={isRead ? "checkmark-circle" : "checkmark-circle-outline"} tint={isRead ? "#65cba1" : color.muted} /></Pressable>
         </View>;
       }} />
-    {job && <Pressable accessibilityLabel="Show download controls" onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })} style={[ui.row, { padding: 14, borderTopWidth: 1, borderColor: color.line }]}><Icon name="download-outline" tint={color.lilac} size={18} /><Text numberOfLines={1} style={[ui.muted, { flex: 1 }]}>{job.message} · {Math.round(job.progress * 100)}%</Text><Text style={{ color: color.lilac }}>Controls ↑</Text></Pressable>}
+    <DownloadStatus slug={slug} showControls={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })} />
     {chosen.length > 0 && <View style={{ paddingHorizontal: 20, paddingVertical: 10, borderTopWidth: 1, borderColor: color.line, backgroundColor: color.surface }}>
       <View style={[ui.row, { justifyContent: "space-between" }]}><Text accessibilityLiveRegion="polite" style={ui.text}>{chosen.length} selected</Text><Pressable disabled={deleting} onPress={() => setSelected([])} style={{ padding: 10 }}><Text style={{ color: color.lilac }}>Clear</Text></Pressable></View>
       {missing.length > 0 && <Text style={[ui.muted, { fontSize: 11, marginBottom: 8 }]}>About {formatBytes(estimate.bytes)} · {formatBytes(freeBytes())} free</Text>}

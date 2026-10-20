@@ -25,8 +25,16 @@ export class DownloadQueue {
   private persisted: () => DownloadJob[];
   private removed = new Set<string>();
   private nativeResumes = new Set<string>();
+  private listeners = new Set<() => void>();
+  private snapshot: DownloadJob[];
+  private statusSnapshot: DownloadJob[];
+  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  getSnapshot = () => this.snapshot;
+  getStatusSnapshot = () => this.statusSnapshot;
   constructor(jobs: DownloadJob[], worker: Worker, changed: (jobs: DownloadJob[]) => void, removeFiles: (slug: string) => void, canRun = () => true, persisted = () => [] as DownloadJob[]) {
     this.jobs = restoredDownloads(jobs);
+    this.snapshot = this.jobs.map(job => ({ ...job }));
+    this.statusSnapshot = this.snapshot;
     this.worker = worker; this.changed = changed; this.removeFiles = removeFiles; this.canRun = canRun; this.persisted = persisted;
   }
   private recoverJobs() {
@@ -34,7 +42,11 @@ export class DownloadQueue {
     for (const job of this.persisted()) if (job.native && !this.removed.has(job.series.slug) && !this.jobs.some(current => current.series.slug === job.series.slug)) { this.jobs.push({ ...job }); changed = true; }
     return changed;
   }
-  private publish() { this.recoverJobs(); this.changed(this.jobs.map(job => ({ ...job }))); this.removed.clear(); }
+  private publish() {
+    this.recoverJobs(); this.snapshot = this.jobs.map(job => ({ ...job }));
+    if (this.snapshot.length !== this.statusSnapshot.length || this.snapshot.some((job, index) => job.series.slug !== this.statusSnapshot[index].series.slug || job.status !== this.statusSnapshot[index].status || job.native !== this.statusSnapshot[index].native)) this.statusSnapshot = this.snapshot;
+    this.changed(this.snapshot); this.removed.clear(); this.listeners.forEach(listener => listener());
+  }
   isBusy(slug?: string) { return slug ? this.running.has(slug) || this.cancelling.has(slug) : this.running.size > 0 || this.cancelling.size > 0; }
   enqueue(series: Series, selection: string, autoBookmark = false): boolean {
     if (this.jobs.some(job => job.series.slug === series.slug)) return false;

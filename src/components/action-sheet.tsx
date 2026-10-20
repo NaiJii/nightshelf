@@ -1,5 +1,6 @@
+import { Pressable } from "./pressable";
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { color, Icon, ui } from "./ui";
 

@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, Text } from "react-native";
+import { Pressable } from "./pressable";
+import { ActivityIndicator, Text } from "react-native";
 import { useShelf } from "../lib/app-state";
 import type { ReadingList, Series } from "../lib/parser";
 import { color, Icon } from "./ui";

@@ -1,5 +1,6 @@
+import { Pressable } from "../../../components/pressable";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, AppState, ScrollView, Text, View } from "react-native";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
@@ -58,7 +59,7 @@ function ChapterReader({ slug, chapter, title, manualUnreadRef, hidden, setHidde
   useEffect(() => { web.current?.injectJavaScript(`window.readerChromeVisible=${!hidden};true;`); }, [hidden]);
 
   function go(target?: string) { if (target) router.replace({ pathname: "/reader/[slug]/[chapter]", params: { slug, chapter: target, title } }); }
-  return <View style={ui.safe}>
+  return <View nativeID={`nightshelf-reader:${baseUrl}`} collapsable={false} style={ui.safe}>
     {files.length > 0 || novel ? <WebView ref={web} source={{ html, baseUrl }} style={{ flex: 1, backgroundColor: "#08080b" }} originWhitelist={["*"]}
       allowFileAccess allowFileAccessFromFileURLs allowUniversalAccessFromFileURLs={false}
       javaScriptEnabled domStorageEnabled={false} setBuiltInZoomControls setDisplayZoomControls={false} scalesPageToFit
@@ -71,6 +72,7 @@ function ChapterReader({ slug, chapter, title, manualUnreadRef, hidden, setHidde
         try {
           const data = JSON.parse(event.nativeEvent.data);
           if (Number.isFinite(data.zoom) && data.zoom >= 1 / 6 && data.zoom <= 2) {
+            if (!readerControls) { setError("Zoom requires the updated Android app."); return; }
             if (focused.current && AppState.currentState === "active" && readerControls) {
               void readerControls.zoomReader(baseUrl, data.zoom).then(ok => {
                 if (!ok && focused.current) setError("Could not zoom this chapter. Tap to reload and retry.");

@@ -2,10 +2,10 @@ import { fetch } from "expo/fetch";
 import { Directory, File } from "expo-file-system";
 import { chapterSort, kindOf, sourceOf, mergeDiscovery, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, selectChapters } from "./parser";
 import type { ContentMode, Period, Series, SortOrder, SourceId } from "./parser";
-import { chapterDirectory, chapterIntact, COVERS, initializeStorage, loadCatalog, loadPreferences, savedStories, mergeCatalog, loadDownloads, saveDownloads, novelChapter } from "./storage";
+import { catalogMetadata, chapterDirectory, chapterIntact, COVERS, initializeStorage, loadCatalog, loadCatalogAsync, loadPreferences, savedStories, mergeCatalog, loadDownloads, saveDownloads, novelChapter } from "./storage";
 import { parseWebtoonCards, parseWebtoonDetails, parseWebtoonEpisodes, parseWebtoonImages, webtoonLanguage, webtoonSearchHasNext } from "./webtoon";
 import { NetworkPaused } from "./network";
-import { throwIfAborted, withAbort } from "./request-control";
+import { throwIfAborted, withAbort, yieldToForeground } from "./request-control";
 import { directoryHasMore, directoryUrl, imageReferer, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexChapterPayload, parseVortexPostPayload } from "./reader-sites";
 import type { ReaderSite } from "./reader-sites";
 import { isVerificationHost, requireSourceVerification, SOURCE_AGENT, verificationCookies, verificationUserAgent } from "./source-session";
@@ -164,6 +164,7 @@ async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSign
   // Yield between small batches so cached responses and catalog writes cannot monopolize the UI thread.
   for (let start = 0; start < items.length; start += 3) {
     await new Promise(resolve => setTimeout(resolve, 0));
+    await yieldToForeground(signal);
     throwIfAborted(signal);
     const batch = await Promise.all(items.slice(start, start + 3).map(async item => {
       throwIfAborted(signal);
@@ -180,9 +181,15 @@ async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSign
   }
 }
 
+export async function enrichCatalogIds(ids: string[], guard: Guard, signal?: AbortSignal, changed = () => {}) {
+  await yieldToForeground(signal);
+  const stored = new Map(catalogMetadata().map(item => [item.slug, item]));
+  await enrichDiscovery(ids.map(id => stored.get(id)).filter((item): item is Series => Boolean(item)), guard, signal, changed);
+}
+
 export async function syncCatalog(onProgress: (message: string) => void, guard: Guard, force = false, onWarning: (message: string) => void = () => {}, signal?: AbortSignal): Promise<Series[]> {
   throwIfAborted(signal);
-  const existing = loadCatalog();
+  const existing = await loadCatalogAsync();
   const saved = savedStories();
   const items = new Map(existing.map(item => [item.slug, { ...item }]));
   let successful = 0;
@@ -206,6 +213,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
   }
   for (const kind of (!preferences.source || preferences.source === "asura" ? ["comic", "novel"] : []) as ("comic" | "novel")[]) {
     for (const period of ["week", "month", "all"] as Period[]) {
+      await yieldToForeground(signal);
       onProgress(`Refreshing ${kind} rankings`);
       try {
         const url = kind === "comic" ? `${API}/trending/${period}?limit=10` : `${API}/novel-series?limit=10&sort=popular&period=${period}`;
@@ -232,6 +240,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
   let newDetails = 0;
   for (const url of [...new Set(urls)]) {
     await new Promise(resolve => setTimeout(resolve, 0));
+    await yieldToForeground(signal);
     throwIfAborted(signal);
     const old = [...items.values()].find(item => item.url === url);
     const owned = old && (old.localChapters?.length || saved[old.slug]?.bookmarked);
@@ -263,6 +272,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
   }
   for (const [slug, item] of items) {
     await new Promise(resolve => setTimeout(resolve, 0));
+    await yieldToForeground(signal);
     throwIfAborted(signal);
     try { items.set(slug, { ...item, localCover: await cacheCover(item, guard, signal) }); }
     catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
@@ -303,7 +313,7 @@ const rankingCache = new Map<Period, { at: number; data: unknown[] }>();
 const webtoonCache = new Map<string, { at: number; items: Series[]; hasNext: boolean }>();
 const siteCache = new Map<string, { at: number; items: Series[]; hasNext: boolean }>();
 
-async function browseReaderSite(source: ReaderSite, options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}) {
+async function browseReaderSite(source: ReaderSite, options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}, enrich = true) {
   const page = cursor.sitePage || 1, offset = cursor.siteOffset || 0;
   const popular = !options.query && (options.sort === "smart" || options.sort === "trending");
   const url = directoryUrl(source, options.sort, options.query, page);
@@ -316,7 +326,7 @@ async function browseReaderSite(source: ReaderSite, options: BrowseOptions, curs
     siteCache.set(url, entry); if (siteCache.size > 30) siteCache.delete(siteCache.keys().next().value!);
   }
   const batch = entry.items.slice(offset, offset + 20);
-  const stored = loadCatalog(), updates: Series[] = [], ids: string[] = [];
+  const stored = catalogMetadata(), updates: Series[] = [], ids: string[] = [];
   if (popular && page === 1 && offset === 0) for (const item of stored) if (sourceOf(item) === source) updates.push({ ...item, sourceRank: undefined });
   for (const [index, fresh] of batch.entries()) {
     const previous = stored.find(item => item.slug === fresh.slug || (sourceOf(item) === source && item.url === fresh.url));
@@ -324,12 +334,12 @@ async function browseReaderSite(source: ReaderSite, options: BrowseOptions, curs
     updates.push(item); ids.push(item.slug);
   }
   throwIfAborted(signal); mergeCatalog(updates); changed();
-  if (batch.length) await enrichDiscovery(updates.slice(-batch.length), guard, signal, changed);
+  if (enrich && batch.length) await enrichDiscovery(updates.slice(-batch.length), guard, signal, changed);
   const more = offset + batch.length < entry.items.length;
   return { ids, cursor: { ...cursor, siteOffset: more ? offset + batch.length : 0, sitePage: more ? page : page + 1, siteLoaded: (cursor.siteLoaded || 0) + batch.length }, hasMore: more || entry.hasNext };
 }
 
-async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}) {
+async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}, enrich = true) {
   const language = webtoonLanguage(options.language);
   const offset = cursor.webtoonOffset || 0;
   const page = cursor.webtoonPage || 1;
@@ -345,7 +355,7 @@ async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard
     if (webtoonCache.size > 30) webtoonCache.delete(webtoonCache.keys().next().value!);
   }
   const selected = entry.items.slice(offset, offset + 20);
-  const stored = loadCatalog(), updates: Series[] = [];
+  const stored = catalogMetadata(), updates: Series[] = [];
   const popular = !options.query && (options.collection === "canvas" || options.sort !== "trending");
   if (popular && offset === 0) for (const item of stored) if (sourceOf(item) === "webtoon" && item.language === language && item.url.includes("/canvas/") === (options.collection === "canvas")) updates.push({ ...item, sourceRank: undefined });
   const ids: string[] = [];
@@ -355,19 +365,19 @@ async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard
     updates.push(item); ids.push(item.slug);
   }
   throwIfAborted(signal); mergeCatalog(updates); changed();
-  if (selected.length) await enrichDiscovery(updates.slice(-selected.length), guard, signal, changed);
+  if (enrich && selected.length) await enrichDiscovery(updates.slice(-selected.length), guard, signal, changed);
   const more = offset + selected.length < entry.items.length;
   // Search pages use real source pagination; rankings are finite and sliced locally.
   const next = { ...cursor, webtoonOffset: more ? offset + selected.length : 0, webtoonPage: more ? page : page + 1 };
   return { ids, cursor: next, hasMore: more || entry.hasNext };
 }
 
-export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}): Promise<{ ids: string[]; cursor: BrowseCursor; hasMore: boolean }> {
-  if (options.source === "vortex" || options.source === "mangakakalot") return browseReaderSite(options.source, options, cursor, guard, signal, changed);
-  if (options.source === "webtoon") return browseWebtoon(options, cursor, guard, signal, changed);
+export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}, enrich = true): Promise<{ ids: string[]; cursor: BrowseCursor; hasMore: boolean }> {
+  if (options.source === "vortex" || options.source === "mangakakalot") return browseReaderSite(options.source, options, cursor, guard, signal, changed, enrich);
+  if (options.source === "webtoon") return browseWebtoon(options, cursor, guard, signal, changed, enrich);
   const next = { ...cursor };
   const updates: Series[] = [];
-  const existing = loadCatalog();
+  const existing = catalogMetadata();
   for (const kind of ["comic", "novel"] as const) {
     const done = kind === "comic" ? "comicDone" : "novelDone";
     if (next[done]) continue;
@@ -399,14 +409,14 @@ export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor
       const previous = existing.find(item => sourceOf(item) === "asura" && kindOf(item) === kind && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
       const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, genres: fresh.genres?.length ? fresh.genres : previous?.genres || fresh.genres, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt, rank: previous?.rank, popularRanks: previous?.popularRanks };
       if (options.sort === "trending" && !options.query) { item.popularRanks = { ...item.popularRanks, [options.period]: offset + index + 1 }; if (options.period === "week") item.rank = offset + index + 1; }
-      try { item.localCover = await cacheCover(item, guard, signal); }
+      try { if (enrich) item.localCover = await cacheCover(item, guard, signal); }
       catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       updates.push(item);
     }
   }
   throwIfAborted(signal); mergeCatalog(updates, options.sort === "trending" && !options.query);
   changed();
-  await enrichDiscovery(updates.filter(item => !item.summary || !item.cover || !item.rating), guard, signal, changed);
+  if (enrich) await enrichDiscovery(updates.filter(item => !item.summary || !item.cover || !item.rating), guard, signal, changed);
   return { ids: updates.map(item => item.slug), cursor: next, hasMore: !next.comicDone || !next.novelDone };
 }
 

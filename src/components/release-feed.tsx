@@ -1,5 +1,6 @@
+import { Pressable } from "./pressable";
 import { useMemo } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { router } from "expo-router";
 import { useShelf } from "../lib/app-state";
 import { unreadReleases } from "../lib/release-policy";

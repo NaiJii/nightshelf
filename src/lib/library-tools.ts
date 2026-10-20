@@ -1,7 +1,8 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { chapterListCached } from "./parser";
 import type { SavedStory, SourceId } from "./parser";
-import { chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, ROOT, savedStories, saveReleaseSnapshot, clearReleaseUpdates } from "./storage";
+import { yieldToForeground } from "./request-control";
+import { catalogMetadata, chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, loadCatalogAsync, ROOT, savedStories, saveReleaseSnapshot, clearReleaseUpdates } from "./storage";
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unknown";
@@ -13,6 +14,28 @@ export function folderBytes(folder: Directory): number {
 }
 export function freeBytes(): number { return Paths.availableDiskSpace; }
 export function libraryBytes(): number { return folderBytes(LIBRARY); }
+export async function folderBytesAsync(folder: Directory, signal?: AbortSignal): Promise<number> {
+  const pending = [folder]; let total = 0;
+  while (pending.length) {
+    const next = pending.pop()!;
+    if (!next.exists) continue;
+    const entries = next.list();
+    for (let start = 0; start < entries.length; start += 32) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await yieldToForeground(signal);
+      for (const entry of entries.slice(start, start + 32)) {
+        if (entry instanceof Directory) pending.push(entry); else if (entry.exists) total += entry.size || 0;
+      }
+    }
+  }
+  return total;
+}
+export async function libraryBytesAsync(signal?: AbortSignal): Promise<number> { return folderBytesAsync(LIBRARY, signal); }
+export async function storageSummaryAsync(signal?: AbortSignal): Promise<ReturnType<typeof storageSummary>> {
+  const stories: ReturnType<typeof storageSummary>["stories"] = [];
+  for (const item of (await loadCatalogAsync(signal)).filter(item => item.hasLocalFiles)) stories.push({ item, bytes: await folderBytesAsync(new Directory(LIBRARY, item.slug), signal) });
+  return { free: freeBytes(), covers: await folderBytesAsync(COVERS, signal), stories: stories.sort((a, b) => b.bytes - a.bytes) };
+}
 export function storageSummary() {
   return { free: freeBytes(), covers: folderBytes(COVERS), stories: loadCatalog().filter(item => item.hasLocalFiles).map(item => ({ item, bytes: folderBytes(new Directory(LIBRARY, item.slug)) })).sort((a, b) => b.bytes - a.bytes) };
 }
@@ -20,7 +43,7 @@ export function updateStoryOptions(slug: string, change: Partial<SavedStory>): v
   if (!/^[a-zA-Z0-9_.-]+$/.test(slug) || slug === "." || slug === "..") throw new Error("Invalid story.");
   const all = savedStories(), previous = all[slug] || {}, next = { ...previous, ...change };
   if (change.autoDownload || change.notifyReleases) next.bookmarked = true;
-  const item = (next.bookmarked && !previous.bookmarked) || (next.autoDownload && !previous.autoDownload) || (next.notifyReleases && !previous.notifyReleases) ? loadCatalog().find(item => item.slug === slug) : undefined;
+  const item = (next.bookmarked && !previous.bookmarked) || (next.autoDownload && !previous.autoDownload) || (next.notifyReleases && !previous.notifyReleases) ? catalogMetadata().find(item => item.slug === slug) : undefined;
   const baseline = item && chapterListCached(item) ? item.chapterIds : undefined;
   if (next.bookmarked && !previous.bookmarked) {
     saveReleaseSnapshot(slug, baseline); clearReleaseUpdates(slug);

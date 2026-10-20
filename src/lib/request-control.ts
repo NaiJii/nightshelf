@@ -3,6 +3,16 @@ export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) { const error = new Error("Operation cancelled."); error.name = "AbortError"; throw error; }
 }
 
+let foreground = 0;
+export async function withForeground<T>(operation: () => Promise<T>): Promise<T> {
+  foreground++;
+  try { return await operation(); } finally { foreground--; }
+}
+export async function yieldToForeground(signal?: AbortSignal): Promise<void> {
+  while (foreground > 0) { throwIfAborted(signal); await new Promise(resolve => setTimeout(resolve, 50)); }
+  throwIfAborted(signal);
+}
+
 export async function withLinkedAbort<T>(signals: AbortSignal[], operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();

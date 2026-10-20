@@ -1,5 +1,6 @@
+import { Pressable } from "./pressable";
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { color } from "./ui";
 
 const textStyle = { color: "#d8d2e2", fontSize: 14, lineHeight: 23 };

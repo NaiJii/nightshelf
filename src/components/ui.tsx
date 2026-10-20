@@ -1,5 +1,6 @@
+import { Pressable } from "./pressable";
 import { ComponentProps, ReactNode } from "react";
-import { ActivityIndicator, ColorValue, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, ColorValue, Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Series } from "../lib/parser";

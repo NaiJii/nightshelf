@@ -1,6 +1,7 @@
+import { Pressable } from "./pressable";
 import { useActionSheet } from "./action-sheet";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { useShelf } from "../lib/app-state";
+import { ActivityIndicator, Text, View } from "react-native";
+import { useDownloads, useShelf } from "../lib/app-state";
 import { openSeries } from "./series-card";
 import { color, Icon, ui } from "./ui";
 import { sourceLabel, sourceOf } from "../lib/parser";
@@ -9,7 +10,8 @@ import { queueSummary } from "../lib/background-downloads";
 
 export function DownloadList({ slug: scope }: { slug?: string } = {}) {
   const showSheet = useActionSheet();
-  const { downloads: allDownloads, pauseDownload, resumeDownload, cancelDownload } = useShelf();
+  const { pauseDownload, resumeDownload, cancelDownload } = useShelf();
+  const allDownloads = useDownloads();
   const downloads = scope ? allDownloads.filter(job => job.series.slug === scope) : allDownloads;
   if (!downloads.length) return null;
   const overall = queueSummary(allDownloads);

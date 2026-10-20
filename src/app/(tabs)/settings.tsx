@@ -1,5 +1,6 @@
+import { Pressable } from "../../components/pressable";
 import { router } from "expo-router";
-import { ActivityIndicator, Pressable, Switch, Text, View } from "react-native";
+import { ActivityIndicator, Switch, Text, View } from "react-native";
 import { useShelf } from "../../lib/app-state";
 import { DEFAULT_WEIGHTS } from "../../lib/parser";
 import { Chip, color, Icon, Page, ui } from "../../components/ui";

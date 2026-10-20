@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
 import android.webkit.WebView
+import com.facebook.react.uimanager.util.ReactFindViewUtil
 import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -48,7 +49,8 @@ class ReaderControlsModule : Module() {
         !baseUrl.startsWith("file://") || !factor.isFinite() || factor < 1.0 / 6.0 || factor > 2.0) {
         false
       } else {
-        val web = findReader(window.decorView, baseUrl)
+        val reader = ReactFindViewUtil.findView(window.decorView, "nightshelf-reader:$baseUrl")
+        val web = reader?.let { findReader(it) }
         if (web == null) false else { web.zoomBy(factor.toFloat()); true }
       }
     }.runOnQueue(Queues.MAIN)
@@ -63,11 +65,11 @@ class ReaderControlsModule : Module() {
     }
   }
 
-  private fun findReader(view: View, baseUrl: String): WebView? {
+  private fun findReader(view: View): WebView? {
     if (!view.isShown) return null
-    if (view is WebView) return if (view.url == baseUrl) view else null
+    if (view is WebView) return view
     if (view is ViewGroup) for (index in 0 until view.childCount) {
-      findReader(view.getChildAt(index), baseUrl)?.let { return it }
+      findReader(view.getChildAt(index))?.let { return it }
     }
     return null
   }

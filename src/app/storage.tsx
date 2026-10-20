@@ -1,19 +1,21 @@
+import { Pressable } from "../components/pressable";
 import { useActionSheet } from "../components/action-sheet";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { Page, ui, color, Icon } from "../components/ui";
-import { useShelf } from "../lib/app-state";
-import { formatBytes, storageSummary, verifyChapterFiles } from "../lib/library-tools";
+import { useDownloads, useShelf } from "../lib/app-state";
+import { formatBytes, storageSummaryAsync, verifyChapterFiles } from "../lib/library-tools";
 import type { Series } from "../lib/parser";
 
 export default function StorageManager() {
   const showSheet = useActionSheet();
-  const { read, removeDownloads, downloadBusy, downloads, startDownload, deleting, catalog } = useShelf();
-  const [summary, setSummary] = useState<ReturnType<typeof storageSummary> | null>(null);
+  const { read, removeDownloads, downloadBusy, startDownload, deleting, catalog } = useShelf();
+  const downloads = useDownloads(true);
+  const [summary, setSummary] = useState<Awaited<ReturnType<typeof storageSummaryAsync>> | null>(null);
   const [busy, setBusy] = useState("");
   const [report, setReport] = useState("");
-  const refresh = useCallback(() => { const timer = setTimeout(() => setSummary(storageSummary()), 20); return () => clearTimeout(timer); }, []);
+  const refresh = useCallback(() => { const controller = new AbortController(); void storageSummaryAsync(controller.signal).then(value => { if (!controller.signal.aborted) setSummary(value); }).catch(error => { if (!controller.signal.aborted) setReport(error instanceof Error ? error.message : String(error)); }); return () => controller.abort(); }, []);
   useFocusEffect(refresh);
   async function scan(item: Series) {
     setBusy(item.slug); setReport("");
@@ -29,11 +31,11 @@ export default function StorageManager() {
   }
   function erase(item: Series, all = false) {
     const ids = (item.localChapters || []).filter(id => read[item.slug]?.[id]);
-    showSheet(all ? "Delete all downloads for this story?" : `Delete ${ids.length} read chapters?`, "Bookmarks, lists and read history will stay.", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: () => void removeDownloads(item, ids, all).then(() => setSummary(storageSummary())) }]);
+    showSheet(all ? "Delete all downloads for this story?" : `Delete ${ids.length} read chapters?`, "Bookmarks, lists and read history will stay.", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: () => void removeDownloads(item, ids, all).then(() => storageSummaryAsync()).then(setSummary).catch(error => setReport(String(error))) }]);
   }
   function clearAllRead() {
     const stories = catalog.filter(item => item.localChapters?.some(id => read[item.slug]?.[id]));
-    showSheet("Delete all read downloads?", `${stories.length} stories contain read chapters. Active or queued downloads will be skipped. Your reading history stays.`, [{ text: "Cancel", style: "cancel" }, { text: "Delete read", style: "destructive", onPress: () => { void (async () => { for (const item of stories) await removeDownloads(item, (item.localChapters || []).filter(id => read[item.slug]?.[id])); setSummary(storageSummary()); })(); } }]);
+    showSheet("Delete all read downloads?", `${stories.length} stories contain read chapters. Active or queued downloads will be skipped. Your reading history stays.`, [{ text: "Cancel", style: "cancel" }, { text: "Delete read", style: "destructive", onPress: () => { void (async () => { for (const item of stories) await removeDownloads(item, (item.localChapters || []).filter(id => read[item.slug]?.[id])); setSummary(await storageSummaryAsync()); })().catch(error => setReport(String(error))); } }]);
   }
   return <Page title="Storage" subtitle="ON THIS PHONE" action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>}><View style={{ paddingHorizontal: 22 }}>
     {!summary ? <ActivityIndicator color={color.lilac} /> : <><Text style={ui.title}>{formatBytes(summary.stories.reduce((sum, row) => sum + row.bytes, 0))} of chapters</Text><Text style={[ui.muted, { marginVertical: 10 }]}>{formatBytes(summary.free)} free on phone · {formatBytes(summary.covers)} cached covers</Text></>}

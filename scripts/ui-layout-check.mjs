@@ -4,6 +4,8 @@ import vm from "node:vm";
 import ts from "typescript";
 import * as parser from "../src/lib/parser.ts";
 import * as releasePolicy from "../src/lib/release-policy.ts";
+import * as exploreSessions from "../src/lib/explore-session.ts";
+import * as requestControl from "../src/lib/request-control.ts";
 
 function component(file, extraModules = {}) {
   const slots = [], effects = []; let cursor = 0;
@@ -24,26 +26,36 @@ function component(file, extraModules = {}) {
   };
   const exports = {};
   const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, require: name => { assert.ok(modules[name], name); return modules[name]; } });
+  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, require: name => { if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; assert.ok(modules[name], name); return modules[name]; } });
   return { effects, render(name, props) { cursor = 0; effects.length = 0; return exports[name](props); } };
 }
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
+const touch=component('../src/components/pressable.tsx');
+const touchHandler=()=>{};
+const touchButton=touch.render('Pressable',{onPress:touchHandler,accessibilityLabel:'Bookmark',disabled:false,style:{minHeight:48}});
+assert.equal(touchButton.props.onPress,touchHandler);
+assert.equal(touchButton.props.accessibilityLabel,'Bookmark');
+assert.ok(touchButton.props.android_ripple,'Android touch feedback is native and does not await storage/network work');
+assert.equal(touchButton.props.style({pressed:true})[0].minHeight,48,'touch feedback preserves button sizing');
+assert.equal(touchButton.props.style({pressed:true})[1].opacity,0.72);
 
 const browseRequests = [];
 const exploreShelf = {
   catalog: [{slug:'first',title:'First'}], saved: {}, preferences: {source:'asura',sort:'title'},
   browse: (options, cursor, signal, manual) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,resolve,reject})),
 };
-const explore = component('../src/app/(tabs)/explore.tsx', {
+const exploreModules = {
   'expo-router': {router:{}},
   '../../lib/app-state': {useShelf:()=>exploreShelf},
   '../../lib/parser': {filterDiscovery:items=>items,sortExplore:items=>items},
+  '../../lib/explore-session': exploreSessions,
   '../../lib/scraper': {FIRST_PAGE:{page:1}},
   '../../components/ui': {ui:{},color:{},Icon:'Icon',Chip:'Chip',PageHeading:'PageHeading'},
   '../../components/series-card': {SeriesCard:'SeriesCard'},
   '../../components/discovery-controls': {DiscoveryControls:'DiscoveryControls',PopularPeriods:'PopularPeriods'},
-});
-const exploreList = () => nodes(explore.render('default',{})).find(node=>node.type==='FlatList');
+};
+const explore = component('../src/app/(tabs)/explore.tsx', exploreModules);
+const exploreList = () => nodes(explore.render('ExploreResults',{provider:'asura-test'})).find(node=>node.type==='FlatList');
 const settleExplore = async () => { await new Promise(resolve=>setTimeout(resolve,0)); const list=exploreList(); explore.effects.at(-1).callback(); return list; };
 exploreList();
 const stopExplore = explore.effects[1].callback();
@@ -81,6 +93,38 @@ discovery=exploreList(); discovery.props.onEndReached(); discovery.props.onConte
 assert.equal(browseRequests.length,4,'exhausted results stop automatic pagination');
 assert.ok(!nodes(discovery.props.ListFooterComponent).some(node=>node.type==='Pressable'),'normal pagination needs no Load more button');
 stopExplore();
+const revisited = component('../src/app/(tabs)/explore.tsx', exploreModules);
+const revisitedList = () => nodes(revisited.render('ExploreResults',{provider:'asura-test'})).find(node=>node.type==='FlatList');
+revisitedList(); const stopRevisited=revisited.effects[1].callback();
+await new Promise(resolve=>setTimeout(resolve,0));
+let remembered = revisitedList();
+assert.equal(browseRequests.length,4,'returning to a provider restores loaded pages without requesting them again');
+assert.equal(remembered.props.data[0].slug,'first');
+const restoredOffsets=[];remembered.props.ref.current={scrollToOffset:value=>restoredOffsets.push(value.offset)};
+remembered.props.onLayout({nativeEvent:{layout:{height:600}}});remembered.props.onContentSizeChange(400,2900);
+assert.deepEqual(restoredOffsets,[2100],'returning to a provider restores the previous scroll position');
+remembered.props.onRefresh();
+stopRevisited(); revisitedList(); const stopRefresh=revisited.effects[1].callback();
+await new Promise(resolve=>setTimeout(resolve,0));
+remembered=revisitedList();
+assert.equal(remembered.props.data[0].slug,'first','cached stories remain usable while refresh is pending');
+assert.equal(remembered.props.refreshing,true);
+assert.equal(browseRequests.length,5);
+browseRequests[4].reject(Error('Refresh offline'));
+await new Promise(resolve=>setTimeout(resolve,0));
+remembered=revisitedList();
+assert.equal(remembered.props.data[0].slug,'first','a failed refresh keeps the cached list');
+assert.equal(remembered.props.refreshing,false);
+stopRefresh();
+remembered.props.ListHeaderComponent.props.children[1].props.children.find(node=>node.type==='TextInput').props.onChangeText(' remembered query ');
+assert.equal(exploreSessions.exploreQuery('asura-test'),' remembered query ','queries are remembered per provider');
+assert.equal(exploreSessions.exploreQuery('other-provider'),'');
+exploreSessions.rememberExploreQuery('short-test','a');
+const shortSearch=component('../src/app/(tabs)/explore.tsx',exploreModules);
+shortSearch.render('ExploreResults',{provider:'short-test'});const stopShort=shortSearch.effects[1].callback();
+const beforeShortSearch=browseRequests.length;await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(browseRequests.length,beforeShortSearch,'one-character queries do not page through the entire provider catalog');
+stopShort();
 
 const summary = component("../src/components/expandable-summary.tsx");
 const renderSummary = () => nodes(summary.render("ExpandableSummary", { text: "A summary of any character length." }));
@@ -119,7 +163,7 @@ const details = component('../src/app/series/[slug].tsx', {
   'expo-router': {useLocalSearchParams: () => ({slug:'example'}), useFocusEffect: () => {}, router: {}},
   '../../lib/parser': parser,
   '../../lib/storage': {readingHistory: () => positions},
-  '../../lib/app-state': {useShelf: () => shelf},
+  '../../lib/app-state': {useShelf: () => shelf,useDownloads:()=>shelf.downloads},
   '../../lib/library-tools': {estimateDownload: (...args) => {estimateCalls.push(args);return {bytes:1};}, formatBytes: () => '1 MB', freeBytes: () => 1000},
   '../../components/ui': {color: {}, ui: {}, Cover: 'Cover', Icon: 'Icon', Chip: 'Chip'},
   '../../components/story-row': {PublicationStatus: 'Status', SaveActions: 'SaveActions'},
@@ -178,13 +222,13 @@ const provider = component('../src/lib/app-state.tsx', {
   '@react-native-community/netinfo': {__esModule:true,default:{fetch:()=>new Promise(resolve=>{resolveNetwork=resolve;})}},
   './parser': parser,
   './release-policy': releasePolicy,
-  './storage': {loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
+  './storage': {catalogMetadata:()=>[story],loadCatalogAsync:async()=>[story],loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
   './scraper': {refreshSeries:()=>new Promise((_,reject)=>{rejectDetails=reject;}),syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
   './network': {networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy': {connectionLabel:()=>({label:'Offline'})},
   './releases': {configureReleaseChecks:async()=>{}},
   './download-queue': {restoredDownloads:()=>[],DownloadQueue:class {jobs=[];isBusy(){return false;}pause(){}enqueue(...args){automaticQueued.push(args);} }},
-  './request-control': {},
+  './request-control': requestControl,
   './background-downloads': nativeControls,
   './library-tools': {},
 });
@@ -207,6 +251,12 @@ const providerSync=app().sync();rejectSync(Error('Vortex unavailable'));await pr
 assert.equal(app().notice,'Vortex unavailable');
 app().updatePreferences({source:'asura'});app();provider.effects[0].callback();
 assert.equal(app().notice,'','changing providers clears the previous provider warning');
+app().updatePreferences({sort:'rating',hideLiked:true});app().updatePreferences({source:'vortex'});
+app().updatePreferences({sort:'updated',hideLiked:false});app().updatePreferences({source:'asura'});
+assert.equal(app().preferences.sort,'rating','each provider restores its sorting and filters');
+assert.equal(app().preferences.hideLiked,true);
+app().updatePreferences({sort:'title'});app().updatePreferences({source:'asura'});
+assert.equal(app().preferences.sort,'title','tapping the active provider cannot restore stale preferences');
 nativeControls.backgroundTransfers={pause:async()=>{throw Error('Could not pause Android transfer');}};
 nativeControls.stopTransfer=async()=>{throw Error('Could not stop Android transfer');};
 app().pauseDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
@@ -214,13 +264,13 @@ assert.equal(app().notice,'Could not pause Android transfer','native pause failu
 app().resumeDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(app().notice,'Could not stop Android transfer','native resume failures become visible instead of unhandled rejections');
 nativeControls.transferStates=()=>({});
-app();provider.effects[1].callback();
+app();provider.effects[2].callback();
 const deletionPending=app().removeDownloads(story,['1']);
 resolveNetwork({type:'wifi',isConnected:true});
 await deletionPending;
 assert.equal(localDeletions.length,1);
 assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
-app();provider.effects[1].callback();resolveNetwork({type:'wifi',isConnected:true});
+app();provider.effects[2].callback();resolveNetwork({type:'wifi',isConnected:true});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(automaticQueued.length,1,'automatic transfers work again once deletion finishes');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');

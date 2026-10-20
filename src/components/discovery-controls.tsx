@@ -1,5 +1,6 @@
+import { Pressable } from "./pressable";
 import { useState } from "react";
-import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { SOURCES, filterDiscovery } from "../lib/parser";
 import { WEBTOON_LANGUAGES } from "../lib/webtoon";

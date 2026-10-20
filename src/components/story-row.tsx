@@ -1,4 +1,5 @@
-import { Pressable, Text, View } from "react-native";
+import { Pressable } from "./pressable";
+import { Text, View } from "react-native";
 import { Series, kindOf, publicationState, releaseLabel, sourceLabel, formatRating } from "../lib/parser";
 import { useActionSheet } from "./action-sheet";
 import { useShelf } from "../lib/app-state";
