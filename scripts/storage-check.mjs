@@ -15,9 +15,10 @@ class Entry {
   get name() { return path.basename(this.path); }
   get exists() { return fs.existsSync(this.path); }
 }
+export const reads = {directories:0};
 export class Directory extends Entry {
   create() { fs.mkdirSync(this.path, { recursive: true }); }
-  list() { return fs.readdirSync(this.path, { withFileTypes: true }).map(item => item.isDirectory() ? new Directory(this, item.name) : new File(this, item.name)); }
+  list() { reads.directories++; return fs.readdirSync(this.path, { withFileTypes: true }).map(item => item.isDirectory() ? new Directory(this, item.name) : new File(this, item.name)); }
   delete() { fs.rmSync(this.path, { recursive: true }); }
 }
 export class File extends Entry {
@@ -42,7 +43,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 } });
 try {
   const storage = await import("../src/lib/storage.ts");
-  const { File, Directory } = await import("expo-file-system");
+  const { File, Directory, reads } = await import("expo-file-system");
   storage.initializeStorage();
   for (const chapter of ["1", "2"]) {
     const folder = storage.chapterDirectory("example", chapter);
@@ -70,6 +71,9 @@ try {
   assert.equal(storage.readingHistory().example.fraction, 0, "marking unread resets the saved reading position");
   assert.ok(storage.chapterDirectory("example", "2").exists, "manual read changes do not delete downloads");
   const cached = {...storage.SEED[0],slug:"example",summary:"The full offline summary.",detailsCached:true};
+  const scansBeforeMetadata=reads.directories;
+  storage.mergeCatalog([cached]);
+  assert.equal(reads.directories,scansBeforeMetadata,'metadata commits do not synchronously rescan downloaded chapter folders');
   storage.saveCatalog([cached]);
   assert.equal(storage.loadCatalog()[0].summary, cached.summary, "series details are available after reopening from storage");
   const complete = new File(storage.chapterDirectory("example", "1"), ".complete");
@@ -210,6 +214,18 @@ export async function fetch(url,options={}){
     const partialOverview=await refreshSeries(partialStory,async()=>{},undefined,false);
     assert.equal(partialOverview.chapterCount,201,'overview totals use the published count rather than the two visible chapter links');
     assert.equal(partialOverview.chapterIds,undefined,'overview metadata does not certify a partial chapter list');
+    const preferencesBeforeAbort=storage.loadPreferences();
+    for (const source of ['asura','webtoon','vortex','mangakakalot']) {
+      storage.savePreferences({...preferencesBeforeAbort,source});
+      const controller=new AbortController(), warnings=[], start=requests.length;
+      const pending=syncCatalog(()=>{},()=>new Promise(()=>{}),true,message=>warnings.push(message),controller.signal);
+      controller.abort(); let deadline;
+      try { await assert.rejects(Promise.race([pending,new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error(source+' sync did not cancel promptly')),150);})]),{name:'AbortError'}); }
+      finally { clearTimeout(deadline); }
+      assert.equal(requests.length,start,'cancelled '+source+' sync cannot continue issuing requests');
+      assert.deepEqual(warnings,[],'switching providers is not a source error');
+    }
+    storage.savePreferences(preferencesBeforeAbort);
     let synced = await syncCatalog(()=>{},async()=>{});
     assert.equal(synced.find(item=>item.slug==='example').summary,fullSummary,'ranked stories fetch and persist full summaries without opening them');
     assert.equal(synced.find(item=>item.slug==='novel--example').summary,'The full novel summary.');
@@ -263,6 +279,10 @@ export async function fetch(url,options={}){
     assert.ok(webtoonItem.updatedAt && webtoonItem.sourceDates,'WEBTOON update dates appear on the first discovery load');
     assert.equal(webtoonItem.chapterIds,undefined,'WEBTOON discovery does not load the chapter list');
     assert.ok(!requests.slice(webtoonStart).some(url=>url.includes('page=2')),'metadata fetching does not paginate WEBTOON episodes');
+    const switchAbort=new AbortController(); let cancelledUpdates=0;
+    const switching=browseCatalog({...options,source:'webtoon',language:'en'},FIRST_PAGE,async()=>{},switchAbort.signal,()=>{cancelledUpdates++;if(cancelledUpdates===1)setTimeout(()=>switchAbort.abort(),0);});
+    await assert.rejects(switching,{name:'AbortError'});
+    assert.equal(cancelledUpdates,1,'metadata batches yield to provider-switch input before more commits');
     storage.mergeCatalog([{...webtoonItem,summary:'',chapterCount:0,metadataSyncedAt:new Date().toISOString()}]);
     await browseCatalog({...options,source:'webtoon',language:'en'},FIRST_PAGE,async()=>{});
     const repairedWebtoon=storage.loadCatalog().find(item=>item.slug===webtoonItem.slug);

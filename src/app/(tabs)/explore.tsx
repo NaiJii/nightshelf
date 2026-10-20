@@ -44,7 +44,7 @@ export default function Explore() {
       loadedIds.current = [...new Set([...loadedIds.current, ...page.ids])];
       setIds(loadedIds.current); setHasMore(page.hasMore);
     } catch (failure) {
-      if (!abort.signal.aborted && version === generation.current) setError(failure instanceof Error ? failure.message : "Couldn’t load more titles. Cached stories remain available offline.");
+      if (!abort.signal.aborted && version === generation.current && !(failure instanceof Error && failure.name === "AbortError")) setError(failure instanceof Error ? failure.message : "Couldn’t load more titles. Cached stories remain available offline.");
     } finally { if (version === generation.current) { busy.current = false; setLoading(false); } }
   }, [browse, options]);
   useEffect(() => {

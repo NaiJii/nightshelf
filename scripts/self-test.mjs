@@ -9,6 +9,18 @@ import readerControlsPlugin from "../plugins/with-reader-controls.js";
 import "./webtoon-check.mjs";
 import "./reader-sites-check.mjs";
 import { formatRating } from "../src/lib/parser.ts";
+import { withLinkedAbort } from "../src/lib/request-control.ts";
+
+const providerAbort = new AbortController(), screenAbort = new AbortController(), downloadAbort = new AbortController();
+let combinedSignal;
+const providerPending = withLinkedAbort([providerAbort.signal,screenAbort.signal], signal => { combinedSignal=signal;return new Promise(()=>{}); });
+await Promise.resolve(); providerAbort.abort();
+await assert.rejects(providerPending,{name:'AbortError'});
+assert.ok(combinedSignal.aborted,'provider switches abort the actual request signal');
+assert.equal(downloadAbort.signal.aborted,false,'provider metadata cancellation does not cancel downloads');
+assert.equal(await withLinkedAbort([new AbortController().signal],async()=>42),42,'the next provider starts independently');
+const screenPending=withLinkedAbort([new AbortController().signal,screenAbort.signal],()=>new Promise(()=>{}));
+screenAbort.abort(); await assert.rejects(screenPending,{name:'AbortError'});
 
 const onlineWifi = { type: "wifi", isConnected: true, isInternetReachable: true, details: { isConnectionExpensive: false } };
 assert.equal(connectionLabel(onlineWifi).label, "Wi-Fi");

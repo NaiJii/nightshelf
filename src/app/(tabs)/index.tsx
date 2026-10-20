@@ -19,7 +19,7 @@ export default function Home() {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       setSourceLoading(true); setSourceError("");
-      void browse({ source: preferences.source, language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: "comics", sort: "smart", period: "week", query: "", refresh: sourceSessionRevision > 0 }, { ...FIRST_PAGE }, controller.signal).catch(error => { if (!controller.signal.aborted) setSourceError(error instanceof Error ? error.message : "Could not refresh this source."); }).finally(() => { if (!controller.signal.aborted) setSourceLoading(false); });
+      void browse({ source: preferences.source, language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: "comics", sort: "smart", period: "week", query: "", refresh: sourceSessionRevision > 0 }, { ...FIRST_PAGE }, controller.signal).catch(error => { if (!controller.signal.aborted && !(error instanceof Error && error.name === "AbortError")) setSourceError(error instanceof Error ? error.message : "Could not refresh this source."); }).finally(() => { if (!controller.signal.aborted) setSourceLoading(false); });
     }, 0);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [alternate, preferences.source, preferences.webtoonLanguage, preferences.webtoonCollection, browse, sourceSessionRevision]);

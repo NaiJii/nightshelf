@@ -160,11 +160,11 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
 }
 
 async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSignal, changed = () => {}) {
-  let next = 0;
-  // Three metadata requests at a time; chapter APIs/pagination are reserved for opening or syncing a saved story.
-  await Promise.all(Array.from({ length: Math.min(3, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++, item = items[index];
+  // Yield between small batches so cached responses and catalog writes cannot monopolize the UI thread.
+  for (let start = 0; start < items.length; start += 3) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    throwIfAborted(signal);
+    const batch = await Promise.all(items.slice(start, start + 3).map(async item => {
       throwIfAborted(signal);
       let fresh = item;
       try {
@@ -172,12 +172,15 @@ async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSign
       } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       throwIfAborted(signal);
-      items[index] = fresh; mergeCatalog([fresh]); changed();
-    }
-  }));
+      return fresh;
+    }));
+    throwIfAborted(signal);
+    items.splice(start, batch.length, ...batch); mergeCatalog(batch); changed();
+  }
 }
 
-export async function syncCatalog(onProgress: (message: string) => void, guard: Guard, force = false, onWarning: (message: string) => void = () => {}): Promise<Series[]> {
+export async function syncCatalog(onProgress: (message: string) => void, guard: Guard, force = false, onWarning: (message: string) => void = () => {}, signal?: AbortSignal): Promise<Series[]> {
+  throwIfAborted(signal);
   const existing = loadCatalog();
   const saved = savedStories();
   const items = new Map(existing.map(item => [item.slug, { ...item }]));
@@ -187,25 +190,25 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
   if (preferences.source === "vortex" || preferences.source === "mangakakalot") {
     onProgress("Refreshing source discoveries");
     try {
-      const page = await browseReaderSite(preferences.source, { mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard);
+      const page = await browseReaderSite(preferences.source, { mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard, signal);
       for (const item of loadCatalog()) items.set(item.slug, item);
       if (page.ids.length) successful++;
-    } catch (error) { if (error instanceof NetworkPaused) throw error; discoveryError = error; onWarning(error instanceof Error ? error.message : "Source discovery could not refresh."); }
+    } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; discoveryError = error; onWarning(error instanceof Error ? error.message : "Source discovery could not refresh."); }
   }
   if (preferences.source === "webtoon") {
     onProgress("Refreshing WEBTOON discoveries");
     try {
-      const page = await browseWebtoon({ source: "webtoon", language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard);
+      const page = await browseWebtoon({ source: "webtoon", language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard, signal);
       for (const item of loadCatalog()) items.set(item.slug, item);
       if (page.ids.length) successful++;
-    } catch (error) { if (error instanceof NetworkPaused) throw error; discoveryError = error; onWarning(error instanceof Error ? error.message : "WEBTOON discovery could not refresh."); }
+    } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; discoveryError = error; onWarning(error instanceof Error ? error.message : "WEBTOON discovery could not refresh."); }
   }
   for (const kind of (!preferences.source || preferences.source === "asura" ? ["comic", "novel"] : []) as ("comic" | "novel")[]) {
     for (const period of ["week", "month", "all"] as Period[]) {
       onProgress(`Refreshing ${kind} rankings`);
       try {
         const url = kind === "comic" ? `${API}/trending/${period}?limit=10` : `${API}/novel-series?limit=10&sort=popular&period=${period}`;
-        const result = await getJson(url, guard) as { data?: unknown };
+        const result = await getJson(url, guard, signal) as { data?: unknown };
         if (!Array.isArray(result.data) || !result.data.length) throw new Error("Rankings unavailable.");
         for (const [key, value] of items) if (sourceOf(value) === "asura" && kindOf(value) === kind) items.set(key, { ...value, rank: period === "week" ? undefined : value.rank, popularRanks: { ...value.popularRanks, [period]: undefined } });
         result.data.forEach((raw, index) => {
@@ -217,16 +220,18 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
           items.set(item.slug, item);
         });
         successful++;
-      } catch (error) { if (error instanceof NetworkPaused) throw error; }
+      } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
     }
   }
   const urls = existing.filter(item => item.localChapters?.length || saved[item.slug]?.bookmarked).map(item => item.url);
   urls.push(...[...items.values()].filter(item => sourceOf(item) === "asura" && (!preferences.source || preferences.source === "asura") && Object.values(item.popularRanks || {}).some(Boolean)).map(item => item.url));
   for (const home of !preferences.source || preferences.source === "asura" ? [HOME, `${HOME}novels`] : []) {
-    try { urls.push(...parseDiscovery(await getText(home, guard))); } catch (error) { if (error instanceof NetworkPaused) throw error; }
+    try { urls.push(...parseDiscovery(await getText(home, guard, undefined, signal))); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
   }
   let newDetails = 0;
   for (const url of [...new Set(urls)]) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    throwIfAborted(signal);
     const old = [...items.values()].find(item => item.url === url);
     const owned = old && (old.localChapters?.length || saved[old.slug]?.bookmarked);
     const priority = owned || (old && Object.values(old.popularRanks || {}).some(Boolean));
@@ -235,15 +240,15 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
     try {
       onProgress("Refreshing story details");
       let item: Series;
-      if (old) item = await refreshSeries(old, guard, undefined, Boolean(owned || old.detailsCached));
+      if (old) item = await refreshSeries(old, guard, signal, Boolean(owned || old.detailsCached));
       else if (url.includes("/novels/")) {
         const stub = { url } as Series;
-        const result = await getJson(`${API}/novel-series/${encodeURIComponent(siteSlug(stub))}`, guard) as { series?: unknown; chapters?: unknown };
+        const result = await getJson(`${API}/novel-series/${encodeURIComponent(siteSlug(stub))}`, guard, signal) as { series?: unknown; chapters?: unknown };
         const parsed = parseApiSeries(result.series, "novel");
         if (!parsed) continue;
         item = { ...parsed, metadataSyncedAt: new Date().toISOString() };
       } else {
-        item = parseSeries(await getText(url, guard), url);
+        item = parseSeries(await getText(url, guard, undefined, signal), url);
         if (!item.chapterCount || !item.cover) continue;
         const previous = [...items.values()].find(value => sourceOf(value) === "asura" && kindOf(value) === "comic" && value.title.toLowerCase() === item.title.toLowerCase());
         delete item.chapterIds;
@@ -253,12 +258,15 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
       if (!priority) newDetails++;
       successful++;
       await new Promise(resolve => setTimeout(resolve, 100));
-    } catch (error) { if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
+    } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
   }
   for (const [slug, item] of items) {
-    try { items.set(slug, { ...item, localCover: await cacheCover(item, guard) }); }
-    catch (error) { if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
+    await new Promise(resolve => setTimeout(resolve, 0));
+    throwIfAborted(signal);
+    try { items.set(slug, { ...item, localCover: await cacheCover(item, guard, signal) }); }
+    catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
   }
+  throwIfAborted(signal);
   if (!successful) throw discoveryError || new Error("Could not refresh stories. Pull down to retry.");
   mergeCatalog([...items.values()], true);
   return loadCatalog();
@@ -336,12 +344,12 @@ async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard
     if (webtoonCache.size > 30) webtoonCache.delete(webtoonCache.keys().next().value!);
   }
   const selected = entry.items.slice(offset, offset + 20);
-  const updates: Series[] = [];
+  const stored = loadCatalog(), updates: Series[] = [];
   const popular = !options.query && (options.collection === "canvas" || options.sort !== "trending");
-  if (popular && offset === 0) for (const item of loadCatalog()) if (sourceOf(item) === "webtoon" && item.language === language && item.url.includes("/canvas/") === (options.collection === "canvas")) updates.push({ ...item, sourceRank: undefined });
+  if (popular && offset === 0) for (const item of stored) if (sourceOf(item) === "webtoon" && item.language === language && item.url.includes("/canvas/") === (options.collection === "canvas")) updates.push({ ...item, sourceRank: undefined });
   const ids: string[] = [];
   for (const [index, fresh] of selected.entries()) {
-    const previous = loadCatalog().find(item => item.slug === fresh.slug);
+    const previous = stored.find(item => item.slug === fresh.slug);
     const item = { ...mergeDiscovery(fresh, previous), sourceRank: popular ? offset + index + 1 : previous?.sourceRank };
     updates.push(item); ids.push(item.slug);
   }

@@ -3,6 +3,15 @@ export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) { const error = new Error("Operation cancelled."); error.name = "AbortError"; throw error; }
 }
 
+export async function withLinkedAbort<T>(signals: AbortSignal[], operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  for (const signal of signals) { if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true }); }
+  try { return await withAbort(() => operation(controller.signal), controller.signal); }
+  catch (error) { controller.abort(); throw error; }
+  finally { for (const signal of signals) signal.removeEventListener("abort", abort); }
+}
+
 export function withAbort<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation();
   return new Promise((resolve, reject) => {

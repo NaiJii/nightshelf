@@ -9,7 +9,7 @@ import { networkGuard, NetworkPaused } from "./network";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "./network-policy";
 import { configureReleaseChecks, notifyReleases, requestReleasePermission } from "./releases";
 import { DownloadQueue, restoredDownloads } from "./download-queue";
-import { throwIfAborted } from "./request-control";
+import { throwIfAborted, withLinkedAbort } from "./request-control";
 import { backgroundTransfers, DownloadPaused, transferStates, stopTransfer } from "./background-downloads";
 import { freeBytes, libraryBytes, updateStoryOptions } from "./library-tools";
 import type { SavedStory } from "./parser";
@@ -33,6 +33,7 @@ function useAppState() {
   const detailLocks = useRef(new Set<string>());
   const notificationLock = useRef(false);
   const syncLock = useRef(false);
+  const providerRequests = useRef(new AbortController());
   const deleteLock = useRef(false);
   const lastAttempt = useRef(0);
   const lastAccess = useRef<ReturnType<typeof connectionAccess> | null>(null);
@@ -86,10 +87,11 @@ function useAppState() {
     } catch (error) { if (error instanceof NetworkPaused) showFailure(error); throw error; }
   }, [showFailure]);
   const browse = useCallback(async (options: BrowseOptions, cursor: BrowseCursor, signal: AbortSignal, manual = false) => {
+    const providerSignal = providerRequests.current.signal;
     try {
-      const page = await browseCatalog(options, cursor, networkGuard("Load more comics and novels?", !manual), signal, () => setCatalog(loadCatalog()));
-      throwIfAborted(signal); setCatalog(loadCatalog()); setNetworkNotice(""); return page;
-    } catch (error) { if (!signal.aborted && error instanceof NetworkPaused) showFailure(error); throw error; }
+      const page = await withLinkedAbort([signal, providerSignal], combined => browseCatalog(options, cursor, networkGuard("Load more comics and novels?", !manual), combined, () => setCatalog(loadCatalog())));
+      throwIfAborted(signal); throwIfAborted(providerSignal); setCatalog(loadCatalog()); setNetworkNotice(""); return page;
+    } catch (error) { if (!signal.aborted && !providerSignal.aborted && error instanceof NetworkPaused) showFailure(error); throw error; }
   }, [showFailure]);
 
   const removeDownloads = useCallback(async (item: Series, chapters: string[], all = false) => {
@@ -135,7 +137,10 @@ function useAppState() {
   }, []);
 
   const updatePreferences = useCallback((change: Partial<Preferences>) => {
-    const value = { ...loadPreferences(), ...change };
+    const previous = loadPreferences(), value = { ...previous, ...change };
+    if ((["source", "webtoonLanguage", "webtoonCollection"] as const).some(key => value[key] !== previous[key])) {
+      providerRequests.current.abort(); providerRequests.current = new AbortController(); lastAttempt.current = 0;
+    }
     savePreferences(value);
     backgroundTransfers?.setNetworkPolicy(value.mobileData === "never");
     setPreferences(value);
@@ -174,18 +179,19 @@ function useAppState() {
     syncLock.current = true;
     lastAttempt.current = Date.now();
     setSyncing(true);
+    const signal = providerRequests.current.signal;
     setNetworkNotice("");
     if (!automatic) setRefreshing(true);
     try {
       const warnings: string[] = [];
-      const fresh = await syncCatalog(() => {}, networkGuard("Refresh story summaries, ratings and chapter lists?", automatic), !automatic, message => warnings.push(message));
+      const fresh = await syncCatalog(() => {}, networkGuard("Refresh story summaries, ratings and chapter lists?", automatic), !automatic, message => warnings.push(message), signal);
+      throwIfAborted(signal);
       setCatalog(fresh);
       await notifyReleases(fresh);
       await autoDownload();
       setNotice(warnings.join(" "));
     } catch (error) {
-      setCatalog(loadCatalog());
-      showFailure(error);
+      if (!signal.aborted) { setCatalog(loadCatalog()); showFailure(error); }
       if (error instanceof NetworkPaused) lastAttempt.current = 0;
     } finally {
       syncLock.current = false;

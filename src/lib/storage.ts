@@ -156,13 +156,17 @@ export function localChapters(slug: string): string[] {
     .sort(chapterSort);
 }
 
-export function loadCatalog(): Series[] {
+function catalogMetadata(): Series[] {
   initializeStorage();
   let items = SEED;
   if (CATALOG.exists) {
     try { items = JSON.parse(CATALOG.textSync()) as Series[]; } catch { /* use seed */ }
   }
-  return items.map(item => {
+  return items;
+}
+
+export function loadCatalog(): Series[] {
+  return catalogMetadata().map(item => {
     const folder = safePart(item.slug) ? new Directory(LIBRARY, item.slug) : null;
     return { ...item, updatedAt: item.sourceDates ? item.updatedAt : undefined, localChapters: localChapters(item.slug), hasLocalFiles: Boolean(folder?.exists && folder.list().length) };
   });
@@ -175,7 +179,7 @@ export function saveCatalog(items: Series[]): void {
 
 // Commit against current storage: simultaneous downloads/search must not lose entries to an older sync snapshot.
 export function mergeCatalog(updates: Series[], rankings = false): void {
-  const items = new Map(loadCatalog().map(item => [item.slug, item]));
+  const items = new Map(catalogMetadata().map(item => [item.slug, item]));
   for (const update of updates) {
     const current = items.get(update.slug);
     const newer = current && Date.parse(current.syncedAt || "") > (Date.parse(update.syncedAt || "") || 0);
