@@ -1,5 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Alert, AppState } from "react-native";
+import { usePathname } from "expo-router";
 import NetInfo from "@react-native-community/netinfo";
 import { chapterListCached, ContentMode, Series } from "./parser";
 import { browseCatalog, downloadChapters, refreshSeries, searchCatalog, syncCatalog } from "./scraper";
@@ -15,6 +16,7 @@ import { freeBytes, libraryBytes, updateStoryOptions } from "./library-tools";
 import type { SavedStory } from "./parser";
 
 function useAppState() {
+  const pathname = usePathname();
   const [catalog, setCatalog] = useState(loadCatalog);
   const [preferences, setPreferences] = useState(loadPreferences);
   const [saved, setSaved] = useState(savedStories);
@@ -27,6 +29,12 @@ function useAppState() {
   const [updates, setUpdates] = useState(releaseUpdates);
   const [detailsLoading, setDetailsLoading] = useState<string[]>([]);
   const [detailsErrors, setDetailsErrors] = useState<Record<string, string>>({});
+  const noticeScope = useRef("");
+  const scope = `${pathname}:${preferences.source}:${preferences.webtoonLanguage}:${preferences.webtoonCollection}`;
+  useEffect(() => {
+    noticeScope.current = scope;
+    setNotice(""); setNetworkNotice("");
+  }, [scope]);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [sourceSessionRevision, setSourceSessionRevision] = useState(0);
@@ -38,7 +46,8 @@ function useAppState() {
   const deleteLock = useRef(false);
   const lastAttempt = useRef(0);
   const lastAccess = useRef<ReturnType<typeof connectionAccess> | null>(null);
-  const showFailure = useCallback((error: unknown) => {
+  const showFailure = useCallback((error: unknown, origin = noticeScope.current) => {
+    if (origin !== noticeScope.current) return;
     const message = error instanceof Error ? error.message : String(error);
     if (error instanceof NetworkPaused) setNetworkNotice(message);
     else setNotice(message);
@@ -120,18 +129,15 @@ function useAppState() {
     if (detailLocks.current.has(slug)) return;
     detailLocks.current.add(slug); setDetailsLoading(current => [...current, slug]);
     setDetailsErrors(current => { const next = { ...current }; delete next[slug]; return next; });
-    setNetworkNotice("");
     try {
       const fresh = await refreshSeries(item, networkGuard("Refresh this story’s details?"), undefined, force || !cached);
       mergeCatalog([fresh]);
       setCatalog(loadCatalog());
-      setNetworkNotice("");
     } catch (error) {
       setDetailsErrors(current => ({ ...current, [slug]: error instanceof Error ? error.message : String(error) }));
-      showFailure(error);
     }
     finally { detailLocks.current.delete(slug); setDetailsLoading(current => current.filter(value => value !== slug)); }
-  }, [showFailure]);
+  }, []);
 
   const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
     toggleSaved(slug, field); setSaved(savedStories());
@@ -185,6 +191,7 @@ function useAppState() {
     lastAttempt.current = Date.now();
     setSyncing(true);
     const signal = providerRequests.current.signal;
+    const origin = noticeScope.current;
     setNetworkNotice("");
     if (!automatic) setRefreshing(true);
     try {
@@ -194,9 +201,9 @@ function useAppState() {
       setCatalog(fresh);
       await notifyReleases(fresh);
       await autoDownload();
-      setNotice(warnings.join(" "));
+      if (origin === noticeScope.current) setNotice(warnings.join(" "));
     } catch (error) {
-      if (!signal.aborted) { setCatalog(loadCatalog()); showFailure(error); }
+      if (!signal.aborted) { setCatalog(loadCatalog()); showFailure(error, origin); }
       if (error instanceof NetworkPaused) lastAttempt.current = 0;
     } finally {
       syncLock.current = false;
