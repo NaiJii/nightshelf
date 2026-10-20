@@ -6,6 +6,10 @@ plugins {
 group = 'expo.modules.readercontrols'
 version = '1.0.0'
 
+dependencies {
+  implementation 'com.facebook.react:react-android'
+}
+
 android {
   namespace "expo.modules.readercontrols"
   defaultConfig {
