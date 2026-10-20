@@ -73,13 +73,14 @@ function checkCompletion() {
   return true;
 }
 function report() {
+  if (!restored || !window.readerActive || document.hidden) return;
   if (checkCompletion()) return;
   const viewport = window.visualViewport;
   const top = viewport ? viewport.offsetTop : 0;
   const max = Math.max(1, document.documentElement.scrollHeight - innerHeight);
   const page = Math.max(0, images.findIndex(image => image.getBoundingClientRect().bottom > top));
   const atStart = images.length > 1 ? page === 0 : scrollY + top <= 1;
-  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: atStart ? 0 : Math.max(0, Math.min(1, (scrollY + top) / max)), page: page + 1}));
+  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(1, (scrollY + top) / max)), page: page + 1}));
 }
 addEventListener('load', () => { scrollTo(0, ${safeFraction} * Math.max(0, document.documentElement.scrollHeight - innerHeight)); restored = true; report(); });
 function onScroll() {

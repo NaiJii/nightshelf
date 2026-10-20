@@ -69,11 +69,13 @@ export function setChaptersRead(slug: string, chapters: string[], value: boolean
   }
   read[slug] = state;
   READ.write(JSON.stringify(read));
-  const history = readingHistory(), position = history[slug];
-  if (!value && position) {
+  const history = readingHistory();
+  if (!value && chapters.length) {
     const readAt = new Date().toISOString();
+    const position = history[slug] ||= { chapter: chapters[0], fraction: 0, readAt };
+    position.chapters ||= {};
     for (const chapter of chapters) {
-      if (position.chapters?.[chapter]) position.chapters[chapter] = { fraction: 0, readAt };
+      position.chapters[chapter] = { fraction: 0, readAt };
       if (position.chapter === chapter) { position.fraction = 0; position.readAt = readAt; }
     }
     HISTORY.write(JSON.stringify(history));

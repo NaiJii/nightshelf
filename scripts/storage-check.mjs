@@ -135,6 +135,19 @@ try {
   assert.equal(storage.savedStories()['backup-story'].list,'planned');
   storage.savePreferences({...storage.loadPreferences(),genreFilters:{}});
   assert.ok(storage.readChapters()['backup-story']['1']);
+  const readRestore = JSON.parse(exported);
+  readRestore.read['backup-story'] = {'7':'2020-01-01T00:00:00Z'};
+  readRestore.history['backup-story'] = {chapter:'7',fraction:1,readAt:'2020-01-01T00:00:00Z'};
+  storage.setChaptersRead('backup-story',['7','8'],false);
+  assert.ok(storage.readingHistory()['backup-story'].chapters['8'],'manual unread resets are retained even for chapters never opened');
+  backup.restoreBackup(JSON.stringify(readRestore));
+  assert.equal(storage.readChapters()['backup-story']['7'],undefined,'old backup read marks cannot override a newer local unread reset');
+  storage.setChaptersRead('backup-story',['7'],true);
+  readRestore.read['backup-story'] = {};
+  readRestore.history['backup-story'] = {chapter:'7',fraction:0,readAt:'2099-01-01T00:00:00Z'};
+  backup.restoreBackup(JSON.stringify(readRestore));
+  assert.equal(storage.readChapters()['backup-story']['7'],undefined,'newer imported unread resets override older local read marks');
+  assert.ok(storage.readChapters()['backup-story']['1'],'unrelated read chapters survive a restore');
   for(const bad of [{...roundTrip,version:999},{...roundTrip,catalog:[{...backupStory,slug:'../bad'}]},{...roundTrip,catalog:[{...backupStory,slug:'__proto__'}]},{...roundTrip,catalog:[{...backupStory,url:'https://evil.test/manga'}]}])assert.throws(()=>backup.validateBackup(JSON.stringify(bad)));
   assert.throws(()=>backup.validateBackup('bad JSON'));
   assert.throws(()=>backup.validateBackup(' '.repeat(20*1024**2+1)),/20 MB/);
@@ -497,6 +510,17 @@ export async function fetch(url,options={}){
     await notifyReleases([{...story,chapterIds:['1','2']}]);
     await notifyReleases([story]);
     assert.equal(notifications.sent.length,2,'source omissions must not re-notify known chapters');
+    const parallelStory={...story,slug:'parallel-release',chapterIds:['1'],chapterCount:1};
+    tools.updateStoryOptions(parallelStory.slug,{bookmarked:true,notifyReleases:true});
+    await notifyReleases([parallelStory]);
+    const sentBeforeParallel=notifications.sent.length;
+    parallelStory.chapterIds.push('2');
+    await Promise.all([notifyReleases([parallelStory]),notifyReleases([parallelStory])]);
+    assert.equal(notifications.sent.length,sentBeforeParallel+1,'overlapping sync/detail checks produce one release notification');
+    storage.markChapterRead(parallelStory.slug,'2');parallelStory.chapterIds.push('3');
+    await notifyReleases([parallelStory]);
+    assert.deepEqual(notifications.sent.at(-1).content.data.chapters,['3'],'replacement notifications drop chapters already read');
+    notifications.sent.splice(sentBeforeParallel);
     storage.toggleSaved('example','bookmarked'); story.chapterIds.push('6'); await notifyReleases([story]);
     assert.equal(notifications.sent.length,2,'unbookmarked stories do not notify');
 

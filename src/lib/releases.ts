@@ -7,7 +7,7 @@ import { chapterListCached } from "./parser";
 import type { Series } from "./parser";
 import { refreshSeries, downloadChapters } from "./scraper";
 import { loadCatalog, loadPreferences, releaseSnapshots, savedStories, mergeCatalog, saveReleaseSnapshot, addReleaseUpdates, readChapters, releaseUpdates, loadDownloads, saveDownloads } from "./storage";
-import { newReleases, automaticReleaseIds } from "./release-policy";
+import { newReleases, automaticReleaseIds, unreadReleases } from "./release-policy";
 import { backgroundTransfers, transferStates } from "./background-downloads";
 import { freeBytes, libraryBytes, updateStoryOptions } from "./library-tools";
 
@@ -21,7 +21,13 @@ export async function requestReleasePermission(): Promise<boolean> {
   return current.granted || (await Notifications.requestPermissionsAsync()).granted;
 }
 
-export async function notifyReleases(items: Series[]): Promise<void> {
+let notificationWork = Promise.resolve();
+export function notifyReleases(items: Series[]): Promise<void> {
+  // Detail refreshes and sync can finish together; consume each release snapshot once.
+  notificationWork = notificationWork.catch(() => {}).then(() => publishReleases(items));
+  return notificationWork;
+}
+async function publishReleases(items: Series[]): Promise<void> {
   const enabled = loadPreferences().releaseNotifications && (await Notifications.getPermissionsAsync()).granted;
   for (const item of items) {
     const story = savedStories()[item.slug];
@@ -33,9 +39,9 @@ export async function notifyReleases(items: Series[]): Promise<void> {
     if (enabled && story.notifyReleases !== false && added.length) {
       const identifier = `release-${item.slug}`;
       const pending = (await Notifications.getPresentedNotificationsAsync()).find(notification => notification.request.identifier === identifier)?.request.content.data?.chapters;
-      const chapters = [...new Set([...(Array.isArray(pending) ? pending.filter((id): id is string => typeof id === "string") : []), ...added])];
+      const chapters = unreadReleases([...(Array.isArray(pending) ? pending.filter((id): id is string => typeof id === "string") : []), ...added], readChapters()[item.slug], item.chapterIds);
       // A stable identifier replaces the previous alert for this series in Android's tray.
-      await Notifications.scheduleNotificationAsync({
+      if (chapters.length) await Notifications.scheduleNotificationAsync({
         identifier,
         content: { title: item.title, body: `${chapters.length} new ${chapters.length === 1 ? "chapter" : "chapters"}`, data: { slug: item.slug, chapters }, sound: false },
         trigger: { channelId: CHANNEL },

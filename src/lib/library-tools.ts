@@ -35,9 +35,9 @@ export function updateStoryOptions(slug: string, change: Partial<SavedStory>): v
   new File(ROOT, "saved.json").write(JSON.stringify(all));
 }
 // Estimates use saved chapters of the same story, then an explicit format fallback.
-export function estimateDownload(slug: string, count: number, novel: boolean): { bytes: number; sampled: boolean } {
-  const item = loadCatalog().find(value => value.slug === slug);
-  const chapters = item?.localChapters || [];
+export function estimateDownload(slug: string, count: number, novel: boolean, knownChapters?: string[]): { bytes: number; sampled: boolean } {
+  if (count <= 0) return { bytes: 0, sampled: false };
+  const chapters = knownChapters ?? loadCatalog().find(value => value.slug === slug)?.localChapters ?? [];
   const sample = chapters.slice(-5).map(id => folderBytes(chapterDirectory(slug, id))).filter(size => size > 0);
   return { bytes: count * (sample.length ? sample.reduce((a, b) => a + b, 0) / sample.length : novel ? 40 * 1024 : 18 * 1024 ** 2), sampled: sample.length > 0 };
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useShelf } from "../../lib/app-state";
@@ -28,8 +28,8 @@ export default function Home() {
   useFocusEffect(useCallback(() => { setHistory(readingHistory()); }, []));
   const visible = filterDiscovery(catalog, preferences, saved);
   const resume = (slug: string, chapters: string[] = []) => nextUnread(chapters, history[slug], read[slug]);
-  const lastRead = (slug: string) => [history[slug]?.readAt || "", ...Object.values(read[slug] || {})].sort().at(-1) || "";
-  const recent = catalog.filter(item => lastRead(item.slug) && resume(item.slug, item.localChapters)).sort((a, b) => lastRead(b.slug).localeCompare(lastRead(a.slug))).slice(0, 2);
+  const activity = useMemo(() => new Map(catalog.map(item => [item.slug, Object.values(read[item.slug] || {}).reduce((latest, date) => Math.max(latest, Date.parse(date) || 0), Date.parse(history[item.slug]?.readAt || "") || 0)])), [catalog, history, read]);
+  const recent = catalog.filter(item => activity.get(item.slug) && resume(item.slug, item.localChapters)).sort((a, b) => activity.get(b.slug)! - activity.get(a.slug)!).slice(0, 2);
   const latest = [...visible].filter(item => item.updatedAt).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")).slice(0, 8);
   return <Page title="NightShelf" subtitle="COMICS & NOVELS" action={<Pressable accessibilityLabel="Search stories" onPress={() => router.navigate("/explore")} style={{ padding: 12 }}><Icon name="search-outline" /></Pressable>}>
     <DiscoveryControls />

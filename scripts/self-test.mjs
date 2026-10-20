@@ -204,6 +204,14 @@ assert.equal(session.messages.filter(message => message.complete).length, 1, "re
 assert.equal(session.messages.find(message => message.complete).fraction,1,"completion saves exactly 100 percent");
 session.tick(3000);
 assert.equal(session.messages.filter(message => message.complete).length, 1, "completion is emitted once");
+session.setScroll(600); session.emit('scroll'); session.advance(400);
+assert.equal(session.messages.at(-1).fraction,1,'settling scroll events cannot overwrite completed progress with 99%');
+const inactive = readerSession();
+inactive.emit('scroll'); inactive.window.readerActive=false;
+const beforeInactive = inactive.messages.length; inactive.advance(400);
+assert.equal(inactive.messages.length,beforeInactive,'a delayed scroll report cannot change history after leaving the reader');
+inactive.window.readerActive=true; inactive.document.hidden=true; inactive.emit('scroll'); inactive.advance(400);
+assert.equal(inactive.messages.filter(message=>Number.isFinite(message.fraction)).length,0,'hidden documents do not report progress');
 const start = readerSession(); start.setScroll(0); start.setFirstBottom(500);
 start.emit('scroll'); start.advance(400);
 assert.equal(start.messages.at(-1).fraction,0,'a newly opened chapter starts at zero');

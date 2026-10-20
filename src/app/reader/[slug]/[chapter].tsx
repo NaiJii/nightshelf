@@ -83,6 +83,7 @@ function ChapterReader({ slug, chapter, title, manualUnreadRef, hidden, setHidde
             return;
           }
           if (data.error) { setError("A saved image could not be opened. Re-download this chapter to repair it."); return; }
+          if (!focused.current || AppState.currentState !== "active") return;
           if (data.complete === true && !manualUnreadRef.current && intact && !error && focused.current && AppState.currentState === "active") completeChapter(slug, chapter);
           if (Number.isFinite(data.fraction) && !manualUnreadRef.current) savePosition(slug, chapter, Math.max(0, Math.min(1, data.fraction)));
           if (Number.isInteger(data.page)) setPage(Math.max(1, Math.min(files.length, data.page)));

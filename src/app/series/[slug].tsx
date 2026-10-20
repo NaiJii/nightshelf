@@ -1,6 +1,6 @@
 import { ExpandableSummary } from "../../components/expandable-summary";
 import { useActionSheet } from "../../components/action-sheet";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -12,6 +12,10 @@ import { chapterProgress, chapterList, chapterListCached, kindOf, nextUnread, so
 import { readingHistory } from "../../lib/storage";
 import { estimateDownload, formatBytes, freeBytes } from "../../lib/library-tools";
 import { ReadingListAction, ReleaseActions } from "../../components/story-options";
+
+function useDownloadEstimate(slug: string, count: number, novel: boolean, sampleIds: string) {
+  return useMemo(() => estimateDownload(slug, count, novel, sampleIds ? sampleIds.split(",") : []), [slug, count, novel, sampleIds]);
+}
 
 export default function SeriesDetails() {
   const showSheet = useActionSheet();
@@ -26,19 +30,26 @@ export default function SeriesDetails() {
   useFocusEffect(useCallback(() => { setHistory(readingHistory()); }, []));
   useEffect(() => { void loadDetails(slug); }, [loadDetails, slug, sourceSessionRevision]);
   const item = catalog.find(value => value.slug === slug);
+  const owned = item?.localChapters || [];
+  const ownedSet = new Set(owned);
+  const all = chapterList(item?.chapterIds, owned);
+  const available = new Set(all);
+  const chosen = selected.filter(id => available.has(id));
+  const missing = chosen.filter(id => !ownedSet.has(id));
+  const sampleIds = owned.slice(-5).join(",");
+  const novel = Boolean(item && kindOf(item) === "novel");
+  const missingCount = missing.length;
+  const estimate = useDownloadEstimate(slug, missingCount, novel, sampleIds);
   if (!item) return <SafeAreaView style={ui.safe}><Pressable onPress={() => router.back()}><Text style={ui.empty}>Back · story unavailable</Text></Pressable></SafeAreaView>;
-  const owned = item.localChapters || [];
   const rating = formatRating(item.rating);
   const ledger = read[slug] || {};
-  const all = chapterList(item.chapterIds, owned);
   const fullList = chapterListCached(item);
   const loadingChapters = detailsLoading.includes(slug);
   const chapterError = detailsErrors?.[slug];
   const visible = chapterList(item.chapterIds, owned, ledger, filter, query, newest, item.chapterTitles);
   const unread = chapterList(item.chapterIds, owned, ledger, "unread", "", false);
-  const chosen = selected.filter(id => all.includes(id));
-  const missing = chosen.filter(id => !owned.includes(id));
-  const savedSelection = chosen.filter(id => owned.includes(id));
+  const savedSelection = chosen.filter(id => ownedSet.has(id));
+  const chosenSet = new Set(chosen);
   const job = downloads.find(value => value.series.slug === slug);
   const blocked = deleting || downloadBusy(slug) || Boolean(job && ["queued", "downloading", "waiting", "cancelling"].includes(job.status));
   const ascendingSaved = chapterList([], owned, {}, "all", "", false);
@@ -65,7 +76,6 @@ export default function SeriesDetails() {
     if (!item || !missing.length) return;
     if (job) { showSheet("Download already listed", "Resume or cancel this story’s existing download using the controls above the chapter list before starting another selection."); return; }
     const run = () => { if (startDownload(item, missing.join(","))) setSelected([]); };
-    const estimate = estimateDownload(item.slug, missing.length, kindOf(item) === "novel");
     if (missing.length > 20) showSheet(`Download ${missing.length} chapters?`, `Estimated ${formatBytes(estimate.bytes)} · ${formatBytes(freeBytes())} free. Downloads continue in the background.`, [{ text: "Cancel", style: "cancel" }, { text: "Download", onPress: run }]); else run();
   }
   return <SafeAreaView style={ui.safe} edges={["top", "bottom"]}>
@@ -91,7 +101,7 @@ export default function SeriesDetails() {
       </>}
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes. Restricted episodes require WEBTOON." : "No chapters loaded. Pull to refresh.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {
-        const isSaved = owned.includes(chapter), isRead = Boolean(ledger[chapter]), checked = chosen.includes(chapter);
+        const isSaved = ownedSet.has(chapter), isRead = Boolean(ledger[chapter]), checked = chosenSet.has(chapter);
         const progress = isRead ? 1 : Math.min(0.99, chapterProgress(history[slug], chapter));
         const chapterTitle = item.chapterTitles?.[chapter] || `Chapter ${chapter}`;
         return <View style={[ui.row, { position: "relative", overflow: "hidden", gap: 3, borderBottomWidth: 1, borderColor: color.line, backgroundColor: checked ? "#8b5cf626" : isSaved ? "#65cba10d" : "transparent", borderLeftWidth: 3, borderLeftColor: isSaved ? "#65cba180" : "transparent" }]}>
@@ -104,7 +114,7 @@ export default function SeriesDetails() {
     {job && <Pressable accessibilityLabel="Show download controls" onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })} style={[ui.row, { padding: 14, borderTopWidth: 1, borderColor: color.line }]}><Icon name="download-outline" tint={color.lilac} size={18} /><Text numberOfLines={1} style={[ui.muted, { flex: 1 }]}>{job.message} · {Math.round(job.progress * 100)}%</Text><Text style={{ color: color.lilac }}>Controls ↑</Text></Pressable>}
     {chosen.length > 0 && <View style={{ paddingHorizontal: 20, paddingVertical: 10, borderTopWidth: 1, borderColor: color.line, backgroundColor: color.surface }}>
       <View style={[ui.row, { justifyContent: "space-between" }]}><Text accessibilityLiveRegion="polite" style={ui.text}>{chosen.length} selected</Text><Pressable disabled={deleting} onPress={() => setSelected([])} style={{ padding: 10 }}><Text style={{ color: color.lilac }}>Clear</Text></Pressable></View>
-      {missing.length > 0 && <Text style={[ui.muted, { fontSize: 11, marginBottom: 8 }]}>About {formatBytes(estimateDownload(slug, missing.length, kindOf(item) === "novel").bytes)} · {formatBytes(freeBytes())} free</Text>}
+      {missing.length > 0 && <Text style={[ui.muted, { fontSize: 11, marginBottom: 8 }]}>About {formatBytes(estimate.bytes)} · {formatBytes(freeBytes())} free</Text>}
       <View style={[ui.row, { flexWrap: "wrap", gap: 8 }]}>{missing.length > 0 && <Pressable disabled={deleting} onPress={download} style={[ui.primary, { flexGrow: 1 }]}><Text style={ui.primaryText}>Download ({missing.length})</Text></Pressable>}<Pressable disabled={deleting} onPress={() => mark(chosen)} style={{ padding: 12 }}><Text style={{ color: color.lilac }}>Read status</Text></Pressable>{savedSelection.length > 0 && <Pressable disabled={blocked} accessibilityState={{ disabled: blocked }} onPress={() => erase(savedSelection)} style={{ padding: 12, opacity: blocked ? 0.4 : 1 }}>{deleting ? <ActivityIndicator color={color.lilac} /> : <Text style={{ color: "#f08080" }}>Delete ({savedSelection.length})</Text>}</Pressable>}</View>
       {blocked && savedSelection.length > 0 && !deleting && <Text style={[ui.muted, { fontSize: 11 }]}>Pause the download before deleting saved chapters.</Text>}
     </View>}

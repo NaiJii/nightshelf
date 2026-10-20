@@ -60,7 +60,22 @@ export function restoreBackup(text: string): number {
   const imported = validateBackup(text);
   const oldCatalog = loadCatalog(), saved = savedStories(), read = readChapters(), history = readingHistory();
   for (const [slug, value] of Object.entries(imported.saved)) saved[slug] = { ...value, ...saved[slug], liked: Boolean(saved[slug]?.liked || value.liked), bookmarked: Boolean(saved[slug]?.bookmarked || value.bookmarked), list: saved[slug]?.list || value.list, autoDownload: saved[slug]?.autoDownload || false };
-  for (const [slug, value] of Object.entries(imported.read)) read[slug] = { ...read[slug], ...value };
+  // Unread resets have dated positions too. An older backup must not resurrect a read mark.
+  for (const item of imported.catalog) {
+    const slug = item.slug, local = read[slug] || {}, incoming = imported.read[slug] || {};
+    const positions = (entry: ReturnType<typeof readingHistory>[string] | undefined) => {
+      const result = { ...entry?.chapters };
+      if (entry && (!result[entry.chapter] || Date.parse(entry.readAt) > Date.parse(result[entry.chapter].readAt))) result[entry.chapter] = { fraction: entry.fraction, readAt: entry.readAt };
+      return result;
+    };
+    const oldPositions = positions(history[slug]), newPositions = positions(imported.history[slug]);
+    for (const id of new Set([...Object.keys(incoming), ...Object.keys(newPositions)])) {
+      const oldTime = Math.max(Date.parse(local[id] || "") || 0, Date.parse(oldPositions[id]?.readAt || "") || 0);
+      const newTime = Math.max(Date.parse(incoming[id] || "") || 0, Date.parse(newPositions[id]?.readAt || "") || 0);
+      if (newTime > oldTime) { if (incoming[id]) local[id] = incoming[id]; else delete local[id]; }
+    }
+    read[slug] = local;
+  }
   for (const [slug, value] of Object.entries(imported.history)) {
     const current = history[slug], chapters: NonNullable<typeof value.chapters> = {};
     for (const entry of [current, value]) if (entry) {

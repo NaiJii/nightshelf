@@ -85,8 +85,8 @@ function useAppState() {
     } finally { if (signal.aborted) await stopTransfer(job.series.slug); await backgroundTransfers?.endPreparation(job.series.slug).catch(() => {}); setCatalog(loadCatalog()); setPreferences(loadPreferences()); }
   }, jobs => { saveDownloads(jobs); backgroundTransfers?.syncQueue(JSON.stringify(jobs.map(job => ({ id: job.series.slug, native: Boolean(job.native), progress: job.progress })))); setDownloads(jobs); }, slug => deleteChapters(slug, [], true), () => AppState.currentState === "active" || Boolean(backgroundTransfers?.serviceRunning()), loadDownloads));
   const downloadBusy = useCallback((slug?: string) => queue.isBusy(slug) || Object.entries(transferStates(slug)).some(([id, value]) => (value.active || (value.hasPlan && ["queued", "waiting", "running", "preparing"].includes(value.state))) && (!slug || id === slug)), [queue]);
-  const pauseDownload = useCallback((slug: string) => { queue.pause(slug); void backgroundTransfers?.pause(slug); }, [queue]);
-  const resumeDownload = useCallback((slug: string) => { if (deleteLock.current) { setNotice("Wait for deletion to finish before resuming downloads."); return; } void stopTransfer(slug).then(() => queue.resume(slug)); }, [queue]);
+  const pauseDownload = useCallback((slug: string) => { const origin = noticeScope.current; queue.pause(slug); void backgroundTransfers?.pause(slug).catch(error => showFailure(error, origin)); }, [queue, showFailure]);
+  const resumeDownload = useCallback((slug: string) => { if (deleteLock.current) { setNotice("Wait for deletion to finish before resuming downloads."); return; } const origin = noticeScope.current; void stopTransfer(slug).then(() => queue.resume(slug)).catch(error => showFailure(error, origin)); }, [queue, showFailure]);
   const cancelDownload = useCallback(async (slug: string, deleteFiles = false) => { if (queue.jobs.find(job => job.series.slug === slug)?.autoBookmark) { updateStoryOptions(slug, { autoDownload: false }); setSaved(savedStories()); } await queue.cancel(slug, deleteFiles, async () => { await stopTransfer(slug); await backgroundTransfers?.discard(slug); }); setCatalog(loadCatalog()); }, [queue]);
 
   const search = useCallback(async (query: string, mode: ContentMode) => {
@@ -124,7 +124,7 @@ function useAppState() {
   }, [downloadBusy]);
   const autoDownload = useCallback(async () => {
     const network = await NetInfo.fetch();
-    if (AppState.currentState !== "active" || network.type !== "wifi" || !network.isConnected || network.isInternetReachable === false || network.details?.isConnectionExpensive) return;
+    if (deleteLock.current || AppState.currentState !== "active" || network.type !== "wifi" || !network.isConnected || network.isInternetReachable === false || network.details?.isConnectionExpensive) return;
     const options = savedStories(), ledger = readChapters(), releases = releaseUpdates();
     for (const item of loadCatalog()) if (options[item.slug]?.bookmarked && options[item.slug]?.autoDownload && item.detailsCached) {
       if (["running", "preparing", "queued"].includes(transferStates(item.slug)[item.slug]?.state)) continue;

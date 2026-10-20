@@ -11,7 +11,9 @@ function component(file, extraModules = {}) {
   const modules = {
     "react/jsx-runtime": { jsx: element, jsxs: element },
     react: {
-      createContext: value => ({ Provider: "Provider", value }), useContext: context => context.value, useCallback: fn => fn, useMemo: fn => fn(), useEffect: (callback, deps) => effects.push({callback,deps}),
+      createContext: value => ({ Provider: "Provider", value }), useContext: context => context.value, useCallback: fn => fn,
+      useMemo(fn, deps) { const at=cursor++, previous=slots[at]; if(!previous || deps.some((value,index)=>!Object.is(value,previous.deps[index]))) slots[at]={value:fn(),deps}; return slots[at].value; },
+      useEffect: (callback, deps) => effects.push({callback,deps}),
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
@@ -110,6 +112,7 @@ assert.equal(chosen, 1, "Android Back dismisses confirmation without performing 
 
 const story = { url: 'https://asurascans.com/comics/example', slug: 'example', title: 'Example', summary: 'Summary.', type: 'Comic', rating: '', chapterCount: 2, chapterIds: ['1','2'], localChapters: ['1'], detailsCached: true };
 const requested = [];
+const estimateCalls = [];
 const positions = {example:{chapter:"2",fraction:0.6,chapters:{"1":{fraction:0.4},"2":{fraction:0.6}}}};
 const shelf = { catalog: [story], read: {example:{}}, saved: {}, preferences: {}, downloads: [], detailsLoading: [], notice: '', downloadBusy: () => false, startDownload: (_, selection) => {requested.push(selection);return true;}, setReadStatus(slug, ids, value) {for (const id of ids) {if(value) shelf.read[slug][id]='read';else {delete shelf.read[slug][id];positions[slug].chapters[id].fraction=0;}}} };
 const details = component('../src/app/series/[slug].tsx', {
@@ -117,7 +120,7 @@ const details = component('../src/app/series/[slug].tsx', {
   '../../lib/parser': parser,
   '../../lib/storage': {readingHistory: () => positions},
   '../../lib/app-state': {useShelf: () => shelf},
-  '../../lib/library-tools': {estimateDownload: () => ({bytes:1}), formatBytes: () => '1 MB', freeBytes: () => 1000},
+  '../../lib/library-tools': {estimateDownload: (...args) => {estimateCalls.push(args);return {bytes:1};}, formatBytes: () => '1 MB', freeBytes: () => 1000},
   '../../components/ui': {color: {}, ui: {}, Cover: 'Cover', Icon: 'Icon', Chip: 'Chip'},
   '../../components/story-row': {PublicationStatus: 'Status', SaveActions: 'SaveActions'},
   '../../components/story-options': {ReadingListAction: 'ReadingListAction', ReleaseActions: 'ReleaseActions'},
@@ -151,6 +154,10 @@ for (const id of ['1','2']) assert.equal(row(id).find(node => node.props?.access
 const screen = nodes(details.render('default',{}));
 screen.find(node => node.type === 'Pressable' && nodes(node).some(child => child.props?.children?.join?.('') === 'Download (1)')).props.onPress();
 assert.deepEqual(requested,['2'],'downloading an unread selection does not re-download chapters already saved');
+details.render('default',{}); // The completed selection clears after enqueueing.
+const estimatesBeforeProgress=estimateCalls.length;
+for(let i=0;i<10;i++)details.render('default',{});
+assert.equal(estimateCalls.length,estimatesBeforeProgress,'download progress rerenders do not rescan files for an unchanged size estimate');
 console.log("Measured summary overflow, themed sheets and read/unread selection checks passed");
 
 shelf.detailsErrors={example:'Vortex request failed (503)'};
@@ -162,19 +169,23 @@ assert.equal(JSON.stringify(requested.at(-1)),JSON.stringify(['example',true]));
 
 // Exercise the actual app-state handlers while keeping native effects dormant.
 let route='/series/example', settings={source:'vortex',mobileData:'ask',autoSync:false,interval:10}, rejectDetails, rejectSync;
+const nativeControls={backgroundTransfers:null};
+const automaticQueued=[], localDeletions=[];
+let resolveNetwork;
 const provider = component('../src/lib/app-state.tsx', {
   'expo-router': {usePathname:()=>route},
-  '@react-native-community/netinfo': {},
+  'react-native': {AppState:{currentState:'active'}},
+  '@react-native-community/netinfo': {__esModule:true,default:{fetch:()=>new Promise(resolve=>{resolveNetwork=resolve;})}},
   './parser': parser,
   './release-policy': releasePolicy,
-  './storage': {loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({}),readChapters:()=>({}),releaseUpdates:()=>({}),loadDownloads:()=>[]},
+  './storage': {loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
   './scraper': {refreshSeries:()=>new Promise((_,reject)=>{rejectDetails=reject;}),syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
   './network': {networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy': {connectionLabel:()=>({label:'Offline'})},
-  './releases': {},
-  './download-queue': {restoredDownloads:()=>[],DownloadQueue:class {jobs=[];isBusy(){return false;}}},
+  './releases': {configureReleaseChecks:async()=>{}},
+  './download-queue': {restoredDownloads:()=>[],DownloadQueue:class {jobs=[];isBusy(){return false;}pause(){}enqueue(...args){automaticQueued.push(args);} }},
   './request-control': {},
-  './background-downloads': {backgroundTransfers:null},
+  './background-downloads': nativeControls,
   './library-tools': {},
 });
 const app=()=>provider.render('AppProvider',{}).props.value;
@@ -196,6 +207,22 @@ const providerSync=app().sync();rejectSync(Error('Vortex unavailable'));await pr
 assert.equal(app().notice,'Vortex unavailable');
 app().updatePreferences({source:'asura'});app();provider.effects[0].callback();
 assert.equal(app().notice,'','changing providers clears the previous provider warning');
+nativeControls.backgroundTransfers={pause:async()=>{throw Error('Could not pause Android transfer');}};
+nativeControls.stopTransfer=async()=>{throw Error('Could not stop Android transfer');};
+app().pauseDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(app().notice,'Could not pause Android transfer','native pause failures become visible instead of unhandled rejections');
+app().resumeDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(app().notice,'Could not stop Android transfer','native resume failures become visible instead of unhandled rejections');
+nativeControls.transferStates=()=>({});
+app();provider.effects[1].callback();
+const deletionPending=app().removeDownloads(story,['1']);
+resolveNetwork({type:'wifi',isConnected:true});
+await deletionPending;
+assert.equal(localDeletions.length,1);
+assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
+app();provider.effects[1].callback();resolveNetwork({type:'wifi',isConnected:true});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(automaticQueued.length,1,'automatic transfers work again once deletion finishes');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');
 
 const releaseChanges=[], releaseSheets=[], releaseRoutes=[];
