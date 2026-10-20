@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { chapterProgress } from "../src/lib/parser.ts";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -56,7 +57,18 @@ try {
   const outside = new File(testRoot, "keep.txt"); outside.write("keep");
   const cover = new File(storage.COVERS, "example.webp"); cover.write("cover");
   storage.toggleSaved("example", "bookmarked"); storage.toggleSaved("example", "liked");
+  storage.savePosition("example", "1", 0.25);
   storage.savePosition("example", "2", 0.5);
+  assert.equal(chapterProgress(storage.readingHistory().example, "1"), 0.25, "opening another chapter preserves partial progress");
+  assert.equal(chapterProgress({chapter:"1",fraction:0.3}, "1"),0.3,"legacy last-chapter positions remain readable");
+  assert.throws(()=>storage.savePosition("example","1",NaN),/Invalid reading position/);
+  storage.savePosition("progress-test", "1", 0.4);
+  storage.savePosition("progress-test", "2", 0.6);
+  storage.setChaptersRead("progress-test", ["1"], true);
+  storage.setChaptersRead("progress-test", ["1"], false);
+  assert.equal(chapterProgress(storage.readingHistory()["progress-test"],"1"),0,"marking an older chapter unread resets its progress");
+  assert.equal(chapterProgress(storage.readingHistory()["progress-test"],"2"),0.6);
+  assert.equal(storage.readingHistory()["progress-test"].chapter,"2","resetting another chapter does not change Continue reading");
   assert.equal(storage.readChapters().example, undefined, "a progress value does not mark a chapter as read");
   storage.markChapterRead("example", "1");
   const completedAt = storage.readChapters().example["1"];
@@ -89,7 +101,7 @@ try {
   assert.ok(storage.readingHistory().example, "deleting a different chapter preserves reading position");
   storage.deleteChapters("example", ["2"], true);
   assert.ok(!new Directory(storage.LIBRARY, "example").exists, "delete all also removes partial downloads");
-  assert.ok(!storage.readingHistory().example);
+  assert.equal(chapterProgress(storage.readingHistory().example,"1"),0.25,"deleting files preserves resumable chapter progress");
   assert.deepEqual(storage.savedStories().example, { bookmarked: true, liked: true });
   assert.equal(storage.readChapters().example["1"], completedAt, "deleting saved files preserves chapter read history");
   assert.ok(outside.exists && cover.exists, "deletion stays inside the story's download folder");
@@ -98,10 +110,12 @@ try {
   const backup = await import('../src/lib/backup.ts');
   const backupStory={...storage.SEED[0],slug:'backup-story',title:'Backup story',localChapters:['1'],genres:['Action']};
   storage.saveCatalog([backupStory]);tools.updateStoryOptions('backup-story',{bookmarked:true,liked:true,list:'planned',autoDownload:true});
+  storage.savePosition('backup-story','2',0.25);
   storage.savePosition('backup-story','1',0.4);storage.setChaptersRead('backup-story',['1'],true);
   storage.savePreferences({...storage.loadPreferences(),genreFilters:{asura:['Action'],vortex:['Fantasy']}});
   const exported=backup.createBackup(), decoded=backup.validateBackup(exported);
   assert.equal(decoded.saved['backup-story'].list,'planned');
+  assert.equal(decoded.history['backup-story'].chapters['2'].fraction,0.25,'backups include older chapter positions');
   assert.equal(decoded.saved['backup-story'].autoDownload,undefined,'portable backups cannot silently enable new automatic transfers');
   assert.equal(decoded.catalog[0].localChapters,undefined,'phone-specific chapter paths are not portable');
   assert.deepEqual(decoded.catalog[0].genres,['Action']);
@@ -109,6 +123,15 @@ try {
   const roundTrip=JSON.parse(exported);roundTrip.history['backup-story'].readAt='2020-01-01T00:00:00Z';roundTrip.history['backup-story'].fraction=0.1;
   backup.restoreBackup(JSON.stringify(roundTrip));
   assert.equal(storage.readingHistory()['backup-story'].fraction,0.4,'newer local position survives import');
+  const olderBackup=JSON.parse(exported);
+  olderBackup.history['backup-story'].chapters['3']={fraction:0.7,readAt:'2021-01-01T00:00:00Z'};
+  olderBackup.history['backup-story'].chapters['2']={fraction:0.1,readAt:'2021-01-01T00:00:00Z'};
+  backup.restoreBackup(JSON.stringify(olderBackup));
+  assert.equal(chapterProgress(storage.readingHistory()['backup-story'],'2'),0.25,'newer per-chapter progress wins during restore');
+  assert.equal(chapterProgress(storage.readingHistory()['backup-story'],'3'),0.7,'restoring merges other chapter positions without replacing the last chapter');
+  delete olderBackup.history['backup-story'].chapters;
+  assert.ok(backup.validateBackup(JSON.stringify(olderBackup)).history['backup-story'],'old backups remain supported');
+
   assert.equal(storage.savedStories()['backup-story'].list,'planned');
   storage.savePreferences({...storage.loadPreferences(),genreFilters:{}});
   assert.ok(storage.readChapters()['backup-story']['1']);

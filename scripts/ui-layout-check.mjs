@@ -55,11 +55,12 @@ assert.equal(chosen, 1, "Android Back dismisses confirmation without performing 
 
 const story = { url: 'https://asurascans.com/comics/example', slug: 'example', title: 'Example', summary: 'Summary.', type: 'Comic', rating: '', chapterCount: 2, chapterIds: ['1','2'], localChapters: ['1'], detailsCached: true };
 const requested = [];
-const shelf = { catalog: [story], read: {example:{}}, saved: {}, preferences: {}, downloads: [], detailsLoading: [], notice: '', downloadBusy: () => false, startDownload: (_, selection) => {requested.push(selection);return true;}, setReadStatus(slug, ids, value) {for (const id of ids) {if(value) shelf.read[slug][id]='read';else delete shelf.read[slug][id];}} };
+const positions = {example:{chapter:"2",fraction:0.6,chapters:{"1":{fraction:0.4},"2":{fraction:0.6}}}};
+const shelf = { catalog: [story], read: {example:{}}, saved: {}, preferences: {}, downloads: [], detailsLoading: [], notice: '', downloadBusy: () => false, startDownload: (_, selection) => {requested.push(selection);return true;}, setReadStatus(slug, ids, value) {for (const id of ids) {if(value) shelf.read[slug][id]='read';else {delete shelf.read[slug][id];positions[slug].chapters[id].fraction=0;}}} };
 const details = component('../src/app/series/[slug].tsx', {
   'expo-router': {useLocalSearchParams: () => ({slug:'example'}), useFocusEffect: () => {}, router: {}},
   '../../lib/parser': parser,
-  '../../lib/storage': {readingHistory: () => ({})},
+  '../../lib/storage': {readingHistory: () => positions},
   '../../lib/app-state': {useShelf: () => shelf},
   '../../lib/library-tools': {estimateDownload: () => ({bytes:1}), formatBytes: () => '1 MB', freeBytes: () => 1000},
   '../../components/ui': {color: {}, ui: {}, Cover: 'Cover', Icon: 'Icon', Chip: 'Chip'},
@@ -73,9 +74,21 @@ const list = () => nodes(details.render('default',{})).find(node => node.type ==
 const header = () => nodes(list().props.ListHeaderComponent);
 const row = id => nodes(list().props.renderItem({item:id}));
 const readToggle = () => row('1').find(node => node.props?.accessibilityLabel === 'Chapter 1 read');
+const progress = id => row(id).find(node=>node.props?.accessibilityRole==='progressbar');
+assert.equal(progress('1').props.style.width,'40%','the background reflects this chapter, not just the most recent chapter');
+assert.equal(progress('2').props.style.width,'60%');
+assert.equal(progress('1').props.pointerEvents,'none','progress cannot intercept reading or selection taps');
+assert.ok(row('1').some(node=>node.props?.name==='download-outline'),'downloaded chapters have an icon');
+assert.ok(!row('2').some(node=>node.props?.name==='download-outline'));
+assert.ok(!row('1').some(node=>node.props?.children==='Saved on phone'),'duplicate visual status text is removed');
+
 readToggle().props.onPress();
+assert.equal(progress('1').props.style.width,'100%');
 assert.ok(header().some(node => node.props?.accessibilityLabel === 'Select all 1 unread chapters'));
 readToggle().props.onPress();
+assert.equal(progress('1').props.style.width,'0%','marking unread clears the full bar immediately');
+positions.example.chapters['2'].fraction=1;
+assert.equal(progress('2').props.style.width,'99%','position alone does not imply that the last panel was seen');
 const selectUnread = header().find(node => node.props?.accessibilityLabel === 'Select all 2 unread chapters');
 assert.ok(selectUnread && !selectUnread.props.disabled, 'marking a saved chapter unread immediately restores it to Select all unread');
 selectUnread.props.onPress();

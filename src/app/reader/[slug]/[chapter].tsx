@@ -4,6 +4,7 @@ import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { chapterDirectory, chapterFiles, chapterIntact, localChapters, novelChapter, readingHistory, savePosition } from "../../../lib/storage";
+import { chapterProgress } from "../../../lib/parser";
 import { readerHtml } from "../../../lib/reader-html";
 import { readerControls } from "../../../lib/reader-controls";
 import { color, Icon, ui } from "../../../components/ui";
@@ -31,7 +32,7 @@ function ChapterReader({ slug, chapter, title, manualUnreadRef, hidden, setHidde
   const { preferences, updatePreferences, read, completeChapter, setReadStatus, catalog } = useShelf();
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
-  const [position] = useState(() => { const saved = readingHistory()[slug]; return saved?.chapter === chapter ? saved.fraction : 0; });
+  const [position] = useState(() => chapterProgress(readingHistory()[slug], chapter));
   const [html] = useState(() => readerHtml(files, position, novel, preferences.novelFontSize, preferences.novelTheme));
   const baseUrl = `${chapterDirectory(slug, chapter).uri.replace(/\/$/, "")}/`;
   const web = useRef<WebView>(null);

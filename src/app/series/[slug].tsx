@@ -8,7 +8,7 @@ import { useShelf } from "../../lib/app-state";
 import { Chip, color, Cover, Icon, ui } from "../../components/ui";
 import { PublicationStatus, SaveActions } from "../../components/story-row";
 import { DownloadList } from "../../components/download-list";
-import { chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating } from "../../lib/parser";
+import { chapterProgress, chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating } from "../../lib/parser";
 import { readingHistory } from "../../lib/storage";
 import { estimateDownload, formatBytes, freeBytes } from "../../lib/library-tools";
 import { ReadingListAction, StoryOptions } from "../../components/story-options";
@@ -50,8 +50,8 @@ export default function SeriesDetails() {
     if (!ids.length) return;
     showSheet("Reading status", `${ids.length} chapter${ids.length === 1 ? "" : "s"}`, [
       { text: "Cancel", style: "cancel" },
-      { text: "Mark read", onPress: () => { setReadStatus(slug, ids, true); setSelected([]); } },
-      { text: "Mark unread", onPress: () => { setReadStatus(slug, ids, false); setSelected([]); } },
+      { text: "Mark read", onPress: () => { setReadStatus(slug, ids, true); setHistory(readingHistory()); setSelected([]); } },
+      { text: "Mark unread", onPress: () => { setReadStatus(slug, ids, false); setHistory(readingHistory()); setSelected([]); } },
     ]);
   }
   function erase(ids: string[], everything = false) {
@@ -93,10 +93,13 @@ export default function SeriesDetails() {
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes. Restricted episodes require WEBTOON." : "No chapters loaded. Pull to refresh.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {
         const isSaved = owned.includes(chapter), isRead = Boolean(ledger[chapter]), checked = chosen.includes(chapter);
-        return <View style={[ui.row, { gap: 3, borderBottomWidth: 1, borderColor: color.line, backgroundColor: checked ? "#8b5cf626" : isSaved ? "#65cba10d" : "transparent", borderLeftWidth: 3, borderLeftColor: isSaved ? "#65cba180" : "transparent" }]}>
+        const progress = isRead ? 1 : Math.min(0.99, chapterProgress(history[slug], chapter));
+        const chapterTitle = item.chapterTitles?.[chapter] || `Chapter ${chapter}`;
+        return <View style={[ui.row, { position: "relative", overflow: "hidden", gap: 3, borderBottomWidth: 1, borderColor: color.line, backgroundColor: checked ? "#8b5cf626" : isSaved ? "#65cba10d" : "transparent", borderLeftWidth: 3, borderLeftColor: isSaved ? "#65cba180" : "transparent" }]}>
+          <View pointerEvents="none" accessibilityRole="progressbar" accessibilityLabel={`Chapter ${chapter} reading progress`} accessibilityValue={{ min: 0, max: 100, now: Math.floor(progress * 100) }} style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${progress * 100}%`, backgroundColor: isRead ? "#65cba118" : "#8b5cf61c" }} />
           <Pressable disabled={deleting} accessibilityRole="checkbox" accessibilityLabel={`Select chapter ${chapter}`} accessibilityState={{ checked }} onPress={() => toggle(chapter)} style={{ padding: 12 }}><Icon name={checked ? "checkbox" : "square-outline"} tint={checked ? color.lilac : color.muted} /></Pressable>
-          <Pressable disabled={deleting} onPress={() => isSaved ? open(chapter) : toggle(chapter)} style={{ flex: 1, paddingVertical: 16 }}><Text style={[ui.text, { fontWeight: "600", color: isSaved ? "#9de1bf" : color.text }]}>{isSaved ? "↓  " : ""}{item.chapterTitles?.[chapter] || `Chapter ${chapter}`}</Text><Text style={[ui.muted, { fontSize: 11 }]}>{isSaved ? "Saved on phone" : "Not downloaded"} · {isRead ? "Read" : "Unread"}</Text></Pressable>
-          <Pressable accessibilityRole="checkbox" accessibilityLabel={`Chapter ${chapter} read`} accessibilityState={{ checked: isRead }} onPress={() => setReadStatus(slug, [chapter], !isRead)} style={{ padding: 14 }}><Icon name={isRead ? "checkmark-circle" : "checkmark-circle-outline"} tint={isRead ? "#65cba1" : color.muted} /></Pressable>
+          <Pressable disabled={deleting} accessibilityLabel={`${chapterTitle}, ${isSaved ? "downloaded" : "not downloaded"}`} accessibilityHint={isSaved ? "Read chapter" : "Select for download"} onPress={() => isSaved ? open(chapter) : toggle(chapter)} style={{ flex: 1, paddingVertical: 16 }}><View style={[ui.row, { gap: 7 }]}>{isSaved && <Icon name="download-outline" size={16} tint="#9de1bf" />}<Text style={[ui.text, { flex: 1, fontWeight: "600", color: isSaved ? "#9de1bf" : color.text }]}>{chapterTitle}</Text></View></Pressable>
+          <Pressable accessibilityRole="checkbox" accessibilityLabel={`Chapter ${chapter} read`} accessibilityState={{ checked: isRead }} onPress={() => { setReadStatus(slug, [chapter], !isRead); setHistory(readingHistory()); }} style={{ padding: 14 }}><Icon name={isRead ? "checkmark-circle" : "checkmark-circle-outline"} tint={isRead ? "#65cba1" : color.muted} /></Pressable>
         </View>;
       }} />
     {job && <Pressable accessibilityLabel="Show download controls" onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })} style={[ui.row, { padding: 14, borderTopWidth: 1, borderColor: color.line }]}><Icon name="download-outline" tint={color.lilac} size={18} /><Text numberOfLines={1} style={[ui.muted, { flex: 1 }]}>{job.message} · {Math.round(job.progress * 100)}%</Text><Text style={{ color: color.lilac }}>Controls ↑</Text></Pressable>}

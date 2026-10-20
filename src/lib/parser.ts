@@ -78,6 +78,10 @@ export function chapterList(source: string[] = [], saved: string[] = [], read: R
     && (filter !== "saved" || owned.has(id)) && (filter !== "unread" || !read[id]))
     .sort((a, b) => newest ? chapterSort(b, a) : chapterSort(a, b));
 }
+export function chapterProgress(position: { chapter: string; fraction: number; chapters?: Record<string, { fraction: number }> } | undefined, chapter: string): number {
+  const fraction = position?.chapters?.[chapter]?.fraction ?? (position?.chapter === chapter ? position.fraction : 0);
+  return Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0;
+}
 export function nextUnread(chapters: string[], position: { chapter: string } | undefined, read: Record<string, string> = {}): string | undefined {
   return position && chapters.includes(position.chapter) && !read[position.chapter] ? position.chapter : chapters.find(chapter => !read[chapter]);
 }

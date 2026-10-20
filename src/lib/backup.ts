@@ -27,7 +27,13 @@ export function validateBackup(text: string) {
     read[slug] = {};
     for (const [id, date] of Object.entries(value)) if (part(id) && typeof date === "string" && Number.isFinite(Date.parse(date))) read[slug][id] = date;
   }
-  for (const [slug, value] of Object.entries(data.history)) if (known.has(slug) && object(value) && typeof value.chapter === "string" && part(value.chapter) && typeof value.fraction === "number" && Number.isFinite(value.fraction) && typeof value.readAt === "string" && Number.isFinite(Date.parse(value.readAt))) history[slug] = { chapter: value.chapter, fraction: Math.max(0, Math.min(1, value.fraction)), readAt: value.readAt };
+  for (const [slug, value] of Object.entries(data.history)) if (known.has(slug) && object(value) && typeof value.chapter === "string" && part(value.chapter) && typeof value.fraction === "number" && Number.isFinite(value.fraction) && typeof value.readAt === "string" && Number.isFinite(Date.parse(value.readAt))) {
+    const chapters: NonNullable<ReturnType<typeof readingHistory>[string]["chapters"]> = {};
+    if (object(value.chapters)) for (const [id, position] of Object.entries(value.chapters)) {
+      if (part(id) && object(position) && typeof position.fraction === "number" && Number.isFinite(position.fraction) && typeof position.readAt === "string" && Number.isFinite(Date.parse(position.readAt))) chapters[id] = { fraction: Math.max(0, Math.min(1, position.fraction)), readAt: position.readAt };
+    }
+    history[slug] = { chapter: value.chapter, fraction: Math.max(0, Math.min(1, value.fraction)), readAt: value.readAt, chapters };
+  }
   const preferences: Partial<Preferences> = {};
   if (object(data.preferences)) {
     for (const key of ["readerKeepAwake", "readerVolumeScroll", "deleteAfterReading", "autoSync", "hideDownloaded", "hideLiked", "hideBookmarked"] as const) if (typeof data.preferences[key] === "boolean") preferences[key] = data.preferences[key];
@@ -54,7 +60,15 @@ export function restoreBackup(text: string): number {
   const oldCatalog = loadCatalog(), saved = savedStories(), read = readChapters(), history = readingHistory();
   for (const [slug, value] of Object.entries(imported.saved)) saved[slug] = { ...value, ...saved[slug], liked: Boolean(saved[slug]?.liked || value.liked), bookmarked: Boolean(saved[slug]?.bookmarked || value.bookmarked), list: saved[slug]?.list || value.list, autoDownload: saved[slug]?.autoDownload || false };
   for (const [slug, value] of Object.entries(imported.read)) read[slug] = { ...read[slug], ...value };
-  for (const [slug, value] of Object.entries(imported.history)) if (!history[slug] || Date.parse(value.readAt) > Date.parse(history[slug].readAt)) history[slug] = value;
+  for (const [slug, value] of Object.entries(imported.history)) {
+    const current = history[slug], chapters: NonNullable<typeof value.chapters> = {};
+    for (const entry of [current, value]) if (entry) {
+      const positions = { ...entry.chapters };
+      if (!positions[entry.chapter] || Date.parse(entry.readAt) >= Date.parse(positions[entry.chapter].readAt)) positions[entry.chapter] = { fraction: entry.fraction, readAt: entry.readAt };
+      for (const [id, position] of Object.entries(positions)) if (!chapters[id] || Date.parse(position.readAt) > Date.parse(chapters[id].readAt)) chapters[id] = position;
+    }
+    history[slug] = { ...(!current || Date.parse(value.readAt) > Date.parse(current.readAt) ? value : current), chapters };
+  }
   // Validate everything before writing; retain a rollback snapshot for write failures.
   const names = ["catalog.json", "saved.json", "read.json", "history.json", "preferences.json"];
   const before = names.map(name => { const file = new File(ROOT, name); return file.exists ? file.textSync() : null; });

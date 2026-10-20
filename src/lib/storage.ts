@@ -21,7 +21,7 @@ export function loadDownloads(): DownloadJob[] {
 export function saveDownloads(jobs: DownloadJob[]): void { initializeStorage(); DOWNLOADS.write(JSON.stringify(jobs)); }
 export type Preferences = DiscoveryFilters & { autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; weights: SortWeights; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
 export const DEFAULT_PREFERENCES: Preferences = { autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", interval: 10, sort: "smart", weights: DEFAULT_WEIGHTS, contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
-export type ReadingPosition = { chapter: string; fraction: number; readAt: string };
+export type ReadingPosition = { chapter: string; fraction: number; readAt: string; chapters?: Record<string, { fraction: number; readAt: string }> };
 
 export function loadPreferences(): Preferences {
   initializeStorage();
@@ -42,8 +42,13 @@ export function readingHistory(): Record<string, ReadingPosition> {
   try { return JSON.parse(HISTORY.textSync()); } catch { return {}; }
 }
 export function savePosition(slug: string, chapter: string, fraction: number): void {
-  const history = readingHistory();
-  history[slug] = { chapter, fraction, readAt: new Date().toISOString() };
+  if (![slug, chapter].every(safePart) || !Number.isFinite(fraction)) throw new Error("Invalid reading position.");
+  const history = readingHistory(), previous = history[slug];
+  const chapters = { ...previous?.chapters };
+  if (previous && !chapters[previous.chapter]) chapters[previous.chapter] = { fraction: previous.fraction, readAt: previous.readAt };
+  const position = { fraction: Math.max(0, Math.min(1, fraction)), readAt: new Date().toISOString() };
+  chapters[chapter] = position;
+  history[slug] = { chapter, ...position, chapters };
   HISTORY.write(JSON.stringify(history));
 }
 
@@ -64,8 +69,15 @@ export function setChaptersRead(slug: string, chapters: string[], value: boolean
   }
   read[slug] = state;
   READ.write(JSON.stringify(read));
-  const history = readingHistory()[slug];
-  if (!value && history && chapters.includes(history.chapter)) savePosition(slug, history.chapter, 0);
+  const history = readingHistory(), position = history[slug];
+  if (!value && position) {
+    const readAt = new Date().toISOString();
+    for (const chapter of chapters) {
+      if (position.chapters?.[chapter]) position.chapters[chapter] = { fraction: 0, readAt };
+      if (position.chapter === chapter) { position.fraction = 0; position.readAt = readAt; }
+    }
+    HISTORY.write(JSON.stringify(history));
+  }
 }
 export function releaseSnapshots(): Record<string, string[]> {
   initializeStorage();
@@ -135,8 +147,6 @@ export function deleteChapters(slug: string, ids: string[], all = false): void {
   const targets = all ? [new Directory(LIBRARY, slug)] : ids.map(chapter => chapterDirectory(slug, chapter));
   if (targets.some(folder => !folder.uri.startsWith(`${LIBRARY.uri.replace(/\/$/, "")}/`))) throw new Error("Invalid deletion target.");
   for (const folder of targets) if (folder.exists) folder.delete();
-  const history = readingHistory();
-  if (history[slug] && (all || ids.includes(history[slug].chapter))) { delete history[slug]; HISTORY.write(JSON.stringify(history)); }
 }
 
 export function novelChapter(slug: string, chapter: string): NovelText | null {
