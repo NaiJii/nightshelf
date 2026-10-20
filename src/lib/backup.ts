@@ -22,7 +22,7 @@ export function validateBackup(text: string) {
   });
   const known = new Set(catalog.map(item => item.slug));
   const saved: Record<string, SavedStory> = {}, read: Record<string, Record<string, string>> = {}, history: ReturnType<typeof readingHistory> = {};
-  for (const [slug, value] of Object.entries(data.saved)) if (known.has(slug) && object(value)) saved[slug] = { liked: value.liked === true, bookmarked: value.bookmarked === true, list: ["reading", "planned", "finished", "hold"].includes(String(value.list)) ? value.list as SavedStory["list"] : undefined };
+  for (const [slug, value] of Object.entries(data.saved)) if (known.has(slug) && object(value)) saved[slug] = { notifyReleases: typeof value.notifyReleases === "boolean" ? value.notifyReleases : undefined, liked: value.liked === true, bookmarked: value.bookmarked === true, list: ["reading", "planned", "finished", "hold"].includes(String(value.list)) ? value.list as SavedStory["list"] : undefined };
   for (const [slug, value] of Object.entries(data.read)) if (known.has(slug) && object(value)) {
     read[slug] = {};
     for (const [id, date] of Object.entries(value)) if (part(id) && typeof date === "string" && Number.isFinite(Date.parse(date))) read[slug][id] = date;
@@ -49,6 +49,7 @@ export function validateBackup(text: string) {
     if (typeof data.preferences.readerBrightness === "number" && Number.isFinite(data.preferences.readerBrightness)) preferences.readerBrightness = Math.max(-1, Math.min(1, data.preferences.readerBrightness));
     const enums = { source: ["asura", "webtoon", "vortex", "mangakakalot"], webtoonLanguage: ["en", "fr", "es", "de", "th", "id", "zh-hant"], webtoonCollection: ["originals", "canvas"], contentMode: ["all", "comics", "novels"], sort: ["smart", "trending", "rating", "updated", "title", "chapters"], period: ["week", "month", "all"], mobileData: ["ask", "never", "allow"] };
     for (const [key, allowed] of Object.entries(enums)) if (allowed.includes(String(data.preferences[key]))) Object.assign(preferences, { [key]: data.preferences[key] });
+    if (data.preferences.releaseCheckInterval === 60 || data.preferences.releaseCheckInterval === 120) preferences.releaseCheckInterval = data.preferences.releaseCheckInterval;
     if (data.preferences.interval === 5 || data.preferences.interval === 10) preferences.interval = data.preferences.interval;
     if (typeof data.preferences.autoDownloadLimitMB === "number" && Number.isFinite(data.preferences.autoDownloadLimitMB)) preferences.autoDownloadLimitMB = Math.max(128, Math.min(100_000, data.preferences.autoDownloadLimitMB));
     if (object(data.preferences.weights)) { const weights = { ...DEFAULT_PREFERENCES.weights }; for (const key of ["trending", "rating", "length"] as const) { const value = data.preferences.weights[key]; if (typeof value === "number" && Number.isFinite(value)) weights[key] = Math.max(0, Math.min(5, value)); } preferences.weights = weights; }

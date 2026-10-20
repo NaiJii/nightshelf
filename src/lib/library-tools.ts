@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from "expo-file-system";
+import { chapterListCached } from "./parser";
 import type { SavedStory, SourceId } from "./parser";
-import { chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, ROOT, savedStories } from "./storage";
+import { chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, ROOT, savedStories, saveReleaseSnapshot, clearReleaseUpdates } from "./storage";
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unknown";
@@ -17,7 +18,20 @@ export function storageSummary() {
 }
 export function updateStoryOptions(slug: string, change: Partial<SavedStory>): void {
   if (!/^[a-zA-Z0-9_.-]+$/.test(slug) || slug === "." || slug === "..") throw new Error("Invalid story.");
-  const all = savedStories(); all[slug] = { ...all[slug], ...change };
+  const all = savedStories(), previous = all[slug] || {}, next = { ...previous, ...change };
+  if (change.autoDownload || change.notifyReleases) next.bookmarked = true;
+  const item = (next.bookmarked && !previous.bookmarked) || (next.autoDownload && !previous.autoDownload) || (next.notifyReleases && !previous.notifyReleases) ? loadCatalog().find(item => item.slug === slug) : undefined;
+  const baseline = item && chapterListCached(item) ? item.chapterIds : undefined;
+  if (next.bookmarked && !previous.bookmarked) {
+    saveReleaseSnapshot(slug, baseline); clearReleaseUpdates(slug);
+    next.notifyReleases ??= false;
+  } else if (next.notifyReleases && !previous.notifyReleases) saveReleaseSnapshot(slug, baseline);
+  if (!next.bookmarked) {
+    next.autoDownload = false; next.notifyReleases = false;
+    if (previous.bookmarked) { saveReleaseSnapshot(slug); clearReleaseUpdates(slug); }
+  }
+  if (next.autoDownload && !previous.autoDownload) next.autoDownloadBaseline = baseline ? [...baseline] : undefined;
+  all[slug] = next;
   new File(ROOT, "saved.json").write(JSON.stringify(all));
 }
 // Estimates use saved chapters of the same story, then an explicit format fallback.

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import * as parser from "../src/lib/parser.ts";
+import * as releasePolicy from "../src/lib/release-policy.ts";
 
 function component(file, extraModules = {}) {
   const slots = [], effects = []; let cursor = 0;
@@ -10,7 +11,7 @@ function component(file, extraModules = {}) {
   const modules = {
     "react/jsx-runtime": { jsx: element, jsxs: element },
     react: {
-      createContext: value => ({ Provider: "Provider", value }), useContext: context => context.value, useCallback: fn => fn, useEffect: (callback, deps) => effects.push({callback,deps}),
+      createContext: value => ({ Provider: "Provider", value }), useContext: context => context.value, useCallback: fn => fn, useMemo: fn => fn(), useEffect: (callback, deps) => effects.push({callback,deps}),
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
@@ -65,7 +66,7 @@ const details = component('../src/app/series/[slug].tsx', {
   '../../lib/library-tools': {estimateDownload: () => ({bytes:1}), formatBytes: () => '1 MB', freeBytes: () => 1000},
   '../../components/ui': {color: {}, ui: {}, Cover: 'Cover', Icon: 'Icon', Chip: 'Chip'},
   '../../components/story-row': {PublicationStatus: 'Status', SaveActions: 'SaveActions'},
-  '../../components/story-options': {ReadingListAction: 'ReadingListAction', StoryOptions: 'StoryOptions'},
+  '../../components/story-options': {ReadingListAction: 'ReadingListAction', ReleaseActions: 'ReleaseActions'},
   '../../components/download-list': {DownloadList: 'DownloadList'},
   '../../components/expandable-summary': {ExpandableSummary: 'Summary'},
   '../../components/action-sheet': {useActionSheet: () => () => {}},
@@ -111,6 +112,7 @@ const provider = component('../src/lib/app-state.tsx', {
   'expo-router': {usePathname:()=>route},
   '@react-native-community/netinfo': {},
   './parser': parser,
+  './release-policy': releasePolicy,
   './storage': {loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({}),readChapters:()=>({}),releaseUpdates:()=>({}),loadDownloads:()=>[]},
   './scraper': {refreshSeries:()=>new Promise((_,reject)=>{rejectDetails=reject;}),syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
   './network': {networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
@@ -141,3 +143,24 @@ assert.equal(app().notice,'Vortex unavailable');
 app().updatePreferences({source:'asura'});app();provider.effects[0].callback();
 assert.equal(app().notice,'','changing providers clears the previous provider warning');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');
+
+const releaseChanges=[], releaseSheets=[], releaseRoutes=[];
+const releaseShelf={catalog:[{...story,updatedAt:'2026-10-01'}, {...story,slug:'other',title:'Other',chapterIds:['3']}],saved:{example:{bookmarked:true},other:{bookmarked:true}},read:{example:{'2':'read'}},updates:{example:['1','2','2'],other:['3']},preferences:{releaseNotifications:false},setStoryOptions:(slug,change)=>{releaseChanges.push(change);releaseShelf.saved[slug]={...releaseShelf.saved[slug],...change};},setStoryNotifications:(...args)=>releaseChanges.push(args)};
+const releaseActions=component('../src/components/story-options.tsx',{
+  '../lib/app-state':{useShelf:()=>releaseShelf},
+  './action-sheet':{useActionSheet:()=>(...args)=>releaseSheets.push(args)},
+});
+const cloud=()=>nodes(releaseActions.render('ReleaseActions',{item:story})).find(node=>node.props?.accessibilityLabel==='Auto-download new chapters');
+cloud().props.onPress();assert.equal(cloud().props.accessibilityState.checked,true);assert.equal(releaseSheets.at(-1)[0],'Release alerts?');
+releaseSheets.at(-1)[2].find(action=>action.text==='Notify me').onPress();assert.equal(JSON.stringify(releaseChanges.at(-1)),JSON.stringify(['example',true]));
+cloud().props.onPress();assert.equal(cloud().props.accessibilityState.checked,false);
+const feed=component('../src/components/release-feed.tsx',{
+  './ui':{color:{},ui:{},Cover:'Cover',Icon:'Icon'},
+  '../lib/app-state':{useShelf:()=>releaseShelf},'../lib/parser':parser,'../lib/release-policy':releasePolicy,
+  'expo-router':{router:{push:route=>releaseRoutes.push(route),navigate:route=>releaseRoutes.push(route)}},
+});
+const feedNodes=nodes(feed.render('ReleaseFeed',{}));
+assert.equal(feedNodes.filter(node=>node.type==='Pressable'&&node.props?.accessibilityLabel?.includes('new chapter')).length,2,'the feed groups releases into one row per story');
+const feedStory=feedNodes.find(node=>node.props?.accessibilityLabel==='Example, 1 new chapter');assert.ok(feedStory,'read chapters and duplicate releases are excluded');
+feedStory.props.onPress();assert.equal(releaseRoutes.at(-1).params.filter,'unread');
+console.log('Auto-download icon, release alert proposal, grouped feed and unread navigation checks passed');

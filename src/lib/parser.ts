@@ -39,7 +39,7 @@ export type Period = "week" | "month" | "all";
 export type ContentMode = "all" | "comics" | "novels";
 export type DiscoveryFilters = { source?: SourceId; webtoonLanguage?: string; webtoonCollection?: "originals" | "canvas"; genreFilters?: Partial<Record<SourceId, string[]>>; contentMode: ContentMode; hideDownloaded: boolean; hideLiked: boolean; hideBookmarked: boolean };
 export type ReadingList = "reading" | "planned" | "finished" | "hold";
-export type SavedStory = { liked?: boolean; bookmarked?: boolean; list?: ReadingList; autoDownload?: boolean };
+export type SavedStory = { liked?: boolean; bookmarked?: boolean; list?: ReadingList; autoDownload?: boolean; autoDownloadBaseline?: string[]; notifyReleases?: boolean };
 export function formatRating(value: string): string {
   const parts = value.trim().match(/^(\d+(?:\.\d+)?)(?:\s*\/\s*(\d+(?:\.\d+)?))?$/);
   if (!parts || !Number.isFinite(Number(parts[1])) || (parts[2] && (!Number.isFinite(Number(parts[2])) || Number(parts[2]) <= 0))) return "";

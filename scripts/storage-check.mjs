@@ -153,6 +153,22 @@ try {
   assert.equal(tools.sourceForRequest('https://unrelated.example/'),undefined,'unrelated image hosts do not overwrite source status');
   assert.equal(tools.estimateDownload('not-owned',2,false).bytes,36*1024**2);
   console.log('Backup validation/merge, reading lists, size estimates, source health and integrity checks passed');
+  const autoStory={...storage.SEED[0],slug:'automatic-baseline',chapterIds:['1','2'],chapterCount:2,detailsCached:true};
+  storage.saveCatalog([autoStory]);storage.addReleaseUpdates(autoStory.slug,['2']);
+  tools.updateStoryOptions(autoStory.slug,{autoDownload:true});
+  assert.equal(storage.savedStories()[autoStory.slug].bookmarked,true,'auto-download also bookmarks the story');
+  assert.deepEqual(storage.savedStories()[autoStory.slug].autoDownloadBaseline,['1','2'],'enabling auto-download records existing chapters as its baseline');
+  assert.deepEqual(storage.releaseSnapshots()[autoStory.slug],['1','2'],'a new bookmark cannot announce existing chapters');
+  tools.updateStoryOptions(autoStory.slug,{autoDownload:false});
+  storage.saveCatalog([{...autoStory,chapterIds:['1','2','3'],chapterCount:3}]);
+  tools.updateStoryOptions(autoStory.slug,{autoDownload:true});
+  assert.deepEqual(storage.savedStories()[autoStory.slug].autoDownloadBaseline,['1','2','3'],'re-enabling cannot catch up older release badges');
+  storage.addReleaseUpdates(autoStory.slug,['2']);
+  tools.updateStoryOptions(autoStory.slug,{notifyReleases:true});
+  assert.deepEqual(storage.releaseSnapshots()[autoStory.slug],['1','2','3'],'opting into alerts starts with the current chapter baseline');
+  assert.deepEqual(storage.releaseUpdates()[autoStory.slug],['2'],'notification opt-in preserves the existing in-app release feed');
+
+
   const fullSummary = "The complete summary saved from the story page, including its ending.";
   const comicHtml = `<meta property="og:title" content="Example"><meta property="og:image" content="https://cdn/example.webp"><div id="description-text"><p>${fullSummary}</p></div><a href="/comics/example/chapter/1">1</a><a href="/comics/example/chapter/2">2</a>`;
   const comicRaw = {slug:'example',title:'Example',description:'Short ranking preview',cover:'https://cdn/example.webp',chapter_count:2};
@@ -448,23 +464,24 @@ export async function fetch(url,options={}){
   } finally { scraperHook.deregister(); storage.toggleSaved('example','bookmarked'); }
   const mocks = {
     "expo-notifications": `export const AndroidImportance={DEFAULT:3}; export const sent=[]; export let granted=true; export function deny(){granted=false;} export function setNotificationHandler(){}; export async function setNotificationChannelAsync(){}; export async function getPermissionsAsync(){return {granted};} export const requestPermissionsAsync=getPermissionsAsync; export async function getPresentedNotificationsAsync(){return [...new Map(sent.map(value=>[value.identifier,{request:value}])).values()];} export async function scheduleNotificationAsync(value){sent.push(value);}`,
-    "expo-background-task": `export const BackgroundTaskResult={Success:1,Failed:2}; export async function registerTaskAsync(){} export async function unregisterTaskAsync(){}`,
-    "expo-task-manager": `export let task; export function defineTask(name,callback){task=callback;} export async function isTaskRegisteredAsync(){return false;}`,
+    "expo-background-task": `export const BackgroundTaskResult={Success:1,Failed:2}; export const registrations=[];export let removals=0;export async function registerTaskAsync(name,options){registrations.push(options);} export async function unregisterTaskAsync(){removals++;}`,
+    "expo-task-manager": `export let task; export function defineTask(name,callback){task=callback;} let options=null;export function registration(value){options=value;}export async function getTaskOptionsAsync(){return options;}export async function isTaskRegisteredAsync(){return options!==null;}`,
     "@react-native-community/netinfo": `export let network={type:'cellular',isConnected:true}; export function setNetwork(value){network=value;} export default {fetch:async()=>network};`,
     "react-native": `export const AppState={currentState:'background'}; export const Alert={alert:(title,text,buttons)=>buttons.find(button=>button.text==='No').onPress()};`,
     "./background-downloads": `export let backgroundTransfers=null;export function enable(){backgroundTransfers={};}export function transferStates(){return {};}`,
-    "./scraper": `export const downloaded=[];export async function downloadChapters(...args){downloaded.push(args);} export const attempted=[]; export async function refreshSeries(item){attempted.push(item.slug);if(item.slug==='bad')throw Error('404');return {...item,chapterIds:['1','2']};}`,
+    "./scraper": `export const downloaded=[];export async function downloadChapters(...args){downloaded.push(args);} export const attempted=[]; export async function refreshSeries(item){attempted.push(item.slug);if(item.slug==='bad')throw Error('404');return {...item,chapterIds:['1','2'],chapterCount:2,detailsCached:true};}`,
   };
   const nativeHook = registerHooks({ resolve(specifier, context, next) {
     if (mocks[specifier] && (specifier !== "./scraper" || context.parentURL?.endsWith("/releases.ts"))) return {url:`data:text/javascript,${encodeURIComponent(mocks[specifier])}`,shortCircuit:true};
     return next(specifier,context);
   } });
   try {
-    const { notifyReleases } = await import('../src/lib/releases.ts');
+    const { notifyReleases, configureReleaseChecks } = await import('../src/lib/releases.ts');
     const notifications = await import('expo-notifications');
     const tasks = await import('expo-task-manager');
     storage.savePreferences({...storage.loadPreferences(),releaseNotifications:true});
-    const story = {...storage.SEED[0],slug:'example',chapterIds:['1','2']};
+    tools.updateStoryOptions('example',{bookmarked:true,notifyReleases:true});
+    const story = {...storage.SEED[0],slug:'example',chapterIds:['1','2'],detailsCached:true,chapterCount:2};
     await notifyReleases([story]);
     assert.equal(notifications.sent.length,0,'first check establishes a baseline');
     story.chapterIds.push('3','4','4.5');
@@ -482,6 +499,12 @@ export async function fetch(url,options={}){
     assert.equal(notifications.sent.length,2,'source omissions must not re-notify known chapters');
     storage.toggleSaved('example','bookmarked'); story.chapterIds.push('6'); await notifyReleases([story]);
     assert.equal(notifications.sent.length,2,'unbookmarked stories do not notify');
+
+    const muted={...story,slug:'muted',chapterIds:['1'],chapterCount:1};
+    tools.updateStoryOptions('muted',{bookmarked:true,notifyReleases:false});
+    await notifyReleases([muted]);muted.chapterIds.push('2');muted.chapterCount=2;await notifyReleases([muted]);
+    assert.equal(notifications.sent.length,2,'per-story notification opt-out is respected');
+    assert.deepEqual(storage.releaseUpdates().muted,['2'],'muted stories still populate the in-app feed');
     storage.toggleSaved('example','bookmarked'); notifications.deny(); await notifyReleases([story]);
     assert.equal(notifications.sent.length,2,'Android permission is respected');
     assert.ok(storage.releaseUpdates().example.includes('6'),'library badges still update when Android notifications are denied');
@@ -492,6 +515,15 @@ export async function fetch(url,options={}){
     storage.saveCatalog([story]);
     assert.equal(await tasks.task(),2,'background cellular requests are prevented');
     console.log('Grouped release notification check passed');
+    const scheduler=await import('expo-background-task');
+    await configureReleaseChecks();assert.equal(scheduler.registrations.at(-1).minimumInterval,120,'background checks default to two hours');
+    tasks.registration({minimumInterval:15});
+    storage.savePreferences({...storage.loadPreferences(),releaseCheckInterval:60});
+    await configureReleaseChecks();assert.equal(scheduler.registrations.at(-1).minimumInterval,60,'changing interval replaces the existing 15-minute registration');
+    assert.equal(scheduler.removals,1);
+    tasks.registration({minimumInterval:60});
+    const registrations=scheduler.registrations.length;await configureReleaseChecks();assert.equal(scheduler.registrations.length,registrations,'unchanged schedules are not reset');
+
     const net = await import('@react-native-community/netinfo');
     const {AppState,Alert} = await import('react-native'); AppState.currentState='active';
     storage.saveCatalog([{...story,slug:'bad'},{...story,slug:'good'}]);storage.toggleSaved('bad','bookmarked');storage.toggleSaved('good','bookmarked');
@@ -500,10 +532,12 @@ export async function fetch(url,options={}){
     const refresher=await import(`data:text/javascript,${encodeURIComponent(mocks['./scraper'])}`);
     assert.deepEqual(refresher.attempted,['bad','good'],'one broken bookmark never blocks later healthy stories');
     const nativeTransfers=await import(`data:text/javascript,${encodeURIComponent(mocks['./background-downloads'])}`);
-    nativeTransfers.enable();tools.updateStoryOptions('good',{bookmarked:true,autoDownload:true});
+    nativeTransfers.enable();
+    storage.saveCatalog([{...story,slug:'good',chapterIds:['1'],chapterCount:1}]);
+    tools.updateStoryOptions('good',{bookmarked:true,autoDownload:true});
     storage.savePreferences({...storage.loadPreferences(),releaseNotifications:false});
     storage.saveReleaseSnapshot('good',['1']);storage.clearReleaseUpdates('good');
-    storage.saveCatalog([{...story,slug:'good',chapterIds:['1']}]);
+    storage.saveCatalog([{...story,slug:'good',chapterIds:['1'],chapterCount:1}]);
     await tasks.task();
     assert.equal(refresher.downloaded.length,1,'bookmarked auto-downloads work even with release notifications disabled');
     assert.equal(refresher.downloaded[0][1],'2','only new unread releases are queued automatically');
@@ -522,6 +556,13 @@ export async function fetch(url,options={}){
     storage.saveDownloads([]);
     tools.updateStoryOptions('good',{autoDownload:false});
     storage.savePreferences({...storage.loadPreferences(),releaseNotifications:true});
+
+    storage.saveCatalog([{...story,slug:'first-baseline',chapterIds:undefined,detailsCached:false}]);
+    tools.updateStoryOptions('first-baseline',{autoDownload:true});
+    assert.equal(storage.savedStories()['first-baseline'].autoDownloadBaseline,undefined);
+    await tasks.task();
+    assert.equal(refresher.downloaded.length,1,'the first full pull cannot enqueue the existing chapter backlog');
+    assert.deepEqual(storage.savedStories()['first-baseline'].autoDownloadBaseline,['1','2']);
     console.log('Automatic bookmarked Wi-Fi release handoff check passed');
     AppState.currentState='active';
     net.setNetwork({type:'cellular',isConnected:true});

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DEFAULT_WEIGHTS, filterDiscovery, kindOf, nextUnread, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, parseTrending, publicationState, releaseLabel, selectChapters, sortExplore } from "../src/lib/parser.ts";
 import { readerHtml } from "../src/lib/reader-html.ts";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "../src/lib/network-policy.ts";
-import { newReleases, unreadReleases } from "../src/lib/release-policy.ts";
+import { automaticReleaseIds, newReleases, unreadReleases } from "../src/lib/release-policy.ts";
 import vm from "node:vm";
 import { execFileSync } from "node:child_process";
 import readerControlsPlugin from "../plugins/with-reader-controls.js";
@@ -13,6 +13,13 @@ import "./background-wait-check.mjs";
 import "./ui-layout-check.mjs";
 import { formatRating } from "../src/lib/parser.ts";
 import { withLinkedAbort } from "../src/lib/request-control.ts";
+
+const automatic = {bookmarked:true,autoDownload:true,autoDownloadBaseline:['1','2']};
+const available = {chapterIds:['1','2','3','4'],localChapters:['4']};
+assert.deepEqual(automaticReleaseIds(automatic,available,['2','3','4']),['3'],'old badges and saved chapters are excluded from auto-download');
+assert.deepEqual(automaticReleaseIds({...automatic,autoDownloadBaseline:undefined},available,['3']),[],'no automatic transfers before the first complete baseline');
+assert.deepEqual(automaticReleaseIds(automatic,available,['3'],{'3':'read'}),[],'read releases are excluded');
+assert.deepEqual(automaticReleaseIds({...automatic,bookmarked:false},available,['3']),[]);
 
 const providerAbort = new AbortController(), screenAbort = new AbortController(), downloadAbort = new AbortController();
 let combinedSignal;

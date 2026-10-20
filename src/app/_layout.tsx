@@ -16,7 +16,7 @@ export default function RootLayout() {
       const slug = response.notification.request.content.data?.slug;
       if (typeof slug !== "string" || !loadCatalog().some(item => item.slug === slug)) return;
       handled = token;
-      router.push({ pathname: "/series/[slug]", params: { slug } });
+      router.push({ pathname: "/series/[slug]", params: { slug, filter: "unread" } });
       void Notifications.clearLastNotificationResponseAsync();
     };
     open(Notifications.getLastNotificationResponse());

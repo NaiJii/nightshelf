@@ -5,8 +5,9 @@ import NetInfo from "@react-native-community/netinfo";
 import { chapterListCached, ContentMode, Series } from "./parser";
 import { browseCatalog, downloadChapters, refreshSeries, searchCatalog, syncCatalog } from "./scraper";
 import type { BrowseCursor, BrowseOptions } from "./scraper";
-import { deleteChapters, loadCatalog, loadPreferences, Preferences, savedStories, mergeCatalog, savePreferences, toggleSaved, readChapters, markChapterRead, saveReleaseSnapshot, localChapters, releaseUpdates, clearReleaseUpdates, setChaptersRead, loadDownloads, saveDownloads } from "./storage";
+import { deleteChapters, loadCatalog, loadPreferences, Preferences, savedStories, mergeCatalog, savePreferences, readChapters, markChapterRead, localChapters, releaseUpdates, setChaptersRead, loadDownloads, saveDownloads } from "./storage";
 import { networkGuard, NetworkPaused } from "./network";
+import { automaticReleaseIds } from "./release-policy";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "./network-policy";
 import { configureReleaseChecks, notifyReleases, requestReleasePermission } from "./releases";
 import { DownloadQueue, restoredDownloads } from "./download-queue";
@@ -121,30 +122,41 @@ function useAppState() {
     try { deleteChapters(slug, [chapter]); setCatalog(loadCatalog()); }
     catch { setNotice("The read chapter could not be deleted. You can remove it in Manage downloads."); }
   }, [downloadBusy]);
+  const autoDownload = useCallback(async () => {
+    const network = await NetInfo.fetch();
+    if (AppState.currentState !== "active" || network.type !== "wifi" || !network.isConnected || network.isInternetReachable === false || network.details?.isConnectionExpensive) return;
+    const options = savedStories(), ledger = readChapters(), releases = releaseUpdates();
+    for (const item of loadCatalog()) if (options[item.slug]?.bookmarked && options[item.slug]?.autoDownload && item.detailsCached) {
+      if (["running", "preparing", "queued"].includes(transferStates(item.slug)[item.slug]?.state)) continue;
+      const ids = automaticReleaseIds(options[item.slug], item, releases[item.slug], ledger[item.slug]);
+      if (ids.length) queue.enqueue(item, ids.join(","), true);
+    }
+  }, [queue]);
+
   const loadDetails = useCallback(async (slug: string, force = false) => {
     const item = loadCatalog().find(value => value.slug === slug);
     if (!item) return;
     const cached = chapterListCached(item);
     if (!force && cached && Array.isArray(item.genres)) return;
     if (detailLocks.current.has(slug)) return;
+    const origin = noticeScope.current;
     detailLocks.current.add(slug); setDetailsLoading(current => [...current, slug]);
     setDetailsErrors(current => { const next = { ...current }; delete next[slug]; return next; });
     try {
       const fresh = await refreshSeries(item, networkGuard("Refresh this story’s details?"), undefined, force || !cached);
       mergeCatalog([fresh]);
       setCatalog(loadCatalog());
+      await notifyReleases([fresh]).catch(error => showFailure(error, origin)); setUpdates(releaseUpdates());
+      await autoDownload().catch(error => showFailure(error, origin));
     } catch (error) {
       setDetailsErrors(current => ({ ...current, [slug]: error instanceof Error ? error.message : String(error) }));
     }
     finally { detailLocks.current.delete(slug); setDetailsLoading(current => current.filter(value => value !== slug)); }
-  }, []);
+  }, [autoDownload, showFailure]);
 
   const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
-    toggleSaved(slug, field); setSaved(savedStories());
-    if (field === "bookmarked") {
-      clearReleaseUpdates(slug); setUpdates(releaseUpdates());
-      saveReleaseSnapshot(slug, savedStories()[slug]?.bookmarked ? loadCatalog().find(item => item.slug === slug)?.chapterIds : undefined);
-    }
+    updateStoryOptions(slug, { [field]: !savedStories()[slug]?.[field] });
+    setSaved(savedStories()); setUpdates(releaseUpdates());
   }, []);
 
   const updatePreferences = useCallback((change: Partial<Preferences>) => {
@@ -157,32 +169,27 @@ function useAppState() {
     setPreferences(value);
   }, []);
 
-  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => { updateStoryOptions(slug, change); setSaved(savedStories()); }, []);
+  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => { updateStoryOptions(slug, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
   const reloadLocal = useCallback(() => { setCatalog(loadCatalog()); setRead(readChapters()); setSaved(savedStories()); setPreferences(loadPreferences()); }, []);
-  const autoDownload = useCallback(async () => {
-    const network = await NetInfo.fetch();
-    if (AppState.currentState !== "active" || network.type !== "wifi" || !network.isConnected || network.isInternetReachable === false || network.details?.isConnectionExpensive) return;
-    const options = savedStories(), ledger = readChapters(), releases = releaseUpdates();
-    for (const item of loadCatalog()) if (options[item.slug]?.bookmarked && options[item.slug]?.autoDownload && item.detailsCached) {
-      if (["running", "preparing", "queued"].includes(transferStates(item.slug)[item.slug]?.state)) continue;
-      const ids = (releases[item.slug] || []).filter(id => item.chapterIds?.includes(id) && !item.localChapters?.includes(id) && !ledger[item.slug]?.[id]);
-      if (ids.length) queue.enqueue(item, ids.join(","), true);
-    }
-  }, [queue]);
 
-  useEffect(() => { void autoDownload().catch(showFailure); void configureReleaseChecks().catch(showFailure); }, [autoDownload, saved, showFailure]);
+  useEffect(() => { void autoDownload().catch(showFailure); void configureReleaseChecks().catch(showFailure); }, [autoDownload, saved, showFailure, preferences.releaseCheckInterval, preferences.releaseNotifications]);
 
   const setReleaseNotifications = useCallback(async (enabled: boolean) => {
-    if (notificationLock.current) return;
+    if (notificationLock.current) return false;
     notificationLock.current = true; setNotificationBusy(true);
     try {
-      if (enabled && !await requestReleasePermission()) { Alert.alert("Notifications are disabled", "Allow NightShelf notifications in Android Settings to receive bookmarked release alerts."); return; }
-      if (enabled) for (const item of loadCatalog()) if (savedStories()[item.slug]?.bookmarked) saveReleaseSnapshot(item.slug, item.chapterIds);
+      if (enabled && !await requestReleasePermission()) { updatePreferences({ releaseNotifications: false }); Alert.alert("Notifications are disabled", "Allow NightShelf notifications in Android Settings to receive release alerts."); return false; }
       updatePreferences({ releaseNotifications: enabled });
       await configureReleaseChecks();
-    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+      return true;
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return false; }
     finally { notificationLock.current = false; setNotificationBusy(false); }
   }, [updatePreferences]);
+
+  const setStoryNotifications = useCallback(async (slug: string, enabled: boolean) => {
+    if (enabled && !await setReleaseNotifications(true)) return;
+    setStoryOptions(slug, { notifyReleases: enabled });
+  }, [setReleaseNotifications, setStoryOptions]);
 
   const sync = useCallback(async (automatic = false) => {
     const settings = loadPreferences();
@@ -268,7 +275,7 @@ function useAppState() {
     return () => { clearTimeout(recovery); clearInterval(timer); app.remove(); unsubscribe(); };
   }, [sync, queue, showFailure, cancelDownload]);
 
-  return { connection, setStoryOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloads, downloadBusy, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
+  return { connection, setStoryNotifications, setStoryOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloads, downloadBusy, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
 }
 const AppContext = createContext<ReturnType<typeof useAppState> | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) { return <AppContext.Provider value={useAppState()}>{children}</AppContext.Provider>; }

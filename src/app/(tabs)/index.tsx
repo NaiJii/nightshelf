@@ -6,6 +6,7 @@ import { readingHistory } from "../../lib/storage";
 import { filterDiscovery, kindOf, nextUnread } from "../../lib/parser";
 import { color, Cover, Icon, Page, ui } from "../../components/ui";
 import { DiscoveryControls, PopularPeriods } from "../../components/discovery-controls";
+import { ReleaseFeed } from "../../components/release-feed";
 import { StoryRow } from "../../components/story-row";
 import { FIRST_PAGE } from "../../lib/scraper";
 
@@ -33,6 +34,7 @@ export default function Home() {
   return <Page title="NightShelf" subtitle="COMICS & NOVELS" action={<Pressable accessibilityLabel="Search stories" onPress={() => router.navigate("/explore")} style={{ padding: 12 }}><Icon name="search-outline" /></Pressable>}>
     <DiscoveryControls />
     {recent.length > 0 && <View style={ui.section}><Text style={ui.title}>Continue reading</Text>{recent.map(item => <Pressable key={item.slug} style={[ui.row, { marginTop: 16, paddingBottom: 16, borderBottomWidth: 1, borderColor: color.line }]} onPress={() => router.push({ pathname: "/reader/[slug]/[chapter]", params: { slug: item.slug, chapter: resume(item.slug, item.localChapters)!, title: item.title } })}><Cover item={item} style={{ width: 65, height: 92, borderRadius: 10 }} /><View style={{ flex: 1 }}><Text numberOfLines={2} style={{ color: color.text, fontWeight: "700" }}>{item.title}</Text><Text style={ui.muted}>Chapter {resume(item.slug, item.localChapters)}</Text></View><Icon name="play-circle-outline" tint={color.lilac} size={28} /></Pressable>)}</View>}
+    <ReleaseFeed />
     <View style={ui.section}><Text style={ui.title}>Popular</Text>{alternate ? <>{sourceLoading && <View style={[ui.row, { paddingVertical: 15 }]}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>Loading stories…</Text></View>}{sourceError ? <Text style={ui.empty}>{sourceError}</Text> : null}{visible.filter(item => item.sourceRank).sort((a, b) => a.sourceRank! - b.sourceRank!).slice(0, 20).map(item => <StoryRow key={item.slug} item={item} rank={item.sourceRank} />)}{!sourceLoading && !sourceError && !visible.some(item => item.sourceRank) && <Text style={ui.empty}>No matches. Adjust filters or open Explore for more stories.</Text>}</> : <><PopularPeriods />
       {(["comic", "novel"] as const).filter(kind => preferences.contentMode === "all" || kind === (preferences.contentMode === "novels" ? "novel" : "comic")).map(kind => {
         const ranked = visible.filter(item => kindOf(item) === kind && item.popularRanks?.[preferences.period]).sort((a, b) => a.popularRanks![preferences.period]! - b.popularRanks![preferences.period]!);

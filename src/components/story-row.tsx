@@ -1,5 +1,6 @@
 import { Pressable, Text, View } from "react-native";
 import { Series, kindOf, publicationState, releaseLabel, sourceLabel, formatRating } from "../lib/parser";
+import { useActionSheet } from "./action-sheet";
 import { useShelf } from "../lib/app-state";
 import { openSeries } from "./series-card";
 import { color, Cover, Icon, ui } from "./ui";
@@ -8,9 +9,14 @@ export function PublicationStatus({ item }: { item: Series }) {
   const state = publicationState(item);
   return <View style={{ marginTop: 8, flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 5 }}><Text style={{ color: color.lilac, fontSize: 10 }}>{sourceLabel(item)}</Text><View style={[ui.row, { gap: 6 }]}><View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: state.color }} /><Text style={{ color: state.color, fontSize: 11, fontWeight: "700" }}>{state.label}</Text></View>{item.updatedAt && <Text style={{ color: color.muted, fontSize: 11 }}>{releaseLabel(item)}</Text>}</View>;
 }
-export function SaveActions({ item, labels = false, vertical = false }: { item: Series; labels?: boolean; vertical?: boolean }) {
-  const { saved, toggleStory } = useShelf();
-  return <View style={[ui.row, { flexDirection: vertical ? "column" : "row", flex: labels ? 2 : undefined, gap: 0 }]}>{([['bookmarked', 'bookmark', 'Bookmark'], ['liked', 'heart', 'Like']] as const).map(([field, icon, title]) => <Pressable key={field} accessibilityLabel={`${saved[item.slug]?.[field] ? 'Remove' : 'Add'} ${title.toLowerCase()}`} accessibilityState={{ selected: Boolean(saved[item.slug]?.[field]) }} onPress={() => toggleStory(item.slug, field)} style={[ui.row, { flex: labels ? 1 : undefined, flexDirection: labels ? "column" : "row", justifyContent: "center", minHeight: labels ? 60 : 44, minWidth: 44, paddingVertical: labels ? 10 : 12, paddingHorizontal: labels ? 4 : 12, gap: labels ? 5 : 7 }]}><Icon name={saved[item.slug]?.[field] ? icon : `${icon}-outline`} size={20} tint={saved[item.slug]?.[field] ? color.lilac : color.muted} />{labels && <Text numberOfLines={1} style={{ fontSize: 11, color: saved[item.slug]?.[field] ? color.lilac : color.muted }}>{saved[item.slug]?.[field] ? field === 'liked' ? 'Liked' : 'Bookmarked' : title}</Text>}</Pressable>)}</View>;
+export function SaveActions({ item, labels = false, vertical = false, iconsOnly = false }: { item: Series; labels?: boolean; vertical?: boolean; iconsOnly?: boolean }) {
+  const { saved, toggleStory, setStoryNotifications } = useShelf();
+  const showSheet = useActionSheet();
+  return <View style={[ui.row, { flexDirection: vertical ? "column" : "row", flex: labels ? 2 : undefined, gap: 0 }]}>{([['bookmarked', 'bookmark', 'Bookmark'], ['liked', 'heart', 'Like']] as const).map(([field, icon, title]) => <Pressable key={field} accessibilityLabel={`${saved[item.slug]?.[field] ? 'Remove' : 'Add'} ${title.toLowerCase()}`} accessibilityState={{ selected: Boolean(saved[item.slug]?.[field]) }} onPress={() => {
+    const offer = field === "bookmarked" && !saved[item.slug]?.bookmarked;
+    toggleStory(item.slug, field);
+    if (offer) showSheet("Release alerts?", "One notification per story, grouping new chapters.", [{ text: "Not now", style: "cancel" }, { text: "Notify me", onPress: () => void setStoryNotifications(item.slug, true) }]);
+  }} style={[ui.row, { flex: labels ? 1 : undefined, flexDirection: labels ? "column" : "row", justifyContent: "center", minHeight: labels ? 60 : 44, minWidth: 44, paddingVertical: labels ? 10 : 12, paddingHorizontal: labels ? 4 : 12, gap: labels ? 5 : 7 }]}><Icon name={saved[item.slug]?.[field] ? icon : `${icon}-outline`} size={20} tint={saved[item.slug]?.[field] ? color.lilac : color.muted} />{labels && !iconsOnly && <Text numberOfLines={1} style={{ fontSize: 11, color: saved[item.slug]?.[field] ? color.lilac : color.muted }}>{saved[item.slug]?.[field] ? field === 'liked' ? 'Liked' : 'Bookmarked' : title}</Text>}</Pressable>)}</View>;
 }
 export function StoryRow({ item, rank }: { item: Series; rank?: number }) {
   const rating = formatRating(item.rating);

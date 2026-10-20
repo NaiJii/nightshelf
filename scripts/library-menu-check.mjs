@@ -5,16 +5,16 @@ import ts from "typescript";
 
 // Click the real component's handlers with native presentation stubbed out.
 const alerts = [], routes = [], deletions = [];
-let busy = false;
+let busy = false, cursor = 0; const slots=[];
 const story = { slug: "example", title: "Example", hasLocalFiles: true, localChapters: ["1"] };
 const shelf = { catalog: [story], saved: {}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
 const element = (type, props) => ({ type, props });
 const modules = {
   "react/jsx-runtime": { jsx: element, jsxs: element },
-  react: { useState: initial => [typeof initial === "function" ? initial() : initial, () => {}], useMemo: fn => fn(), useCallback: value => value },
+  react: { useState: initial => {const at=cursor++;if(!(at in slots))slots[at]=typeof initial==="function"?initial():initial;return [slots[at],value=>{slots[at]=typeof value==="function"?value(slots[at]):value;}];}, useMemo: fn => fn(), useCallback: value => value },
   "react-native": { FlatList: "FlatList", RefreshControl: "RefreshControl", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", Alert: { alert: (...args) => alerts.push(args) } },
   "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
-  "expo-router": { router: { push: route => routes.push(route) }, useFocusEffect: () => {} },
+  "expo-router": { router: { push: route => routes.push(route) }, useFocusEffect: () => {}, useLocalSearchParams: () => ({}) },
   "../../lib/app-state": { useShelf: () => shelf },
   "../../components/action-sheet": { useActionSheet: () => (...args) => alerts.push(args) },
   "../../lib/storage": { readingHistory: () => ({}) },
@@ -30,7 +30,8 @@ const compiled = ts.transpileModule(readFileSync(new URL("../src/app/(tabs)/libr
 const exports = {};
 vm.runInNewContext(compiled, { exports, require: name => { assert.ok(modules[name], name); return modules[name]; } });
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
-const root = exports.default();
+const render=()=>{cursor=0;return exports.default();};
+const root = render();
 const list = nodes(root).find(node => node.type === "FlatList");
 assert.ok(list, "library uses a virtualized list");
 assert.equal(list.props.data.length, 1);
@@ -38,7 +39,7 @@ assert.ok(nodes(list.props.ListHeaderComponent).some(node => node.type === "Down
 assert.equal(list.props.refreshControl.type, "RefreshControl");
 assert.ok(!nodes(root).some(node => node.props?.accessibilityLabel === "Library actions for Example"), "rows are created lazily");
 shelf.catalog = Array.from({length: 1500}, (_, index) => ({...story, slug: `story-${index}`}));
-const large = nodes(exports.default()).find(node => node.type === "FlatList");
+const large = nodes(render()).find(node => node.type === "FlatList");
 assert.equal(large.props.data.length, 1500);
 assert.equal(large.props.initialNumToRender, 8);
 const button = nodes(list.props.renderItem({item: story})).find(node => node.props?.accessibilityLabel === "Library actions for Example");
@@ -58,3 +59,9 @@ busy = true; erase.onPress();
 assert.equal(alerts.at(-1)[0], "Download in progress");
 assert.equal(deletions.length, 1, "active downloads block deletion");
 console.log("Library menu navigation, confirmation and download guard checks passed");
+
+shelf.catalog=[story,{...story,slug:'automatic',title:'Automatic'}];
+shelf.saved={automatic:{bookmarked:true,autoDownload:true}};
+const autoTab=nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).find(node=>node.props?.accessibilityRole==='tab'&&nodes(node).some(child=>child.props?.children==='Auto-downloads'));
+assert.ok(autoTab);autoTab.props.onPress();
+assert.deepEqual(nodes(render()).find(node=>node.type==='FlatList').props.data.map(item=>item.slug),['automatic'],'Auto-downloads contains only enabled stories');

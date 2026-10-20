@@ -11,13 +11,13 @@ import { DownloadList } from "../../components/download-list";
 import { chapterProgress, chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating } from "../../lib/parser";
 import { readingHistory } from "../../lib/storage";
 import { estimateDownload, formatBytes, freeBytes } from "../../lib/library-tools";
-import { ReadingListAction, StoryOptions } from "../../components/story-options";
+import { ReadingListAction, ReleaseActions } from "../../components/story-options";
 
 export default function SeriesDetails() {
   const showSheet = useActionSheet();
   const { slug, filter: initialFilter } = useLocalSearchParams<{ slug: string; filter?: string }>();
-  const { catalog, startDownload, downloads, loadDetails, detailsLoading, detailsErrors, saved, preferences, notificationBusy, setReleaseNotifications, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, sourceSessionRevision } = useShelf();
-  const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : "all");
+  const { catalog, startDownload, downloads, loadDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, sourceSessionRevision } = useShelf();
+  const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : initialFilter === "unread" ? "unread" : "all");
   const [query, setQuery] = useState("");
   const [newest, setNewest] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
@@ -74,8 +74,7 @@ export default function SeriesDetails() {
       ListHeaderComponent={<>
         <View style={[ui.row, { marginTop: 24, alignItems: "flex-start" }]}><Cover item={item} style={{ width: 115, height: 165, borderRadius: 17 }} /><View style={{ flex: 1 }}><Text style={[ui.title, { fontSize: 25 }]}>{item.title}</Text><Text style={[ui.muted, { marginTop: 12 }]}>{item.type} · {item.chapterCount} chapters</Text><Text style={{ color: color.lilac, marginTop: 12, fontWeight: "800" }}>{rating ? `★ ${rating} · ` : ""}{item.bookmarks ? `${item.bookmarks} ${sourceOf(item) === "webtoon" ? "subscribers" : "saves"}` : ""}</Text></View></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingVertical: 10 }}>{item.genres?.map(tag => <View key={tag} style={[ui.chip, { minHeight: 30, paddingHorizontal: 10 }]}><Text style={{ color: color.muted, fontSize: 11 }}>{tag}</Text></View>)}</ScrollView>
-        <PublicationStatus item={item} /><View style={[ui.row, { gap: 0, marginTop: 6, borderBottomWidth: 1, borderColor: color.line }]}><SaveActions item={item} labels /><ReadingListAction item={item} /></View><StoryOptions item={item} />
-        {saved[slug]?.bookmarked && !preferences.releaseNotifications && <Pressable disabled={notificationBusy} onPress={() => void setReleaseNotifications(true)} style={[ui.row, { paddingVertical: 10 }]}>{notificationBusy ? <ActivityIndicator color={color.lilac} /> : <Icon name="notifications-outline" tint={color.lilac} />}<Text style={{ color: color.lilac }}>Notify me about new chapters</Text></Pressable>}
+        <PublicationStatus item={item} /><View style={[ui.row, { gap: 0, marginTop: 6, borderBottomWidth: 1, borderColor: color.line }]}><SaveActions item={item} labels iconsOnly /><ReadingListAction item={item} iconsOnly /><ReleaseActions item={item} /></View>
         {notice ? <Pressable onPress={dismissNotice} style={{ paddingVertical: 12 }}><Text style={ui.muted}>{notice} · Dismiss</Text></Pressable> : null}
         {sourceOf(item) === "mangakakalot" && /verification/i.test(chapterError || notice) && <Pressable onPress={() => router.push({ pathname: "/verify-source", params: { source: sourceOf(item) } })} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify source</Text></Pressable>}
         <ExpandableSummary key={`${slug}/${item.summary}`} text={item.summary || (detailsLoading.includes(slug) ? "Loading summary…" : "No summary available.")} />
