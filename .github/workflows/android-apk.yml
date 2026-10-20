@@ -1,8 +1,17 @@
-name: Android APK (ARM64)
+name: Android APK
+run-name: Android APK (${{ inputs.architecture || 'arm64' }})
 
 # Manual only: no automatic builds on commits, PRs or schedules.
 on:
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: Android CPU architecture
+        type: choice
+        default: arm64
+        options:
+          - arm64
+          - armv7
 
 permissions:
   contents: read
@@ -18,6 +27,7 @@ jobs:
     env:
       CI: '1'
       EXPO_NO_TELEMETRY: '1'
+      ANDROID_ARCH: ${{ inputs.architecture || 'arm64' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,14 +48,14 @@ jobs:
           npm run lint
       - name: Install Android build tools
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"'
-      - name: Build and verify signed ARM64 APK
+      - name: Build and verify signed APK
         env:
           ANDROID_SIGNING_CREDENTIALS: ${{ secrets.ANDROID_SIGNING_CREDENTIALS }}
         run: node scripts/build-android-ci.mjs
       - name: Save APK
         uses: actions/upload-artifact@v4
         with:
-          name: NightShelf-arm64
+          name: NightShelf-${{ inputs.architecture || 'arm64' }}
           path: artifacts/*.apk
           if-no-files-found: error
           compression-level: 0

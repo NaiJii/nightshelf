@@ -5,6 +5,9 @@ import assert from 'node:assert/strict';
 
 assert.equal(process.platform, 'linux', 'This script builds on the GitHub Linux runner');
 assert.ok(process.env.RUNNER_TEMP, 'Missing runner temporary directory');
+const architecture = process.env.ANDROID_ARCH || 'arm64';
+const abi = {arm64: 'arm64-v8a', armv7: 'armeabi-v7a'}[architecture];
+assert.ok(abi, 'ANDROID_ARCH must be arm64 or armv7');
 const credentials = JSON.parse(process.env.ANDROID_SIGNING_CREDENTIALS || '{}');
 for (const key of ['keystore', 'keystorePassword', 'keyAlias', 'keyPassword']) assert.ok(typeof credentials[key] === 'string' && credentials[key], `Missing signing credential: ${key}`);
 const keystore = join(process.env.RUNNER_TEMP, 'nightshelf-release.jks');
@@ -19,18 +22,18 @@ const run = (command, args, cwd = process.cwd(), capture = false) => {
 try {
   writeFileSync(keystore, Buffer.from(credentials.keystore, 'base64'), { mode: 0o600 });
   run('npx', ['expo', 'prebuild', '--platform', 'android', '--no-install']);
-  run('bash', ['./gradlew', ':background-downloads:testReleaseUnitTest', ':app:assembleRelease', '-PreactNativeArchitectures=arm64-v8a', '--no-daemon', '--max-workers=2', '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g'], join(process.cwd(), 'android'));
+  run('bash', ['./gradlew', ':background-downloads:testReleaseUnitTest', ':app:assembleRelease', `-PreactNativeArchitectures=${abi}`, '--no-daemon', '--max-workers=2', '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g'], join(process.cwd(), 'android'));
   const apk = join(process.cwd(), 'android/app/build/outputs/apk/release/app-release.apk');
   const signer = join(process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT, 'build-tools/36.0.0/apksigner');
   const certificates = run(signer, ['verify', '--print-certs', apk], process.cwd(), true);
   assert.match(certificates.toLowerCase(), /36ab9c75b4d38aae461dcb74f1f5760eb20b314ce17f07f47b386e2941d151d7/, 'APK must use the existing NightShelf release certificate');
   const files = run('unzip', ['-Z1', apk], process.cwd(), true).split('\n');
   const architectures = [...new Set(files.filter(file => /^lib\/[^/]+\//.test(file)).map(file => file.split('/')[1]))];
-  assert.deepEqual(architectures, ['arm64-v8a'], 'APK must contain only ARM64 native libraries');
+  assert.deepEqual(architectures, [abi], `APK must contain only ${abi} native libraries`);
   mkdirSync('artifacts', { recursive: true });
   const version = JSON.parse(readFileSync('app.json', 'utf8')).expo.version;
-  copyFileSync(apk, join('artifacts', `NightShelf-${version}-arm64.apk`));
-  console.log(`Verified signed ARM64 APK: artifacts/NightShelf-${version}-arm64.apk`);
+  copyFileSync(apk, join('artifacts', `NightShelf-${version}-${architecture}.apk`));
+  console.log(`Verified signed ${abi} APK: artifacts/NightShelf-${version}-${architecture}.apk`);
 } finally {
   rmSync(keystore, { force: true });
 }

@@ -10,6 +10,7 @@ import "./webtoon-check.mjs";
 import "./reader-sites-check.mjs";
 import "./library-menu-check.mjs";
 import "./background-wait-check.mjs";
+import "./android-build-check.mjs";
 import "./ui-layout-check.mjs";
 import { formatRating } from "../src/lib/parser.ts";
 import { withLinkedAbort, withForeground, yieldToForeground } from "../src/lib/request-control.ts";
