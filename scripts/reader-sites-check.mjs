@@ -7,7 +7,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 } });
 try {
   const sites = await import("../src/lib/reader-sites.ts");
-  const { sourceOf, filterDiscovery } = await import("../src/lib/parser.ts");
+  const { sourceOf, filterDiscovery, mergeDiscovery, chapterListCached } = await import("../src/lib/parser.ts");
   const record = '$R[1]={id:42,slug:"example",postTitle:"Example",featuredImage:"https://storage.vortexscans.org/cover.webp",seriesStatus:"ONGOING",seriesType:"MANHWA",genres:$R[2]=[],averageRating:9.5}';
   const episode = (id, locked = false) => `$R[${id + 10}]={id:${id},slug:"chapter-${id}",number:${id},title:"",createdAt:"2026-09-01T00:00:00Z",isLocked:!${locked ? "0" : "1"},isLockedByCoins:!${locked ? "0" : "1"},mangaPost:$R[${id + 100}]={id:void 0}}`;
   const html = '<body><a href="/series/example">Example</a><div itemProp="description"><p>Full summary.</p></div></body><script>' + record + episode(1) + episode(2, true) + '</script>';
@@ -17,6 +17,16 @@ try {
   assert.equal(details.summary, "Full summary.");
   assert.deepEqual(details.chapterIds, ["1"]);
   assert.equal(details.chapterUrls["1"], "https://vortexscans.org/series/example/chapter-1");
+  const overview = sites.parseVortexMetadata(html.replace('averageRating:9.5', 'averageRating:9.5,_count:$R[300]={chapters:2,bookmarks:14}'), card);
+  assert.equal(overview.chapterCount,2);
+  assert.equal(overview.summary,'Full summary.');
+  assert.equal(overview.chapterIds,undefined,'metadata does not load/store a chapter list');
+  assert.equal(chapterListCached(overview),false);
+  assert.equal(chapterListCached({...overview,detailsCached:true,chapterIds:[]}),false,'empty chapter lists from old parser failures are retried');
+  assert.equal(chapterListCached({...details,syncedAt:'2000-01-01T00:00:00Z'}),true,'opening a story reuses its chapter list regardless of summary, date or age');
+  const merged = mergeDiscovery({...card,rating:'9.5',chapterCount:2},{...card,rating:'',chapterCount:0,detailsCached:true,chapterIds:['1'],summary:'Cached summary',slug:'vortex-url-old'});
+  assert.equal(merged.rating,'9.5','blank legacy discovery metadata cannot hide a new rating');
+  assert.equal(merged.slug,'vortex-url-old'); assert.deepEqual(merged.chapterIds,['1']); assert.equal(merged.summary,'Cached summary');
   const visibleOnly = '<body><h2>Popular<!-- --> Today</h2><a href="/series/example"><img alt="Example" data-fallback-src="https://storage.vortexscans.org/cover.webp" src="https://i0.wp.com/cover.webp?w=96"></a><h2>Latest <span>Releases</span></h2><a href="/series/other"><img alt="Other" src="https://storage.vortexscans.org/other.webp"></a></body>';
   const fallback = sites.parseVortexCards(visibleOnly, true);
   assert.equal(fallback.length,1,'popular discovery works without hydration scripts and with split heading text');
@@ -34,6 +44,12 @@ try {
   const story = sites.parseKakalotCards(kakalot)[0];
   assert.equal(story.slug, "mangakakalot-example");
   assert.equal(story.latestChapter, "3");
+  const structured = '<script type="application/ld+json">{"@type":"Book","name":"Example","description":"A summary\nwith raw newline","image":"https://img-r1.2xstorage.com/thumb/example.webp","numberOfPages":"17","aggregateRating":{"ratingValue":"4.43","bestRating":"5"}}</script><div class="manga-info-top"><h1>Example</h1></div>';
+  const kakalotMetadata=sites.parseKakalotDetails(structured,story);
+  assert.equal(kakalotMetadata.rating,'4.43/5'); assert.equal(kakalotMetadata.chapterCount,17);
+  assert.equal(kakalotMetadata.summary,'A summary with raw newline'); assert.equal(kakalotMetadata.chapterIds,undefined);
+  for(const host of ['img-r1.2xstorage.com','img-r2.2xstorage.com']) assert.equal(sites.imageReferer(`https://${host}/thumb/example.webp`,story.url),'https://www.mangakakalot.gg/','covers and panels use the CDN-required root referrer');
+  assert.equal(sites.imageReferer('https://2xstorage.com.evil.test/panel.webp',story.url),story.url,'unrelated hosts do not receive a source referrer override');
   assert.ok(sites.directoryHasMore(kakalot, "mangakakalot", 'https://www.mangakakalot.gg/manga-list/hot-manga?page=1', 1, true));
   const chapters = sites.parseKakalotChapters({success:true,data:{chapters:[{chapter_num:3,chapter_slug:'chapter-3',chapter_name:'Chapter 3',updated_at:'2026-09-01T00:00:00Z'},{chapter_num:2,chapter_slug:'../../evil'}]}}, story.url);
   assert.deepEqual(chapters.chapterIds, ['3']);
@@ -54,6 +70,8 @@ try {
   session.requireSourceVerification('https://evil.test/');
   assert.doesNotMatch(session.requireSourceVerification('https://vortexscans.org/').message,/verification/i,'Vortex errors never prompt verification');
   assert.equal(session.sourceVerificationUrl(),'https://www.mangakakalot.gg/manga/example');
+  session.requireSourceVerification('https://www.mangakakalot.gg/api/manga/example/chapters');
+  assert.equal(session.sourceVerificationUrl(),'https://www.mangakakalot.gg/manga/example','API failures verify on the human-readable story page');
   const policy = await import('../src/lib/verification-policy.ts');
   assert.equal(policy.verificationNetworkKey({type:'wifi',isConnected:true,isInternetReachable:null}),policy.verificationNetworkKey({type:'wifi',isConnected:true,isInternetReachable:true}),'reachability confirmation must not restart an active challenge');
   assert.notEqual(policy.verificationNetworkKey({type:'wifi',isConnected:true}),policy.verificationNetworkKey({type:'cellular',isConnected:true}));

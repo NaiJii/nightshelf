@@ -24,6 +24,7 @@ export class File extends Entry {
   delete() { fs.unlinkSync(this.path); }
   write(value) { fs.writeFileSync(this.path, value); }
   textSync() { return fs.readFileSync(this.path, 'utf8'); }
+  open() { const bytes=fs.readFileSync(this.path); return {readBytes:length=>new Uint8Array(bytes.subarray(0,length)),close() {}}; }
   get size() { return fs.statSync(this.path).size; }
   get md5() { return crypto.createHash('md5').update(fs.readFileSync(this.path)).digest('hex'); }
   move(target) { fs.renameSync(this.path,target.path); this.path=target.path; }
@@ -144,7 +145,7 @@ export async function fetch(url,options={}){
     const data=url.includes('/ranking/')||url.includes('/search/')?card:url.includes('/viewer?')?'<img class="_images" data-url="https://webtoon-phinf.pstatic.net/panel.jpg?type=q90">':'<meta property="og:url" content="'+story+'"><meta property="og:title" content="Example"><meta property="og:image" content="https://webtoon-phinf.pstatic.net/cover.jpg"><p class="summary">Full WEBTOON summary.</p><p class="day_info">EVERY MONDAY</p><ul id="_listUl">'+(params.get('page')==='2'?episode('1'):(webtoonNew?episode('11'):'')+episode('10')+episode('9'))+'</ul>'+(params.get('page')==='2'?'':'<a href="'+story+'&amp;page=2">2</a>');
     return {ok:true,text:async()=>data};
   }
-  if(new URL(url).hostname==='webtoon-phinf.pstatic.net')return {ok:true,headers:{get:()=> 'image/jpeg'},bytes:async()=>new Uint8Array([1,2,3])};
+  if(new URL(url).hostname==='webtoon-phinf.pstatic.net')return {ok:true,headers:{get:()=> 'image/jpeg'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(new URL(url).hostname==='vortexscans.org') {
     const ep=id=>'$R['+(id+10)+']={id:'+id+',slug:"chapter-'+id+'",number:'+id+',title:"",createdAt:"2026-09-01T00:00:00Z",isLocked:!1,isLockedByCoins:!1,mangaPost:$R['+(id+100)+']={id:void 0}}';
     const record='$R[1]={id:42,slug:"example",postTitle:"Example",featuredImage:"https://storage.vortexscans.org/cover.webp",seriesStatus:"ONGOING",seriesType:"MANHWA",averageRating:9}';
@@ -159,7 +160,8 @@ export async function fetch(url,options={}){
     const data=url.includes('/api/manga/')?{success:true,data:{chapters:[{chapter_num:1,chapter_slug:'chapter-1',chapter_name:'Chapter 1',updated_at:'2026-09-01T00:00:00Z'}]}}:url.includes('/chapter-')?'<div class="container-chapter-reader"><img src="https://img-r1.2xstorage.com/panel.webp"></div>':url.includes('/manga/example')?'<div class="manga-info-top"><h1>Example</h1><li>Status : Completed</li></div><div id="contentBox"><h2>Summary</h2><p>Full MangaKakalot summary.</p></div>':card;
     return {ok:true,text:async()=>typeof data==='string'?data:JSON.stringify(data)};
   }
-  if(['storage.vortexscans.org','img-r1.2xstorage.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([1,2,3])};
+  if(new URL(url).hostname==='img-r1.2xstorage.com' && options.headers.Referer!=='https://www.mangakakalot.gg/') throw Error('CDN requires the source root referrer');
+  if(['storage.vortexscans.org','img-r1.2xstorage.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(url==='https://asurascans.com/comics/repair')return {ok:true,text:async()=>'<meta property="og:title" content="Repair"><meta property="og:image" content="https://cdn/repair.webp"><div>9.7 Rating 1 Chapters</div><a href="/comics/repair/chapter/1">Chapter 1</a>'};
   if(url==='https://asurascans.com/comics/repair/chapter/1')return {ok:true,text:async()=>'<img data-page-index="0" src="https://cdn/a.webp"><img data-page-index="1" src="https://cdn/b.webp">'};
   if(['https://cdn/a.webp','https://cdn/b.webp'].includes(url))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([1,2,3,4])};
@@ -236,6 +238,9 @@ export async function fetch(url,options={}){
     assert.deepEqual(webtoonPage.ids,['webtoon-en-42']);
     const webtoonItem=storage.loadCatalog().find(item=>item.slug==='webtoon-en-42');
     assert.equal(webtoonItem.title,'Example');
+    assert.equal(webtoonItem.summary,'Full WEBTOON summary.','WEBTOON cards get summaries before opening');
+    assert.equal(webtoonItem.chapterIds,undefined,'WEBTOON discovery does not load the chapter list');
+    assert.ok(!requests.slice(webtoonStart).some(url=>url.includes('page=2')),'metadata fetching does not paginate WEBTOON episodes');
     assert.ok(storage.loadCatalog().some(item=>item.slug==='example'),'identical titles from different sources keep separate identities');
     const webtoonFull=await refreshSeries(webtoonItem,async()=>{});
     assert.deepEqual(webtoonFull.chapterIds,['1','9','10'],'initial WEBTOON details follow the real episode pagination');
@@ -264,6 +269,14 @@ export async function fetch(url,options={}){
       const page=await browseCatalog({...options,source,sort:'smart'},FIRST_PAGE,async()=>{});
       assert.equal(page.ids.length,1); assert.equal(page.hasMore,false);
       const item=storage.loadCatalog().find(item=>item.slug===page.ids[0]);
+      assert.ok(item.summary&&item.localCover&&item.metadataSyncedAt,'discovery caches summaries and covers before opening');
+      assert.equal(item.chapterIds,undefined,'discovery does not preload chapter lists');
+      assert.ok(!requests.slice(before).some(url=>url.includes('/api/manga/')||url.includes('/chapter-')),'front-page metadata never calls chapter APIs or chapter pages');
+      const cachedCover=new File(item.localCover);cachedCover.write('<!doctype html><title>Just a moment...</title>');
+      const metadataRequests=requests.filter(url=>url===item.url).length;
+      await browseCatalog({...options,source,sort:'smart'},FIRST_PAGE,async()=>{});
+      assert.equal(requests.filter(url=>url===item.url).length,metadataRequests,'metadata is reused across repeated front-page visits');
+      assert.equal(cachedCover.open().readBytes(1)[0],137,'invalid HTML cached as a cover is replaced with image bytes');
       const fresh=await refreshSeries(item,async()=>{});
       assert.ok(fresh.detailsCached&&fresh.summary);
       assert.ok(fresh.chapterIds.includes('1'));
@@ -312,6 +325,9 @@ export async function fetch(url,options={}){
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.target.startsWith(storage.LIBRARY.uri+'/')));
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.hash),'native repair plans carry existing checksums');
     assert.equal(native.plans[0].allowMetered,false,'a Wi-Fi download does not silently authorize future metered transfers');
+    const kakalotStory=storage.loadCatalog().find(item=>item.slug==='mangakakalot-example');
+    await downloadChapters(kakalotStory,'1',()=>{},async()=>{});
+    assert.equal(native.plans.at(-1).chapters[0].files[0].referer,'https://www.mangakakalot.gg/','Android transfer plans use the same working image referrer as covers');
     console.log('Selective damaged-panel repair and native transfer-plan checks passed');
 
   } finally { scraperHook.deregister(); storage.toggleSaved('example','bookmarked'); }

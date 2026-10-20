@@ -17,7 +17,9 @@ export function isVerificationHost(url: string): boolean {
 }
 export function requireSourceVerification(url: string): Error {
   if (!isVerificationHost(url)) return new Error("Source request was blocked.");
-  verificationUrl = url;
+  const page = new URL(url);
+  const manga = page.pathname.match(/^\/api\/manga\/([^/]+)\/chapters\/?$/);
+  verificationUrl = manga ? `${page.origin}/manga/${manga[1]}` : url;
   return new Error("MangaKakalot needs browser verification. Tap Verify source, complete the website’s check, then retry.");
 }
 export function sourceVerificationUrl(): string { return verificationUrl; }

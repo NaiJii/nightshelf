@@ -180,7 +180,10 @@ export function mergeCatalog(updates: Series[], rankings = false): void {
     const current = items.get(update.slug);
     const newer = current && Date.parse(current.syncedAt || "") > (Date.parse(update.syncedAt || "") || 0);
     const item = newer ? { ...update, ...current } : { ...current, ...update };
-    if (current?.detailsCached && (!update.detailsCached || newer)) { item.summary = current.summary; item.detailsCached = true; }
+    if (current?.detailsCached && (!update.detailsCached || newer)) {
+      item.detailsCached = true; item.chapterIds = current.chapterIds; item.chapterUrls = current.chapterUrls; item.chapterTitles = current.chapterTitles;
+      if (!update.metadataSyncedAt || newer) item.summary = current.summary;
+    }
     item.localCover = update.localCover || current?.localCover;
     item.rank = rankings ? update.rank : current?.rank ?? update.rank;
     item.popularRanks = rankings ? update.popularRanks : current?.popularRanks ?? update.popularRanks;

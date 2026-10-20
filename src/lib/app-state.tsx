@@ -1,7 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Alert, AppState } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
-import { ContentMode, Series } from "./parser";
+import { chapterListCached, ContentMode, Series } from "./parser";
 import { browseCatalog, downloadChapters, refreshSeries, searchCatalog, syncCatalog } from "./scraper";
 import type { BrowseCursor, BrowseOptions } from "./scraper";
 import { deleteChapters, loadCatalog, loadPreferences, Preferences, savedStories, mergeCatalog, savePreferences, toggleSaved, readChapters, markChapterRead, saveReleaseSnapshot, localChapters, releaseUpdates, clearReleaseUpdates, setChaptersRead, loadDownloads, saveDownloads } from "./storage";
@@ -87,7 +87,7 @@ function useAppState() {
   }, [showFailure]);
   const browse = useCallback(async (options: BrowseOptions, cursor: BrowseCursor, signal: AbortSignal, manual = false) => {
     try {
-      const page = await browseCatalog(options, cursor, networkGuard("Load more comics and novels?", !manual), signal);
+      const page = await browseCatalog(options, cursor, networkGuard("Load more comics and novels?", !manual), signal, () => setCatalog(loadCatalog()));
       throwIfAborted(signal); setCatalog(loadCatalog()); setNetworkNotice(""); return page;
     } catch (error) { if (!signal.aborted && error instanceof NetworkPaused) showFailure(error); throw error; }
   }, [showFailure]);
@@ -112,7 +112,7 @@ function useAppState() {
   const loadDetails = useCallback(async (slug: string, force = false) => {
     const item = loadCatalog().find(value => value.slug === slug);
     if (!item) return;
-    if (!force && item.detailsCached && item.chapterIds && item.sourceDates && item.summary && Date.now() - Date.parse(item.syncedAt || "") < 6 * 3600_000) return;
+    if (!force && chapterListCached(item)) return;
     if (detailLocks.current.has(slug)) return;
     detailLocks.current.add(slug); setDetailsLoading(current => [...current, slug]);
     setNetworkNotice("");
@@ -130,9 +130,8 @@ function useAppState() {
     if (field === "bookmarked") {
       clearReleaseUpdates(slug); setUpdates(releaseUpdates());
       saveReleaseSnapshot(slug, savedStories()[slug]?.bookmarked ? loadCatalog().find(item => item.slug === slug)?.chapterIds : undefined);
-      if (savedStories()[slug]?.bookmarked) void loadDetails(slug);
     }
-  }, [loadDetails]);
+  }, []);
 
   const updatePreferences = useCallback((change: Partial<Preferences>) => {
     const value = { ...loadPreferences(), ...change };

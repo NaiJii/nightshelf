@@ -61,7 +61,9 @@ export function parseWebtoonDetails(html: string, item: Series): Series {
   if (!canonical || canonical.searchParams.get("title_no") !== webtoonUrl(item.url)?.searchParams.get("title_no") || canonical.pathname.split("/")[1] !== item.language) throw new Error("This WEBTOON story is unavailable in the selected language.");
   const day = classText(html, "day_info");
   const subscribers = html.match(/class=["']ico_subscribe["'][\s\S]*?<em\b[^>]*>([^<]+)/i)?.[1] || "";
-  return { ...item, title: meta(html, "og:title") || item.title, summary: classText(html, "summary") || meta(html, "og:description"), cover: meta(html, "og:image") || item.cover, bookmarks: plainText(subscribers), status: /completed|terminé|finalizado|abgeschlossen|จบแล้ว|完結|完结/i.test(day) ? "Completed" : day ? "Ongoing" : "Unknown", detailsCached: true };
+  const episodes = [...html.matchAll(/data-episode-no=["'](\d+)["']/gi)].map(value => Number(value[1]));
+  const rating = classText(html, "star_score") || html.match(/id=["']_starScore["'][^>]*>([\d.]+)/i)?.[1] || item.rating;
+  return { ...item, title: meta(html, "og:title") || item.title, summary: classText(html, "summary") || meta(html, "og:description"), cover: meta(html, "og:image") || item.cover, rating, chapterCount: episodes.length ? Math.max(...episodes, item.chapterCount) : item.chapterCount, latestChapter: episodes.length ? String(Math.max(...episodes)) : item.latestChapter, bookmarks: plainText(subscribers), status: /completed|terminé|finalizado|abgeschlossen|จบแล้ว|完結|完结/i.test(day) ? "Completed" : day ? "Ongoing" : "Unknown", metadataSyncedAt: new Date().toISOString() };
 }
 export function parseWebtoonImages(html: string): string[] {
   return [...new Set([...html.matchAll(/<img\b[^>]*>/gi)].filter(([tag]) => /(?:^|\s)_images(?:\s|$)/.test(attr(tag, "class"))).map(([tag]) => attr(tag, "data-url")).filter(value => {

@@ -11,6 +11,7 @@ export type Series = {
   title: string;
   summary: string;
   detailsCached?: boolean;
+  metadataSyncedAt?: string;
   cover: string;
   localCover?: string;
   rating: string;
@@ -43,6 +44,18 @@ export function formatRating(value: string): string {
   return Number(parts[1]).toFixed(1) + (parts[2] ? `/${Number(parts[2]).toFixed(1).replace(/\.0$/, "")}` : "");
 }
 export type NovelText = { title: string; paragraphs: string[] };
+
+export function mergeDiscovery(fresh: Series, previous?: Series): Series {
+  const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, localCover: previous?.localCover, syncedAt: previous?.syncedAt };
+  for (const key of ["summary", "rating", "cover", "status", "bookmarks", "latestChapter"] as const) if (!fresh[key]) item[key] = previous?.[key] || "";
+  if (!fresh.chapterCount) item.chapterCount = previous?.chapterCount || 0;
+  return item;
+}
+
+export function chapterListCached(item: Series): boolean {
+  if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
+  return sourceOf(item) === "asura" || item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
+}
 export function chapterList(source: string[] = [], saved: string[] = [], read: Record<string, string> = {}, filter = "all", query = "", newest = true, titles: Record<string, string> = {}): string[] {
   const owned = new Set(saved);
   const term = query.trim().replace(/^chapter\s*/i, "").toLowerCase();

@@ -1,12 +1,12 @@
 import { fetch } from "expo/fetch";
 import { Directory, File } from "expo-file-system";
-import { chapterSort, kindOf, sourceOf, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, selectChapters } from "./parser";
+import { chapterSort, kindOf, sourceOf, mergeDiscovery, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, selectChapters } from "./parser";
 import type { ContentMode, Period, Series, SortOrder, SourceId } from "./parser";
 import { chapterDirectory, chapterIntact, COVERS, initializeStorage, loadCatalog, loadPreferences, savedStories, mergeCatalog, loadDownloads, saveDownloads, novelChapter } from "./storage";
 import { parseWebtoonCards, parseWebtoonDetails, parseWebtoonEpisodes, parseWebtoonImages, webtoonLanguage, webtoonSearchHasNext } from "./webtoon";
 import { NetworkPaused } from "./network";
 import { throwIfAborted, withAbort } from "./request-control";
-import { directoryHasMore, directoryUrl, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexDetails } from "./reader-sites";
+import { directoryHasMore, directoryUrl, imageReferer, parseKakalotCards, parseKakalotChapters, parseKakalotDetails, parseReaderSiteImages, parseVortexCards, parseVortexDetails, parseVortexMetadata } from "./reader-sites";
 import type { ReaderSite } from "./reader-sites";
 import { isVerificationHost, requireSourceVerification, SOURCE_AGENT, verificationCookies, verificationUserAgent } from "./source-session";
 import { backgroundTransfers, waitForTransfer } from "./background-downloads";
@@ -31,7 +31,7 @@ async function request<T>(url: string, guard: Guard, read: (response: Awaited<Re
     // WEBTOON redirects mobile agents to a different HTML layout; use its public desktop pages consistently.
     const cookie = await withAbort(() => verificationCookies(url), controller.signal);
     const agent = isVerificationHost(url) ? await withAbort(verificationUserAgent, controller.signal) : ["www.webtoons.com", "vortexscans.org", "www.vortexscans.org"].includes(new URL(url).hostname) ? SOURCE_AGENT : undefined;
-    const headers = { ...HEADERS, ...(agent ? { "User-Agent": agent } : {}), ...(referer ? { Referer: referer } : {}), ...(cookie ? { Cookie: cookie } : {}) };
+    const headers = { ...HEADERS, ...(agent ? { "User-Agent": agent } : {}), ...(referer ? { Referer: imageReferer(url, referer) } : {}), ...(cookie ? { Cookie: cookie } : {}) };
     const response = await withAbort(() => fetch(url, { signal: controller.signal, headers }), controller.signal);
     if (!response.ok) {
       const source = sourceForRequest(url);
@@ -59,12 +59,27 @@ export async function verifySourceSession(url: string, guard: Guard, signal?: Ab
 function extension(url: string): string {
   return new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() ?? ".webp";
 }
+function imageHeader(bytes: Uint8Array): boolean {
+  const text = String.fromCharCode(...bytes.slice(0, 12));
+  return (bytes[0] === 0xff && bytes[1] === 0xd8) || text.startsWith("\x89PNG\r\n\x1a\n") || /^GIF8[79]a/.test(text) || (text.startsWith("RIFF") && text.slice(8) === "WEBP") || /^....ftyp(?:avif|avis|mif1|msf1)/.test(text);
+}
 async function cacheCover(series: Series, guard: Guard, signal?: AbortSignal): Promise<string | undefined> {
   if (!series.cover) return undefined;
   initializeStorage();
   const file = new File(COVERS, `${series.slug}${extension(series.cover)}`);
+  if (file.exists) {
+    const handle = file.open();
+    let valid = false;
+    try { valid = imageHeader(handle.readBytes(Math.min(12, file.size))); } finally { handle.close(); }
+    if (!valid) file.delete();
+  }
   if (!file.exists) {
-    const bytes = await request(series.cover, guard, response => response.bytes(), series.url, signal);
+    const bytes = await request(series.cover, guard, async response => {
+      if (!response.headers.get("content-type")?.startsWith("image/")) throw new Error("Cover request did not return an image.");
+      const bytes = await response.bytes();
+      if (!imageHeader(bytes)) throw new Error("Cover image is invalid.");
+      return bytes;
+    }, series.url, signal);
     throwIfAborted(signal);
     const temporary = new File(COVERS, `${file.name}.${Date.now()}-${Math.random().toString(36).slice(2)}.part`);
     temporary.write(bytes);
@@ -76,21 +91,22 @@ const API = "https://api.asurascans.com/api";
 async function getJson(url: string, guard: Guard, signal?: AbortSignal): Promise<unknown> { const text = await getText(url, guard, undefined, signal); try { return JSON.parse(text); } catch { const source = sourceForRequest(url); if (source) recordSourceHealth(source, "parser", "Website returned an unexpected API response"); throw new Error("Source returned invalid JSON; its parser may need updating."); } }
 function siteSlug(item: Series): string { return new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!; }
 
-export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSignal): Promise<Series> {
+export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSignal, loadChapters = true): Promise<Series> {
   const source = sourceOf(item);
   if (source === "vortex" || source === "mangakakalot") {
     const html = await getText(item.url, guard, undefined, signal);
-    let fresh = source === "vortex" ? parseVortexDetails(html, item) : parseKakalotDetails(html, item);
-    if (source === "mangakakalot") {
+    let fresh = source === "vortex" ? (loadChapters ? parseVortexDetails(html, item) : parseVortexMetadata(html, item)) : parseKakalotDetails(html, item);
+    if (source === "mangakakalot" && loadChapters) {
       const chapters = parseKakalotChapters(await getJson(`https://www.mangakakalot.gg/api/manga/${encodeURIComponent(siteSlug(item))}/chapters`, guard, signal), item.url);
       fresh = { ...fresh, ...chapters, chapterCount: chapters.chapterIds.length, latestChapter: chapters.chapterIds.at(-1) || "" };
     }
     try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
-    return fresh;
+    return { ...fresh, detailsCached: loadChapters || item.detailsCached };
   }
   if (sourceOf(item) === "webtoon") {
     const html = await getText(item.url, guard, undefined, signal);
     const fresh = parseWebtoonDetails(html, item);
+    if (!loadChapters) return fresh;
     const known = new Set(item.chapterIds || []);
     const urls = { ...item.chapterUrls }, titles = { ...item.chapterTitles };
     let page: string | undefined = item.url, text = html, count = 0;
@@ -108,7 +124,7 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     }
     const ids = Object.keys(urls).sort(chapterSort);
     fresh.localCover = await cacheCover(fresh, guard, signal).catch(error => { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; return item.localCover; });
-    return { ...fresh, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: ids.length, latestChapter: ids.at(-1) || "", syncedAt: new Date().toISOString() };
+    return { ...fresh, detailsCached: true, chapterUrls: urls, chapterTitles: titles, chapterIds: ids, chapterCount: Math.max(fresh.chapterCount, ids.length), latestChapter: fresh.latestChapter || ids.at(-1) || "", syncedAt: new Date().toISOString() };
   }
   let fresh: Series;
   if (kindOf(item) === "novel") {
@@ -122,7 +138,26 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
     fresh = { ...parseSeries(html, item.url), chapterIds: parseChapters(html, item.url).map(chapter => chapter.id) };
     if (!fresh.chapterCount || !fresh.cover) throw new Error("Story details are unavailable.");
   }
-  return { ...item, ...fresh, summary: fresh.summary || item.summary, detailsCached: true, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, syncedAt: new Date().toISOString() };
+  if (!loadChapters) { delete fresh.chapterIds; delete fresh.chapterUrls; delete fresh.chapterTitles; }
+  return { ...item, ...fresh, summary: fresh.summary || item.summary, detailsCached: loadChapters || item.detailsCached, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, metadataSyncedAt: new Date().toISOString(), syncedAt: loadChapters ? new Date().toISOString() : item.syncedAt };
+}
+
+async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSignal, changed = () => {}) {
+  let next = 0;
+  // Three metadata requests at a time; chapter APIs/pagination are reserved for opening or syncing a saved story.
+  await Promise.all(Array.from({ length: Math.min(3, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++, item = items[index];
+      throwIfAborted(signal);
+      let fresh = item;
+      try {
+        if (!item.metadataSyncedAt || Date.now() - Date.parse(item.metadataSyncedAt) > 6 * 3600_000) fresh = await refreshSeries(item, guard, signal, false);
+      } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
+      try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
+      throwIfAborted(signal);
+      items[index] = fresh; mergeCatalog([fresh]); changed();
+    }
+  }));
 }
 
 export async function syncCatalog(onProgress: (message: string) => void, guard: Guard, force = false, onWarning: (message: string) => void = () => {}): Promise<Series[]> {
@@ -143,17 +178,10 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
   if (preferences.source === "webtoon") {
     onProgress("Refreshing WEBTOON discoveries");
     try {
-      const language = webtoonLanguage(preferences.webtoonLanguage);
-      const html = await getText(`https://www.webtoons.com/${language}/ranking/${preferences.webtoonCollection === "canvas" ? "canvas" : "popular"}`, guard);
-      const cards = parseWebtoonCards(html, language);
-      if (!cards.length) throw new Error("WEBTOON discovery is unavailable.");
-      for (const [slug, value] of items) if (sourceOf(value) === "webtoon" && value.language === language && value.url.includes("/canvas/") === (preferences.webtoonCollection === "canvas")) items.set(slug, { ...value, sourceRank: undefined });
-      for (const [index, fresh] of cards.entries()) {
-        const previous = items.get(fresh.slug);
-        items.set(fresh.slug, { ...fresh, ...previous, sourceRank: index + 1 });
-      }
-      successful++;
-    } catch (error) { if (error instanceof NetworkPaused) throw error; }
+      const page = await browseWebtoon({ source: "webtoon", language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard);
+      for (const item of loadCatalog()) items.set(item.slug, item);
+      if (page.ids.length) successful++;
+    } catch (error) { if (error instanceof NetworkPaused) throw error; discoveryError = error; onWarning(error instanceof Error ? error.message : "WEBTOON discovery could not refresh."); }
   }
   for (const kind of (!preferences.source || preferences.source === "asura" ? ["comic", "novel"] : []) as ("comic" | "novel")[]) {
     for (const period of ["week", "month", "all"] as Period[]) {
@@ -167,7 +195,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
           const fresh = parseApiSeries(raw, kind);
           if (!fresh) return;
           const previous = [...items.values()].find(item => sourceOf(item) === "asura" && kindOf(item) === kind && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
-          const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached ? previous.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt,
+          const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt,
             rank: period === "week" ? index + 1 : previous?.rank, popularRanks: { ...previous?.popularRanks, [period]: index + 1 } };
           items.set(item.slug, item);
         });
@@ -185,23 +213,24 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
     const old = [...items.values()].find(item => item.url === url);
     const owned = old && (old.localChapters?.length || saved[old.slug]?.bookmarked);
     const priority = owned || (old && Object.values(old.popularRanks || {}).some(Boolean));
-    if (old?.detailsCached && old.summary && !force && !owned && Date.now() - Date.parse(old.syncedAt || "") < 6 * 3600_000) continue;
+    if (old?.summary && (old.detailsCached || old.metadataSyncedAt) && !force && !owned && Date.now() - Date.parse(old.metadataSyncedAt || old.syncedAt || "") < 6 * 3600_000) continue;
     if (!priority && newDetails >= 12) continue;
     try {
       onProgress("Refreshing story details");
       let item: Series;
-      if (old) item = await refreshSeries(old, guard);
+      if (old) item = await refreshSeries(old, guard, undefined, Boolean(owned || old.detailsCached));
       else if (url.includes("/novels/")) {
         const stub = { url } as Series;
         const result = await getJson(`${API}/novel-series/${encodeURIComponent(siteSlug(stub))}`, guard) as { series?: unknown; chapters?: unknown };
         const parsed = parseApiSeries(result.series, "novel");
         if (!parsed) continue;
-        item = { ...parsed, chapterIds: parseNovelChapters(result.chapters, url).filter(chapter => !chapter.locked).map(chapter => chapter.id), detailsCached: true, syncedAt: new Date().toISOString() };
+        item = { ...parsed, metadataSyncedAt: new Date().toISOString() };
       } else {
         item = parseSeries(await getText(url, guard), url);
         if (!item.chapterCount || !item.cover) continue;
         const previous = [...items.values()].find(value => sourceOf(value) === "asura" && kindOf(value) === "comic" && value.title.toLowerCase() === item.title.toLowerCase());
-        item = { ...previous, ...item, detailsCached: true, slug: previous?.slug || item.slug, syncedAt: new Date().toISOString() };
+        delete item.chapterIds;
+        item = { ...previous, ...item, slug: previous?.slug || item.slug, metadataSyncedAt: new Date().toISOString() };
       }
       items.set(item.slug, item);
       if (!priority) newDetails++;
@@ -232,7 +261,7 @@ export async function searchCatalog(query: string, mode: ContentMode, guard: Gua
   const ids: string[] = [];
   for (const fresh of found) {
     const previous = [...items.values()].find(item => sourceOf(item) === "asura" && kindOf(item) === kindOf(fresh) && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
-    const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached ? previous.summary : fresh.summary || previous?.summary || "", cover: fresh.cover || previous?.cover || "", localCover: previous?.localCover, rank: previous?.rank, popularRanks: previous?.popularRanks, syncedAt: previous?.syncedAt };
+    const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", cover: fresh.cover || previous?.cover || "", localCover: previous?.localCover, rank: previous?.rank, popularRanks: previous?.popularRanks, syncedAt: previous?.syncedAt };
     try { item.localCover = await cacheCover(item, guard); } catch (error) { if (error instanceof NetworkPaused) throw error; }
     items.set(item.slug, item);
     ids.push(item.slug);
@@ -248,7 +277,7 @@ const rankingCache = new Map<Period, { at: number; data: unknown[] }>();
 const webtoonCache = new Map<string, { at: number; items: Series[]; hasNext: boolean }>();
 const siteCache = new Map<string, { at: number; items: Series[]; hasNext: boolean }>();
 
-async function browseReaderSite(source: ReaderSite, options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal) {
+async function browseReaderSite(source: ReaderSite, options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}) {
   const page = cursor.sitePage || 1, offset = cursor.siteOffset || 0;
   const popular = !options.query && (options.sort === "smart" || options.sort === "trending");
   const url = directoryUrl(source, options.sort, options.query, page);
@@ -265,16 +294,16 @@ async function browseReaderSite(source: ReaderSite, options: BrowseOptions, curs
   if (popular && page === 1 && offset === 0) for (const item of stored) if (sourceOf(item) === source) updates.push({ ...item, sourceRank: undefined });
   for (const [index, fresh] of batch.entries()) {
     const previous = stored.find(item => item.slug === fresh.slug || (sourceOf(item) === source && item.url === fresh.url));
-    const item = { ...fresh, ...previous, sourceRank: popular ? (cursor.siteLoaded || 0) + index + 1 : previous?.sourceRank };
-    try { item.localCover = await cacheCover(item, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
+    const item = { ...mergeDiscovery(fresh, previous), sourceRank: popular ? (cursor.siteLoaded || 0) + index + 1 : previous?.sourceRank };
     updates.push(item); ids.push(item.slug);
   }
-  throwIfAborted(signal); mergeCatalog(updates);
+  throwIfAborted(signal); mergeCatalog(updates); changed();
+  if (batch.length) await enrichDiscovery(updates.slice(-batch.length), guard, signal, changed);
   const more = offset + batch.length < entry.items.length;
   return { ids, cursor: { ...cursor, siteOffset: more ? offset + batch.length : 0, sitePage: more ? page : page + 1, siteLoaded: (cursor.siteLoaded || 0) + batch.length }, hasMore: more || entry.hasNext };
 }
 
-async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal) {
+async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}) {
   const language = webtoonLanguage(options.language);
   const offset = cursor.webtoonOffset || 0;
   const page = cursor.webtoonPage || 1;
@@ -296,20 +325,20 @@ async function browseWebtoon(options: BrowseOptions, cursor: BrowseCursor, guard
   const ids: string[] = [];
   for (const [index, fresh] of selected.entries()) {
     const previous = loadCatalog().find(item => item.slug === fresh.slug);
-    const item = { ...fresh, ...previous, sourceRank: popular ? offset + index + 1 : previous?.sourceRank };
-    try { item.localCover = await cacheCover(item, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
+    const item = { ...mergeDiscovery(fresh, previous), sourceRank: popular ? offset + index + 1 : previous?.sourceRank };
     updates.push(item); ids.push(item.slug);
   }
-  throwIfAborted(signal); mergeCatalog(updates);
+  throwIfAborted(signal); mergeCatalog(updates); changed();
+  if (selected.length) await enrichDiscovery(updates.slice(-selected.length), guard, signal, changed);
   const more = offset + selected.length < entry.items.length;
   // Search pages use real source pagination; rankings are finite and sliced locally.
   const next = { ...cursor, webtoonOffset: more ? offset + selected.length : 0, webtoonPage: more ? page : page + 1 };
   return { ids, cursor: next, hasMore: more || entry.hasNext };
 }
 
-export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal): Promise<{ ids: string[]; cursor: BrowseCursor; hasMore: boolean }> {
-  if (options.source === "vortex" || options.source === "mangakakalot") return browseReaderSite(options.source, options, cursor, guard, signal);
-  if (options.source === "webtoon") return browseWebtoon(options, cursor, guard, signal);
+export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor, guard: Guard, signal?: AbortSignal, changed = () => {}): Promise<{ ids: string[]; cursor: BrowseCursor; hasMore: boolean }> {
+  if (options.source === "vortex" || options.source === "mangakakalot") return browseReaderSite(options.source, options, cursor, guard, signal, changed);
+  if (options.source === "webtoon") return browseWebtoon(options, cursor, guard, signal, changed);
   const next = { ...cursor };
   const updates: Series[] = [];
   const existing = loadCatalog();
@@ -342,7 +371,7 @@ export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor
     for (const [index, raw] of data.entries()) {
       const fresh = parseApiSeries(raw, kind); if (!fresh) continue;
       const previous = existing.find(item => sourceOf(item) === "asura" && kindOf(item) === kind && (item.url === fresh.url || item.title.toLowerCase() === fresh.title.toLowerCase()));
-      const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached ? previous.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt, rank: previous?.rank, popularRanks: previous?.popularRanks };
+      const item = { ...previous, ...fresh, slug: previous?.slug || fresh.slug, summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt, rank: previous?.rank, popularRanks: previous?.popularRanks };
       if (options.sort === "trending" && !options.query) { item.popularRanks = { ...item.popularRanks, [options.period]: offset + index + 1 }; if (options.period === "week") item.rank = offset + index + 1; }
       try { item.localCover = await cacheCover(item, guard, signal); }
       catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
@@ -350,6 +379,8 @@ export async function browseCatalog(options: BrowseOptions, cursor: BrowseCursor
     }
   }
   throwIfAborted(signal); mergeCatalog(updates, options.sort === "trending" && !options.query);
+  changed();
+  await enrichDiscovery(updates.filter(item => !item.summary || !item.cover || !item.rating), guard, signal, changed);
   return { ids: updates.map(item => item.slug), cursor: next, hasMore: !next.comicDone || !next.novelDone };
 }
 
@@ -383,7 +414,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
         const images = webtoon ? parseWebtoonImages(html) : readerSite ? parseReaderSiteImages(html, sourceOf(series) as ReaderSite) : parsePageImages(html, chapter.url);
         if (!images.length) throw new Error(`No public images found for chapter ${chapter.id}`);
         let previous: { urls?: string[]; hashes?: string[] } = {}; try { previous = JSON.parse(marker.textSync()); } catch { /* first download */ }
-        batch.push({ id: chapter.id, marker: marker.uri, files: images.map((url, page) => ({ url, target: new File(folder, `${String(page + 1).padStart(3, "0")}${extension(url)}`).uri, original: new File(folder, `.original-${page + 1}`).uri, referer: chapter.url, agent: webtoon || readerSite ? SOURCE_AGENT : HEADERS["User-Agent"], hash: previous.urls?.[page] === url ? previous.hashes?.[page] : undefined })) });
+        batch.push({ id: chapter.id, marker: marker.uri, files: images.map((url, page) => ({ url, target: new File(folder, `${String(page + 1).padStart(3, "0")}${extension(url)}`).uri, original: new File(folder, `.original-${page + 1}`).uri, referer: imageReferer(url, chapter.url), agent: webtoon || readerSite ? SOURCE_AGENT : HEADERS["User-Agent"], hash: previous.urls?.[page] === url ? previous.hashes?.[page] : undefined })) });
       }
     }
     await guard(); throwIfAborted(signal);

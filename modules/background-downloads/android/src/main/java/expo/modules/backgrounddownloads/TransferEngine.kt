@@ -84,7 +84,7 @@ class TransferEngine(context: Context) : ContextWrapper(context) {
         require(url.protocol == "https") { "Unsafe image URL" }
         connection = url.openConnection() as HttpURLConnection
         connection.connectTimeout = 30000; connection.readTimeout = 30000; connection.instanceFollowRedirects = false
-        connection.setRequestProperty("User-Agent", file.getString("agent")); connection.setRequestProperty("Referer", file.getString("referer"))
+        connection.setRequestProperty("User-Agent", file.getString("agent")); connection.setRequestProperty("Referer", if (url.host == "2xstorage.com" || url.host.endsWith(".2xstorage.com")) "https://www.mangakakalot.gg/" else file.getString("referer"))
         val code = connection.responseCode
         if (code in 300..399) { val location = connection.getHeaderField("Location") ?: throw IllegalStateException("Invalid image redirect"); val next = URL(url, location); connection.disconnect(); url = next; continue }
         require(code in 200..299 && connection.contentType?.startsWith("image/") == true) { "Image request failed ($code)" }
