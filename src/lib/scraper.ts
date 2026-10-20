@@ -125,17 +125,20 @@ export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSi
   return { ...item, ...fresh, summary: fresh.summary || item.summary, detailsCached: true, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, syncedAt: new Date().toISOString() };
 }
 
-export async function syncCatalog(onProgress: (message: string) => void, guard: Guard, force = false): Promise<Series[]> {
+export async function syncCatalog(onProgress: (message: string) => void, guard: Guard, force = false, onWarning: (message: string) => void = () => {}): Promise<Series[]> {
   const existing = loadCatalog();
   const saved = savedStories();
   const items = new Map(existing.map(item => [item.slug, { ...item }]));
   let successful = 0;
+  let discoveryError: unknown;
   const preferences = loadPreferences();
   if (preferences.source === "vortex" || preferences.source === "mangakakalot") {
     onProgress("Refreshing source discoveries");
-    const page = await browseReaderSite(preferences.source, { mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard);
-    for (const item of loadCatalog()) items.set(item.slug, item);
-    if (page.ids.length) successful++;
+    try {
+      const page = await browseReaderSite(preferences.source, { mode: "comics", sort: "smart", period: "week", query: "", refresh: force }, FIRST_PAGE, guard);
+      for (const item of loadCatalog()) items.set(item.slug, item);
+      if (page.ids.length) successful++;
+    } catch (error) { if (error instanceof NetworkPaused) throw error; discoveryError = error; onWarning(error instanceof Error ? error.message : "Source discovery could not refresh."); }
   }
   if (preferences.source === "webtoon") {
     onProgress("Refreshing WEBTOON discoveries");
@@ -210,7 +213,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
     try { items.set(slug, { ...item, localCover: await cacheCover(item, guard) }); }
     catch (error) { if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
   }
-  if (!successful) throw new Error("Could not refresh stories. Pull down to retry.");
+  if (!successful) throw discoveryError || new Error("Could not refresh stories. Pull down to retry.");
   mergeCatalog([...items.values()], true);
   return loadCatalog();
 }

@@ -6,6 +6,7 @@ export type NativeChapter = { id: string; marker: string; files: {url: string; t
 declare class Transfers extends NativeModule {
   states(id: string | null): string;
   serviceRunning(): boolean;
+  setNetworkPolicy(wifiOnly: boolean): void;
   syncQueue(jobs: string): void;
   queueSummary(): string;
   begin(id: string, title: string): Promise<void>;

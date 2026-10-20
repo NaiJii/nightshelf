@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { router } from "expo-router";
 import { useShelf } from "../../lib/app-state";
 import { filterDiscovery, SortOrder, sortExplore } from "../../lib/parser";
 import { FIRST_PAGE } from "../../lib/scraper";
@@ -42,8 +43,8 @@ export default function Explore() {
       cursor.current = page.cursor; more.current = page.hasMore;
       loadedIds.current = [...new Set([...loadedIds.current, ...page.ids])];
       setIds(loadedIds.current); setHasMore(page.hasMore);
-    } catch {
-      if (!abort.signal.aborted && version === generation.current) setError("Couldn’t load more titles. Cached stories remain available offline.");
+    } catch (failure) {
+      if (!abort.signal.aborted && version === generation.current) setError(failure instanceof Error ? failure.message : "Couldn’t load more titles. Cached stories remain available offline.");
     } finally { if (version === generation.current) { busy.current = false; setLoading(false); } }
   }, [browse, options]);
   useEffect(() => {
@@ -78,6 +79,7 @@ export default function Explore() {
     ListFooterComponent={<View style={{ paddingHorizontal: 22, paddingVertical: 20, alignItems: "center", gap: 10 }}>
       {loading ? <View accessibilityLiveRegion="polite" style={ui.row}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>{ids === null ? "Finding stories…" : "Loading more stories…"}</Text></View> : <>
         {error ? <Text style={[ui.muted, { textAlign: "center" }]}>{error}</Text> : null}
+        {preferences.source === "mangakakalot" && /verification/i.test(error) && <Pressable onPress={() => router.push("/verify-source")} style={[ui.primary, { minWidth: 160 }]}><Text style={ui.primaryText}>Verify source</Text></Pressable>}
         {hasMore ? <Pressable accessibilityLabel={error ? "Retry loading titles" : "Load more titles"} onPress={() => void loadMore(true)} style={[ui.chip, { minWidth: 160, alignItems: "center" }]}><Text style={{ color: color.lilac }}>{error ? "Retry" : "Load more"}</Text></Pressable> : <Text style={ui.muted}>{preferences.sort === "trending" && !debounced ? "End of this ranking" : "You’ve reached the end"}</Text>}
       </>}
     </View>}

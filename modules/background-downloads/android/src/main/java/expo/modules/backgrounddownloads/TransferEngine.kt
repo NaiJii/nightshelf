@@ -20,6 +20,10 @@ import expo.modules.backgrounddownloads.DownloadService.Companion.state
 internal class NetworkWait(message: String) : Exception(message)
 class TransferEngine(context: Context) : ContextWrapper(context) {
   companion object { private val STORAGE_LOCK = Any(); private var reservedBytes = 0L }
+  private fun meteredAllowed(granted: Boolean) = MeteredPolicy.allowsMetered(granted) {
+    val preferences = File(filesDir, "nightshelf/preferences.json")
+    try { preferences.exists() && JSONObject(preferences.readText()).optString("mobileData") == "never" } catch (_: Exception) { true }
+  }
   fun execute(id: String, cancelled: AtomicBoolean, update: (String, Int) -> Unit) {
         val plan = JSONObject(File(directory(this), "$id.plan").readText())
         val chapters = plan.getJSONArray("chapters"); val total = (0 until chapters.length()).sumOf { chapters.getJSONObject(it).getJSONArray("files").length().coerceAtLeast(1) }.coerceAtLeast(1)
@@ -47,7 +51,7 @@ class TransferEngine(context: Context) : ContextWrapper(context) {
               val reusable = output.exists() && original.exists() && original.readText() == url && imageValid(output) && (expected.isEmpty() || digest == expected)
               if (!reusable) {
                 val network = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-                if (!plan.optBoolean("allowMetered") && network.isActiveNetworkMetered) throw NetworkWait("Waiting for unmetered Wi-Fi")
+                if (!meteredAllowed(plan.optBoolean("allowMetered")) && network.isActiveNetworkMetered) throw NetworkWait("Waiting for unmetered Wi-Fi")
                 val limit = plan.optLong("limitBytes")
                 if (limit > 0 && directorySize(File(filesDir, "nightshelf/library")) >= limit) throw NetworkWait("Automatic download storage limit reached")
                 if (output.parentFile!!.usableSpace < 32 * 1024 * 1024L) throw NetworkWait("Phone storage is almost full")
@@ -76,6 +80,7 @@ class TransferEngine(context: Context) : ContextWrapper(context) {
     var url = URL(file.getString("url")); var connection: HttpURLConnection? = null
     try {
       for (redirect in 0..5) {
+        if (!meteredAllowed(allowMetered) && (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered) throw NetworkWait("Waiting for unmetered Wi-Fi")
         require(url.protocol == "https") { "Unsafe image URL" }
         connection = url.openConnection() as HttpURLConnection
         connection.connectTimeout = 30000; connection.readTimeout = 30000; connection.instanceFollowRedirects = false
@@ -97,7 +102,7 @@ class TransferEngine(context: Context) : ContextWrapper(context) {
             if (cancelled.get()) throw InterruptedException("Paused")
             val count = input.read(buffer); if (count < 0) break
             if (temp.parentFile!!.usableSpace < 8 * 1024 * 1024L) throw NetworkWait("Phone storage is almost full")
-            if (!allowMetered && (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered) throw NetworkWait("Waiting for unmetered Wi-Fi")
+            if (!meteredAllowed(allowMetered) && (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered) throw NetworkWait("Waiting for unmetered Wi-Fi")
             if (limitBytes > 0) synchronized(STORAGE_LOCK) {
               val unreserved = (count.toLong() - reservation).coerceAtLeast(0)
               if (unreserved > 0 && directorySize(File(filesDir, "nightshelf/library")) + reservedBytes + unreserved > limitBytes) throw NetworkWait("Automatic download storage limit reached")
@@ -115,7 +120,7 @@ class TransferEngine(context: Context) : ContextWrapper(context) {
       throw IllegalStateException("Too many image redirects")
     } catch (error: IOException) {
       val network = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-      if (network.activeNetwork == null || (!allowMetered && network.isActiveNetworkMetered)) throw NetworkWait("Connection interrupted · waiting for an allowed network")
+      if (network.activeNetwork == null || (!meteredAllowed(allowMetered) && network.isActiveNetworkMetered)) throw NetworkWait("Connection interrupted · waiting for an allowed network")
       throw error
     } finally { connection?.disconnect() }
   }

@@ -19,7 +19,7 @@ const run = (command, args, cwd = process.cwd(), capture = false) => {
 try {
   writeFileSync(keystore, Buffer.from(credentials.keystore, 'base64'), { mode: 0o600 });
   run('npx', ['expo', 'prebuild', '--platform', 'android', '--no-install']);
-  run('bash', ['./gradlew', ':app:assembleRelease', '-PreactNativeArchitectures=arm64-v8a', '--no-daemon', '--max-workers=2', '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g'], join(process.cwd(), 'android'));
+  run('bash', ['./gradlew', ':background-downloads:testReleaseUnitTest', ':app:assembleRelease', '-PreactNativeArchitectures=arm64-v8a', '--no-daemon', '--max-workers=2', '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g'], join(process.cwd(), 'android'));
   const apk = join(process.cwd(), 'android/app/build/outputs/apk/release/app-release.apk');
   const signer = join(process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT, 'build-tools/36.0.0/apksigner');
   const certificates = run(signer, ['verify', '--print-certs', apk], process.cwd(), true);

@@ -47,10 +47,6 @@ function useAppState() {
     try {
       const item = loadCatalog().find(item => item.slug === job.series.slug) || job.series;
       const current = transferStates(item.slug)[item.slug];
-      if (backgroundTransfers && current?.hasPlan && ["running", "queued"].includes(current.state)) {
-        if (!current.active && current.state === "running") await backgroundTransfers.resume(item.slug);
-        return "native" as const;
-      }
       const access = networkGuard("Save these chapters for offline reading?", job.automatic, Boolean(backgroundTransfers));
       const guard = async () => {
         if (backgroundTransfers && transferStates(item.slug)[item.slug]?.state === "paused") throw new DownloadPaused("Paused from notification");
@@ -61,13 +57,21 @@ function useAppState() {
         }
         await access();
       };
-      if (backgroundTransfers && AppState.currentState === "active") await requestReleasePermission();
       await access();
+      backgroundTransfers?.setNetworkPolicy(loadPreferences().mobileData === "never");
+      if (backgroundTransfers && AppState.currentState === "active") await requestReleasePermission();
+      throwIfAborted(signal);
+      if (backgroundTransfers && current?.hasPlan) {
+        if (job.autoBookmark) { const network = await NetInfo.fetch(); if (network.type !== "wifi" || network.details?.isConnectionExpensive) throw new NetworkPaused("Automatic downloads wait for unmetered Wi-Fi."); }
+        throwIfAborted(signal);
+        if (!current.active) await backgroundTransfers.resume(item.slug);
+        return "native" as const;
+      }
       if (backgroundTransfers) await backgroundTransfers.begin(item.slug, item.title);
       await downloadChapters(item, job.selection, progress, guard, signal, job.chapters, plan, () => setCatalog(loadCatalog()), job.autoBookmark, Boolean(backgroundTransfers));
       if (backgroundTransfers) return "native" as const;
     } finally { if (signal.aborted) await stopTransfer(job.series.slug); await backgroundTransfers?.endPreparation(job.series.slug).catch(() => {}); setCatalog(loadCatalog()); setPreferences(loadPreferences()); }
-  }, jobs => { saveDownloads(jobs); backgroundTransfers?.syncQueue(JSON.stringify(jobs.map(job => ({ id: job.series.slug, native: Boolean(job.native), progress: job.progress })))); setDownloads(jobs); }, slug => deleteChapters(slug, [], true), () => AppState.currentState === "active" || Boolean(backgroundTransfers?.serviceRunning())));
+  }, jobs => { saveDownloads(jobs); backgroundTransfers?.syncQueue(JSON.stringify(jobs.map(job => ({ id: job.series.slug, native: Boolean(job.native), progress: job.progress })))); setDownloads(jobs); }, slug => deleteChapters(slug, [], true), () => AppState.currentState === "active" || Boolean(backgroundTransfers?.serviceRunning()), loadDownloads));
   const downloadBusy = useCallback((slug?: string) => queue.isBusy(slug) || Object.entries(transferStates(slug)).some(([id, value]) => (value.active || (value.hasPlan && ["queued", "waiting", "running", "preparing"].includes(value.state))) && (!slug || id === slug)), [queue]);
   const pauseDownload = useCallback((slug: string) => { queue.pause(slug); void backgroundTransfers?.pause(slug); }, [queue]);
   const resumeDownload = useCallback((slug: string) => { if (deleteLock.current) { setNotice("Wait for deletion to finish before resuming downloads."); return; } void stopTransfer(slug).then(() => queue.resume(slug)); }, [queue]);
@@ -133,6 +137,7 @@ function useAppState() {
   const updatePreferences = useCallback((change: Partial<Preferences>) => {
     const value = { ...loadPreferences(), ...change };
     savePreferences(value);
+    backgroundTransfers?.setNetworkPolicy(value.mobileData === "never");
     setPreferences(value);
   }, []);
 
@@ -172,11 +177,12 @@ function useAppState() {
     setNetworkNotice("");
     if (!automatic) setRefreshing(true);
     try {
-      const fresh = await syncCatalog(() => {}, networkGuard("Refresh story summaries, ratings and chapter lists?", automatic), !automatic);
+      const warnings: string[] = [];
+      const fresh = await syncCatalog(() => {}, networkGuard("Refresh story summaries, ratings and chapter lists?", automatic), !automatic, message => warnings.push(message));
       setCatalog(fresh);
       await notifyReleases(fresh);
       await autoDownload();
-      setNotice("");
+      setNotice(warnings.join(" "));
     } catch (error) {
       setCatalog(loadCatalog());
       showFailure(error);
@@ -197,12 +203,13 @@ function useAppState() {
   }, [queue]);
 
   useEffect(() => {
+    backgroundTransfers?.setNetworkPolicy(preferences.mobileData === "never");
     let mounted = true;
     void NetInfo.fetch().then(state => {
       if (!mounted) return;
       const access = connectionAccess(state, preferences.mobileData, false);
       setNetworkNotice(current => current ? connectionPauseMessage(access) : "");
-      if (access === "allow") { if (!syncLock.current) lastAttempt.current = 0; if (AppState.currentState === "active") { queue.resumeWaiting(); void sync(true); } }
+      if (access === "allow") { if (!syncLock.current) lastAttempt.current = 0; if (AppState.currentState === "active") { queue.reconcileNative(transferStates()); queue.resumeWaiting(); void sync(true); } }
     }).catch(() => {});
     return () => { mounted = false; };
   }, [preferences.mobileData, sync, queue]);
@@ -222,17 +229,13 @@ function useAppState() {
 
   useEffect(() => {
     const states = transferStates();
-    for (const job of [...queue.jobs]) {
-      const state = states[job.series.slug];
-      if (state?.state === "done") void queue.cancel(job.series.slug);
-      else if (job.native && state?.state === "running" && !state.active && state.hasPlan && AppState.currentState === "active") void backgroundTransfers?.resume(job.series.slug).catch(showFailure);
-      else if (job.native) queue.reconcileNative(states);
-      else if (["running", "preparing", "queued"].includes(state?.state)) queue.resume(job.series.slug);
-    }
+    const recovery = setTimeout(() => { for (const job of [...queue.jobs]) if (job.status === "cancelling") void cancelDownload(job.series.slug).catch(showFailure); }, 0);
+    queue.reconcileNative(states);
+    queue.resumeWaiting();
     void configureReleaseChecks().catch(() => setNotice("Background release checks are unavailable. Releases will still be checked when the app is open."));
     const timer = setInterval(() => { if (AppState.currentState === "active") void sync(true); }, 60_000);
     const app = AppState.addEventListener("change", state => {
-      if (state === "active") { setNetworkNotice(""); setCatalog(loadCatalog()); setRead(readChapters()); setUpdates(releaseUpdates()); setPreferences(loadPreferences()); queue.resumeWaiting(); queue.pump(); void sync(true); }
+      if (state === "active") { setNetworkNotice(""); setCatalog(loadCatalog()); setRead(readChapters()); setUpdates(releaseUpdates()); setPreferences(loadPreferences()); queue.reconcileNative(transferStates()); queue.resumeWaiting(); queue.pump(); void sync(true); }
       else if (!backgroundTransfers) queue.suspend();
     });
     const unsubscribe = NetInfo.addEventListener(state => {
@@ -242,10 +245,10 @@ function useAppState() {
       if (access === "allow" && lastAccess.current !== "allow" && !syncLock.current) lastAttempt.current = 0;
       lastAccess.current = access;
       setNetworkNotice(current => current ? connectionPauseMessage(access) : "");
-      if (state.isConnected && AppState.currentState === "active") { if (access === "allow") queue.resumeWaiting(); void sync(true); }
+      if (state.isConnected && AppState.currentState === "active") { queue.reconcileNative(transferStates()); if (access === "allow") queue.resumeWaiting(); void sync(true); }
     });
-    return () => { clearInterval(timer); app.remove(); unsubscribe(); };
-  }, [sync, queue, showFailure]);
+    return () => { clearTimeout(recovery); clearInterval(timer); app.remove(); unsubscribe(); };
+  }, [sync, queue, showFailure, cancelDownload]);
 
   return { connection, setStoryOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloads, downloadBusy, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
 }

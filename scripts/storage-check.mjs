@@ -287,6 +287,19 @@ export async function fetch(url,options={}){
     }
     http.setVerificationMode('open');await verifySourceSession(verificationUrl,async()=>{});
     console.log('Source verification success, challenge rejection and retry recovery checks passed');
+    const syncPreferences=storage.loadPreferences(), syncCatalogBefore=storage.loadCatalog(), bookmarkBefore=storage.savedStories().example?.bookmarked;
+    storage.savePreferences({...syncPreferences,source:'mangakakalot'});
+    storage.mergeCatalog([{...storage.SEED[0],slug:'example',url:'https://asurascans.com/comics/example'}]);
+    tools.updateStoryOptions('example',{bookmarked:true});
+    http.setVerificationMode('blocked'); const failedSourceStart=requests.length, syncWarnings=[];
+    const partiallySynced=await syncCatalog(()=>{},async()=>{},true,message=>syncWarnings.push(message));
+    assert.ok(partiallySynced.some(item=>item.slug==='example'&&item.detailsCached));
+    assert.ok(requests.slice(failedSourceStart).some(url=>new URL(url).hostname==='asurascans.com'),'one challenged directory cannot block healthy bookmarks on another source');
+    assert.ok(syncWarnings.some(message=>/Verify source/.test(message)),'partial success still reports the failed source');
+    storage.saveCatalog([]);
+    await assert.rejects(()=>syncCatalog(()=>{},async()=>{},true),/Verify source/,'when nothing can refresh, preserve the actionable verification error');
+    http.setVerificationMode('open');storage.savePreferences(syncPreferences);storage.saveCatalog(syncCatalogBefore);tools.updateStoryOptions('example',{bookmarked:bookmarkBefore});
+    console.log('Cross-source partial sync and actionable verification error regression checks passed');
     const repairStory={...storage.SEED[0],slug:'repair',url:'https://asurascans.com/comics/repair',cover:''};
     await downloadChapters(repairStory,'1',()=>{},async()=>{});
     new File(storage.chapterDirectory('repair','1'),'001.webp').write('damaged');

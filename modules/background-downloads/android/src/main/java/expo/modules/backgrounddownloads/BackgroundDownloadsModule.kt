@@ -13,6 +13,7 @@ class BackgroundDownloadsModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("NightShelfBackgroundDownloads")
     Function("serviceRunning") { DownloadService.serviceRunning() }
+    Function("setNetworkPolicy") { wifiOnly: Boolean -> MeteredPolicy.update(wifiOnly) }
     Function("syncQueue") { json: String -> appContext.reactContext?.let { QueueProgress.sync(it, JSONArray(json)) }; Unit }
     Function("queueSummary") { appContext.reactContext?.let { QueueProgress.summary(it).toString() } ?: "{}" }
     Function("states") { selected: String? ->
@@ -58,6 +59,7 @@ class BackgroundDownloadsModule : Module() {
     }
     AsyncFunction("resume") { id: String ->
       DownloadService.checkId(id)
+      DownloadService.clearPause(id)
       val context = appContext.reactContext ?: throw IllegalStateException("Download context unavailable")
       val intent = Intent(context, DownloadService::class.java).putExtra("id", id).setAction("download")
       if (DownloadService.serviceRunning()) context.startService(intent) else if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)

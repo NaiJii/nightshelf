@@ -35,7 +35,11 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
   companion object {
     fun enqueue(context: Context, id: String) {
       val plan = JSONObject(File(DownloadService.directory(context), "$id.plan").readText())
-      val request = OneTimeWorkRequest.Builder(DownloadWorker::class.java).setInputData(Data.Builder().putString("id", id).build()).setConstraints(Constraints.Builder().setRequiredNetworkType(if (plan.optBoolean("allowMetered")) NetworkType.CONNECTED else NetworkType.UNMETERED).build()).build()
+      val metered = MeteredPolicy.allowsMetered(plan.optBoolean("allowMetered")) {
+        val preferences = File(context.filesDir, "nightshelf/preferences.json")
+        try { preferences.exists() && JSONObject(preferences.readText()).optString("mobileData") == "never" } catch (_: Exception) { true }
+      }
+      val request = OneTimeWorkRequest.Builder(DownloadWorker::class.java).setInputData(Data.Builder().putString("id", id).build()).setConstraints(Constraints.Builder().setRequiredNetworkType(if (metered) NetworkType.CONNECTED else NetworkType.UNMETERED).build()).build()
       DownloadService.state(context, id, "queued", "Waiting for Android · Wi-Fi downloads", 0.0)
       WorkManager.getInstance(context).enqueueUniqueWork("nightshelf-$id", ExistingWorkPolicy.REPLACE, request)
     }

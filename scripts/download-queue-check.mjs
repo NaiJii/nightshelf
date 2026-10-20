@@ -79,3 +79,49 @@ assert.equal(delegated.jobs[0].status,'paused','a pending pause is not overwritt
 delegated.reconcileNative({n3:{state:'paused',active:false,message:'Paused',progress:0.2}});
 assert.equal(delegated.jobs[0].status,'paused');
 console.log('Native handoff, progress reconciliation and safe cancellation checks passed');
+
+const nativeJob={series:series('reopened'),selection:'1-2',chapters:['1','2'],status:'downloading',native:true,message:'Saving',progress:.25};
+const reopened=new DownloadQueue([nativeJob],async()=>"native",()=>{},()=>{},()=>false);
+reopened.reconcileNative({reopened:{state:'running',active:true,hasPlan:true,message:'Saving page 8',progress:.8}});
+assert.equal(reopened.jobs[0].status,'downloading','a live Android transfer is not restored as user-paused');
+assert.equal(reopened.jobs[0].progress,.8,'native progress refreshes immediately after reopening');
+reopened.reconcileNative({reopened:{state:'waiting',active:false,hasPlan:true,message:'Waiting for Wi-Fi',progress:.8}});
+assert.equal(reopened.jobs[0].native,true,'network waits retain native ownership');
+reopened.resumeWaiting();
+assert.equal(reopened.jobs[0].native,true,'a pending resume must not lose ownership before JS can run');
+reopened.reconcileNative({reopened:{state:'done',active:false,hasPlan:false,message:'Saved',progress:1}});
+assert.equal(reopened.jobs.length,0,'a completed background transfer is removed even when a resume was queued');
+
+let disk=[], resumed=0;
+const recovered=new DownloadQueue([],async()=>{resumed++;return 'native';},jobs=>{disk=structuredClone(jobs);},()=>{},()=>true,()=>disk);
+disk=[{...nativeJob,status:'waiting'}];
+recovered.reconcileNative({reopened:{state:'running',active:true,hasPlan:true,message:'Saving',progress:.5}});
+assert.equal(recovered.jobs.length,1,'automatically queued background jobs become visible without restarting');
+assert.equal(recovered.jobs[0].status,'downloading');
+recovered.pause('reopened');
+assert.equal(disk[0].pauseRequested,true,'an explicit pending pause is durable');
+recovered.reconcileNative({reopened:{state:'running',active:true,hasPlan:true,message:'Stopping',progress:.6}});
+assert.equal(recovered.jobs[0].status,'paused','native progress cannot undo a user pause');
+recovered.reconcileNative({reopened:{state:'paused',active:false,hasPlan:true,message:'Paused',progress:.6}});
+recovered.resume('reopened');await tick();
+assert.equal(resumed,1,'resuming a recovered native job delegates exactly once');
+await recovered.cancel('reopened');
+assert.equal(recovered.jobs.length,0);assert.equal(disk.length,0,'publishing cancellation cannot resurrect the stale persisted job');
+
+let pendingDisk=[];
+const merged=new DownloadQueue([],async()=>new Promise(()=>{}),jobs=>{pendingDisk=structuredClone(jobs);},()=>{},()=>false,()=>pendingDisk);
+pendingDisk=[{...nativeJob,status:'queued'}];merged.enqueue(series('manual-new'),'1');
+assert.equal(pendingDisk.length,2,'publishing a foreground job preserves background jobs added since the last poll');
+assert.equal(merged.jobs.length,2);
+
+const denied=new DownloadQueue([{...nativeJob,status:'paused'}],async()=>{throw Object.assign(Error('Waiting for Wi-Fi'),{name:'NetworkPaused'});},()=>{},()=>{});
+denied.resume('reopened');await tick();
+denied.reconcileNative({reopened:{state:'paused',active:false,hasPlan:true,message:'Paused',progress:.25}});
+assert.equal(denied.jobs[0].status,'waiting','a network-blocked resume keeps its useful waiting reason instead of reverting to an old native pause');
+denied.reconcileNative({reopened:{state:'done',active:false,hasPlan:false,message:'Saved',progress:1}});
+assert.equal(denied.jobs.length,0);
+
+const interrupted=new DownloadQueue([nativeJob],async()=>"native",()=>{},()=>{},()=>false);
+interrupted.reconcileNative({reopened:{state:'running',active:false,hasPlan:true,message:'Saving',progress:.25}});
+assert.equal(interrupted.jobs[0].status,'waiting','an interrupted native writer must offer resume instead of an endless spinner');
+console.log('Restart, background recovery, terminal completion, pause intent and metered-resume regression checks passed');
