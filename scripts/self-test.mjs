@@ -132,15 +132,22 @@ function readerSession(novel = false, imageCount = 2) {
   let tick, timerId = 0, firstBottom = -10;
   const events = {}, timers = new Map();
   const advance = ms => { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.callback(); };
-  const messages = [];
-  const image = { complete: true, naturalWidth: 1000, getBoundingClientRect: () => rect };
+  const messages = [], seeks = []; let loaded = false;
+  const elements = Object.fromEntries(['reader-scrubber','scrub-range','scrub-preview','scrub-crop','scrub-text','scrub-label','scrub-position'].map(id => [id, {
+    hidden: ['reader-scrubber','scrub-preview','scrub-text'].includes(id), value: '0', style: {}, offsetHeight: 68, clientHeight: 152, attributes: {}, listeners: {},
+    addEventListener(type, callback) { this.listeners[type] = callback; }, setAttribute(name,value) { this.attributes[name] = value; }, closest:()=>true,
+  }]));
+  const image = { src:'file:///last.webp',textContent:'A preview of the last paragraph.',complete: true, naturalWidth: 1000, getBoundingClientRect: () => rect };
   const window = { readerActive: false, visualViewport: { offsetTop: 0, offsetLeft: 0, height: 800, width: 400, scale: 1, addEventListener(type, callback) { events[`viewport-${type}`] = callback; } }, ReactNativeWebView: { postMessage: data => messages.push(JSON.parse(data)) } };
-  const firstImage = {complete:true,naturalWidth:1000,getBoundingClientRect:()=>({top:-500,bottom:firstBottom,left:0,right:400})};
-  const document = { hidden: false, images: novel ? [] : imageCount === 1 ? [image] : [firstImage,image], documentElement: { scrollHeight: 1600 }, querySelector: () => novel ? image : null };
-  const context = { window, document, Date: { now: () => now }, innerHeight: 800, innerWidth: 400, scrollY: 800, scrollTo() {}, addEventListener: (type, callback) => { events[type] = callback; }, setInterval: callback => { tick = callback; }, setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id; }, clearTimeout(id) { timers.delete(id); } };
+  const firstImage = {src:"file:///first.webp",complete:true,naturalWidth:1000,getBoundingClientRect:()=>({top:-500,bottom:firstBottom,left:0,right:400})};
+  const document = { getElementById:id=>elements[id], querySelectorAll:()=>novel ? [image] : [], hidden: false, images: novel ? [] : imageCount === 1 ? [image] : [firstImage,image], documentElement: { scrollHeight: 1600 }, querySelector: () => novel ? image : null };
+  const context = { window, document, Date: { now: () => now }, innerHeight: 800, innerWidth: 400, scrollY: 800, scrollTo(x,y) { seeks.push(y); if(loaded)context.scrollY=y; }, addEventListener: (type, callback) => { events[type] = callback; }, setInterval: callback => { tick = callback; }, setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id; }, clearTimeout(id) { timers.delete(id); } };
   vm.runInNewContext((novel ? readerHtml([], 0, {title:"Chapter",paragraphs:["Last paragraph"]}) : reader).match(/<script>([\s\S]*?)<\/script>/)[1], context);
-  events.load(); window.readerActive = true;
-  return { image, window, document, messages, advance, emit(type, event = {}) { events[type](event); }, setBottom(value) { rect.bottom = value; }, setFirstBottom(value) { firstBottom = value; }, setScroll(value) { context.scrollY = value; }, tick(ms = 250) { advance(ms); tick(); } };
+  events.load(); loaded = true; window.readerActive = true;
+  return { image, window, document, messages, seeks, elements, advance, getScroll:()=>context.scrollY,
+    setPanels(panels) { document.images.forEach((image,index)=>{const panel=panels[index];image.getBoundingClientRect=()=>({top:panel.top-context.scrollY,bottom:panel.top+panel.height-context.scrollY,left:0,right:panel.width});}); },
+    input(type,value) { if(value!==undefined)elements['scrub-range'].value=String(value); elements['scrub-range'].listeners[type]({target:elements['scrub-range']}); },
+    emit(type, event = {}) { events[type](event); }, setBottom(value) { rect.bottom = value; }, setFirstBottom(value) { firstBottom = value; }, setScroll(value) { context.scrollY = value; }, tick(ms = 250) { advance(ms); tick(); } };
 }
 const gestures = readerSession();
 const finger = {clientX:100, clientY:200};
@@ -346,3 +353,46 @@ edges.window.visualViewport.scale=1;swipe(edges,100,200,100,90);
 edges.setScroll(200);swipe(edges,100,200,0,90);
 assert.equal(boundaryCount(),beforeEdges,'disabled continuous reading, zoom, horizontal movement and midchapter scrolls cannot change chapters');
 console.log('Continuous reader edge gesture checks passed');
+
+const scrub = readerSession();
+scrub.setScroll(0);scrub.document.documentElement.scrollHeight=5000;
+scrub.setPanels([{top:0,height:1000,width:400},{top:1000,height:4000,width:400}]);
+scrub.window.readerChromeVisible=true;scrub.window.readerUpdateControls();
+assert.equal(scrub.elements['reader-scrubber'].hidden,false);
+const beforePreview=scrub.messages.length, seeksBefore=scrub.seeks.length;
+scrub.input('input',5000);
+assert.equal(scrub.elements['scrub-preview'].hidden,false);
+assert.equal(scrub.elements['scrub-label'].textContent,'Page 2/2 · 28%','preview locates the position inside a long panel');
+assert.equal(scrub.elements['scrub-crop'].style.backgroundImage,'url("file:///last.webp")','preview uses only the saved image');
+assert.equal(scrub.seeks.length,seeksBefore,'previewing never scrolls the real chapter');
+assert.equal(scrub.messages.length,beforePreview,'previewing cannot save position, prefetch or mark read');
+const scrubTarget=scrub.elements['scrub-range'];
+for(const type of ['touchstart','touchmove','touchend','click'])scrub.emit(type,{target:scrubTarget,touches:type==='touchend'?[]:[{clientX:200,clientY:200}]});
+assert.equal(scrub.messages.length,beforePreview,'slider gestures cannot toggle chrome, zoom or navigate chapters');
+scrub.input('change');
+assert.equal(scrub.getScroll(),2100,'releasing seeks to the selected continuous offset');
+assert.equal(scrub.elements['scrub-preview'].hidden,true);
+assert.equal(scrub.window.readerChromeVisible,true,'seeking leaves controls visible');
+assert.ok(!scrub.messages.some(message=>message.complete),'seeking with controls visible does not complete a chapter');
+scrub.input('input',9000);scrub.input('pointercancel');
+assert.equal(scrub.getScroll(),2100,'cancelled drags preserve the original position');
+assert.equal(scrub.elements['scrub-range'].value,'5000','cancel restores the thumb to the actual position');
+scrub.input('input',10000);scrub.input('change');
+assert.equal(scrub.getScroll(),4200,'the slider reaches the chapter end');
+assert.ok(!scrub.messages.some(message=>message.complete),'the end must be visible without controls before completing');
+scrub.window.readerChromeVisible=false;scrub.window.readerUpdateControls();scrub.tick();
+assert.equal(scrub.elements['reader-scrubber'].hidden,true);
+assert.ok(scrub.messages.some(message=>message.complete),'completion still works once the final panel is uncovered');
+scrub.window.readerChromeVisible=true;scrub.window.readerUpdateControls();
+scrub.window.readerActive=false;scrub.window.readerUpdateControls();
+const inactiveSeek=scrub.getScroll();scrub.input('input',0);scrub.input('change');
+assert.equal(scrub.getScroll(),inactiveSeek,'a hidden or inactive scrubber cannot change position');
+scrub.window.readerActive=true;scrub.window.visualViewport.scale=2;scrub.window.visualViewport.width=200;scrub.window.visualViewport.height=400;scrub.window.visualViewport.offsetLeft=30;scrub.window.visualViewport.offsetTop=20;scrub.window.readerUpdateControls();
+assert.equal(scrub.elements['reader-scrubber'].style.transform,'scale(0.5)');
+assert.equal(scrub.elements['reader-scrubber'].style.width,'400px');
+assert.equal(scrub.elements['reader-scrubber'].style.left,'30px','controls stay anchored when zoomed and panned');
+const proseScrub=readerSession(true);proseScrub.window.readerChromeVisible=true;proseScrub.window.readerUpdateControls();proseScrub.input('input',6000);
+assert.equal(proseScrub.elements['scrub-crop'].hidden,true);
+assert.equal(proseScrub.elements['scrub-text'].textContent,'A preview of the last paragraph.');
+assert.equal(proseScrub.elements['scrub-label'].textContent,'60% of chapter');
+console.log('Reader scrubber preview, commit, cancel, long-panel, zoom and read-completion checks passed');

@@ -38,6 +38,7 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
   const [html] = useState(() => readerHtml(files, position, novel, preferences.novelFontSize, preferences.novelTheme));
   const baseUrl = `${chapterDirectory(slug, chapter).uri.replace(/\/$/, "")}/`;
   const web = useRef<WebView>(null);
+  const scrubberBottom = useRef(96);
   const controlsError = useReaderConveniences(web, Boolean(files.length || novel));
   const focused = useRef(false);
   const [intact] = useState(() => chapterIntact(slug, chapter));
@@ -52,16 +53,16 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
 
   useFocusEffect(useCallback(() => {
     focused.current = true;
-    web.current?.injectJavaScript(`window.readerActive=${AppState.currentState === "active"};true;`);
-    const listener = AppState.addEventListener("change", state => web.current?.injectJavaScript(`window.readerActive=${state === "active"};true;`));
-    return () => { focused.current = false; web.current?.injectJavaScript("window.readerActive=false;true;"); listener.remove(); };
+    web.current?.injectJavaScript(`window.readerActive=${AppState.currentState === "active"};window.readerUpdateControls?.();true;`);
+    const listener = AppState.addEventListener("change", state => web.current?.injectJavaScript(`window.readerActive=${state === "active"};window.readerUpdateControls?.();true;`));
+    return () => { focused.current = false; web.current?.injectJavaScript("window.readerActive=false;window.readerUpdateControls?.();true;"); listener.remove(); };
   }, []));
 
   useEffect(() => {
     if (files.length || novel) savePosition(slug, chapter, position);
   }, [chapter, files, novel, position, slug]);
 
-  useEffect(() => { web.current?.injectJavaScript(`window.readerChromeVisible=${!hidden};true;`); }, [hidden]);
+  useEffect(() => { web.current?.injectJavaScript(`window.readerChromeVisible=${!hidden};window.readerUpdateControls?.();true;`); }, [hidden]);
 
   const chaptersSaved = (id: string) => (item?.localChapters || []).includes(id);
   return <View nativeID={`nightshelf-reader:${baseUrl}`} collapsable={false} style={ui.safe}>
@@ -71,7 +72,7 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
       textZoom={100} overScrollMode="never" setSupportMultipleWindows={false} mixedContentMode="never"
       onShouldStartLoadWithRequest={request => request.url === baseUrl || request.url === "about:blank" || request.url.startsWith("data:text/html")}
       startInLoadingState renderLoading={() => <ActivityIndicator color={color.lilac} style={{ position: "absolute", top: "45%", alignSelf: "center" }} />}
-      onLoadEnd={() => web.current?.injectJavaScript(`window.readerActive=${focused.current && AppState.currentState === "active"};window.readerChromeVisible=${!hidden};window.readerContinuous=${preferences.readerContinuous};true;`)}
+      onLoadEnd={() => web.current?.injectJavaScript(`window.readerActive=${focused.current && AppState.currentState === "active"};window.readerChromeVisible=${!hidden};window.readerContinuous=${preferences.readerContinuous};window.readerScrubberBottom=${scrubberBottom.current};window.readerUpdateControls?.();true;`)}
       onError={() => setError("Could not open the saved chapter. Try reopening it.")}
       onMessage={event => {
         try {
@@ -112,7 +113,7 @@ function ChapterReader({ slug, chapter, title, entry, transition, manualUnreadRe
     </SafeAreaView>}
     {navigation.status && !error ? <Pressable accessibilityLabel={navigation.busy ? "Cancel reader download" : "Show reader controls"} onPress={navigation.busy ? navigation.cancel : () => setHidden(false)} style={[ui.row, {position:"absolute",bottom:hidden?22:100,alignSelf:"center",maxWidth:"90%",paddingHorizontal:12,paddingVertical:8,gap:8,borderRadius:14,backgroundColor:color.surface}]}>{navigation.busy && <ActivityIndicator size="small" color={color.lilac}/>}<Text accessibilityLiveRegion="polite" numberOfLines={2} style={{color:color.muted,fontSize:11,flexShrink:1}}>{navigation.status}</Text>{navigation.busy && <Icon name="close" size={14} tint={color.muted}/>}</Pressable> : null}
     {error ? <Pressable onPress={() => { setError(""); web.current?.reload(); }} style={{ position: "absolute", bottom: hidden ? 20 : 100, left: 10, right: 10, padding: 14, backgroundColor: color.surface, borderRadius: 12 }}><Text style={ui.muted}>{error} Tap to retry.</Text></Pressable> : null}
-    {!hidden && <SafeAreaView edges={["bottom", "left", "right"]} style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: color.surface }}>
+    {!hidden && <SafeAreaView edges={["bottom", "left", "right"]} onLayout={event => { scrubberBottom.current = event.nativeEvent.layout.height + 8; web.current?.injectJavaScript(`window.readerScrubberBottom=${scrubberBottom.current};window.readerUpdateControls?.();true;`); }} style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: color.surface }}>
     <View style={[ui.row, { paddingHorizontal: 18, paddingVertical: 10, justifyContent: "space-between" }]}>
       <Pressable accessibilityLabel="Previous chapter" disabled={!previous || navigation.busy} onPress={() => navigation.go(previous, false, true)} style={{ padding: 12, opacity: previous ? 1 : 0.25 }}><Icon name="play-skip-back" size={20} />{previous && !chaptersSaved(previous) && <Icon name="download-outline" size={12} tint={color.lilac} />}</Pressable>
       <Pressable accessibilityRole="checkbox" accessibilityLabel="Chapter read" accessibilityState={{ checked: Boolean(read[slug]?.[chapter]) }} onPress={() => { const value = !read[slug]?.[chapter]; manualUnreadRef.current = !value; setReadStatus(slug, [chapter], value); }} style={[ui.row, { paddingVertical: 12, gap: 6 }]}><Icon name={read[slug]?.[chapter] ? "checkmark-circle" : "checkmark-circle-outline"} size={19} tint={read[slug]?.[chapter] ? "#65cba1" : color.muted} /><Text style={{ color: color.muted, fontSize: 12 }}>{read[slug]?.[chapter] ? "Read · mark unread" : "Mark as read"}</Text></Pressable>
