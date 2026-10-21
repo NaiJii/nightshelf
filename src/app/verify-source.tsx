@@ -3,20 +3,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import NetInfo from "@react-native-community/netinfo";
-import { useShelf } from "../lib/app-state";
+import { sourceOf } from "../lib/parser";
+import { PROVIDERS, providerInfo, sourceIdForUrl } from "../lib/provider-info";
+import { useDownloads, useShelf } from "../lib/app-state";
 import { networkGuard } from "../lib/network";
 import { isVerificationHost, sourceVerificationUrl } from "../lib/source-session";
-import { verificationNavigationAllowed, verificationNetworkKey, VERIFICATION_OBSERVER } from "../lib/verification-policy";
+import { verificationNavigationAllowed, verificationNetworkKey, verificationObserver } from "../lib/verification-policy";
 import { verifySourceSession } from "../lib/scraper";
 import { color, Icon, ui } from "../components/ui";
 
 export default function VerifySource() {
-  const { sourceSessionChanged } = useShelf();
-  const [url] = useState(() => sourceVerificationUrl());
+  const { sourceSessionChanged, resumeDownload } = useShelf();
+  const { retryDownload, source } = useLocalSearchParams<{ retryDownload?: string; source?: string }>();
+  const jobs = useDownloads(true);
+  const retryJob = jobs.find(job => job.series.slug === retryDownload && job.status === "error" && Boolean(providerInfo(sourceOf(job.series)).verification));
+  const [url] = useState(() => PROVIDERS.find(info => info.id === source)?.verification?.url || sourceVerificationUrl());
   const [webSource] = useState(() => ({ uri: url }));
-  const label = "MangaKakalot";
+  const info = providerInfo(sourceIdForUrl(url));
+  const label = info.name;
+  const observer = verificationObserver(info.verification?.readySelector || "");
   const [guard] = useState(() => networkGuard(`Open ${label} to verify this phone?`));
   const [allowed, setAllowed] = useState(false);
   const [ready, setReady] = useState(false);
@@ -53,10 +60,10 @@ export default function VerifySource() {
     setChecking(true); setError("");
     try {
       await verifySourceSession(url, guard, controller.signal);
-      if (!controller.signal.aborted) { sourceSessionChanged(); router.back(); }
+      if (!controller.signal.aborted) { sourceSessionChanged(); if (retryJob) resumeDownload(retryJob.series.slug); router.back(); }
     } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Verification failed. Reload and retry."); }
     finally { if (probeRef.current === controller) probeRef.current = null; if (!controller.signal.aborted) setChecking(false); }
-  }, [checking, ready, guard, sourceSessionChanged, url]);
+  }, [checking, ready, guard, sourceSessionChanged, url, resumeDownload, retryJob]);
   useEffect(() => {
     if (ready && !attempted.current) { attempted.current = true; void finish(); }
   }, [ready, finish]);
@@ -69,9 +76,9 @@ export default function VerifySource() {
     <Text style={[ui.muted, { paddingHorizontal: 20, paddingBottom: 10 }]}>Complete the website’s check below. NightShelf will test access and return automatically once the source opens.</Text>
     {loading && allowed && !stalled && <View style={[ui.row, { paddingHorizontal: 20, paddingBottom: 10 }]}><ActivityIndicator size="small" color={color.lilac} /><Text style={ui.muted}>Loading verification page…</Text></View>}
     {error ? <Text accessibilityLiveRegion="polite" style={[ui.muted, { paddingHorizontal: 20, paddingBottom: 10 }]}>{error}</Text> : null}
-    {allowed ? <WebView ref={webRef} source={webSource} originWhitelist={["https://*", "about:blank", "about:srcdoc"]} style={{ flex: 1 }} sharedCookiesEnabled thirdPartyCookiesEnabled javaScriptEnabled domStorageEnabled setSupportMultipleWindows={false} mixedContentMode="never" onShouldStartLoadWithRequest={request => verificationNavigationAllowed(request.url)} injectedJavaScript={VERIFICATION_OBSERVER}
+    {allowed ? <WebView ref={webRef} source={webSource} originWhitelist={["https://*", "about:blank", "about:srcdoc"]} style={{ flex: 1 }} sharedCookiesEnabled thirdPartyCookiesEnabled javaScriptEnabled domStorageEnabled setSupportMultipleWindows={false} mixedContentMode="never" onShouldStartLoadWithRequest={request => verificationNavigationAllowed(request.url)} injectedJavaScript={observer}
       onLoadStart={() => { probeRef.current?.abort(); probeRef.current = null; attempted.current = false; setChecking(false); setLoading(true); setReady(false); }}
-      onLoadEnd={() => { setLoading(false); webRef.current?.injectJavaScript(VERIFICATION_OBSERVER); }}
+      onLoadEnd={() => { setLoading(false); webRef.current?.injectJavaScript(observer); }}
       onMessage={event => {
         try { const data = JSON.parse(event.nativeEvent.data); if (data.type === "source-ready" && isVerificationHost(data.url)) { setReady(true); setLoading(false); setStalled(false); if (!attempted.current) setError(""); } } catch { /* unrelated source scripts */ }
       }}

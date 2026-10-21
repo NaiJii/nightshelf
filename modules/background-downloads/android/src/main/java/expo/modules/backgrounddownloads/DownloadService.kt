@@ -4,16 +4,9 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.BitmapFactory
-import android.net.ConnectivityManager
-import android.net.Uri
 import android.os.*
 import org.json.JSONObject
-import org.json.JSONArray
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.LinkedBlockingQueue

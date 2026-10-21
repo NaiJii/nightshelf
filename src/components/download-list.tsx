@@ -7,6 +7,8 @@ import { color, Icon, ui } from "./ui";
 import { sourceLabel, sourceOf } from "../lib/parser";
 import { router } from "expo-router";
 import { queueSummary } from "../lib/background-downloads";
+import { providerInfo } from "../lib/provider-info";
+import { needsVerification } from "../lib/provider-errors";
 
 export function DownloadList({ slug: scope, onOpenStory }: { slug?: string; onOpenStory?: () => void } = {}) {
   const showSheet = useActionSheet();
@@ -33,7 +35,7 @@ export function DownloadList({ slug: scope, onOpenStory }: { slug?: string; onOp
     return <View key={slug} style={{ paddingVertical: 14, borderBottomWidth: 1, borderColor: color.line }}>
       <View style={[ui.row, { gap: 8 }]}>{busy ? <ActivityIndicator size="small" color={color.lilac} /> : <Icon name={job.status === "error" ? "alert-circle-outline" : job.status === "paused" ? "pause-circle-outline" : "time-outline"} size={18} tint={color.lilac} />}<Pressable onPress={() => { onOpenStory?.(); openSeries(job.series); }} style={{ flex: 1 }}><Text numberOfLines={1} style={[ui.text, { fontWeight: "700" }]}>{job.series.title}</Text></Pressable></View>
       <Text accessibilityLiveRegion="polite" style={{ color: job.status === "error" ? "#f08080" : color.lilac, fontSize: 11, marginTop: 5 }}>{status} · {sourceLabel(job.series)}</Text><Text style={[ui.muted, { fontSize: 11, marginTop: 6 }]}>{job.message} · {Math.floor(job.progress * 100)}%</Text>
-      {job.status === "error" && sourceOf(job.series) === "mangakakalot" && /verification/i.test(job.message) && <Pressable onPress={() => { onOpenStory?.(); router.push({ pathname: "/verify-source", params: { source: sourceOf(job.series) } }); }} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify source</Text></Pressable>}
+      {job.status === "error" && providerInfo(sourceOf(job.series)).verification && needsVerification(job.message) && <Pressable onPress={() => { onOpenStory?.(); router.push({ pathname: "/verify-source", params: { retryDownload: slug } }); }} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify and retry</Text></Pressable>}
       <View accessibilityRole="progressbar" accessibilityLabel={`${job.series.title} download`} accessibilityValue={{ min: 0, max: 100, now: Math.floor(job.progress * 100) }} style={{ height: 3, backgroundColor: color.raised, borderRadius: 3, marginTop: 9 }}><View style={{ width: `${job.progress * 100}%`, height: 3, backgroundColor: color.lilac, borderRadius: 3 }} /></View>
       <View style={[ui.row, { justifyContent: "flex-end", gap: 8 }]}>{job.status !== "cancelling" && <>
         {queued.some(value => value.series.slug === slug) && queued.length > 1 && <>

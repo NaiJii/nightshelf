@@ -2,24 +2,25 @@ import { Pressable } from "../../components/pressable";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { useSourceRetry } from "../../components/use-source-retry";
 import { useShelf } from "../../lib/app-state";
-import { filterDiscovery, SortOrder, sortExplore } from "../../lib/parser";
+import { filterDiscovery, sortExplore } from "../../lib/parser";
 import { exploreQuery, rememberExploreQuery, exploreSession, rememberExplore } from "../../lib/explore-session";
 import { FIRST_PAGE } from "../../lib/scraper";
+import { effectiveProviderSort, providerInfo, providerSorts } from "../../lib/provider-info";
+import { needsVerification } from "../../lib/provider-errors";
 import type { BrowseOptions } from "../../lib/scraper";
 import { Chip, color, Icon, PageHeading, ui } from "../../components/ui";
 import { SeriesCard } from "../../components/series-card";
 import { DiscoveryControls, PopularPeriods } from "../../components/discovery-controls";
 
-const SORTS: [SortOrder, string][] = [["smart", "For you"], ["trending", "Popular"], ["rating", "Top rated"], ["updated", "Latest updates"], ["chapters", "Long reads"], ["title", "A–Z"]];
 export default function Explore() {
   const { preferences } = useShelf();
   const provider = `${preferences.source}:${preferences.webtoonLanguage}:${preferences.webtoonCollection}`;
   return <ExploreResults key={provider} provider={provider} />;
 }
 export function ExploreResults({ provider }: { provider: string }) {
-  const { catalog, preferences, saved, browse, updatePreferences, rememberSearch, sourceSessionRevision } = useShelf();
+  const { catalog, preferences, saved, browse, updatePreferences, rememberSearch } = useShelf();
   const [query, setQuery] = useState(() => exploreQuery(provider));
   const [debounced, setDebounced] = useState(() => exploreQuery(provider).trim());
   const [reload, setReload] = useState(0);
@@ -40,11 +41,11 @@ export function ExploreResults({ provider }: { provider: string }) {
   const failed = useRef(false);
   const viewport = useRef({ height: 0, content: 0, offset: 0 });
   useEffect(() => { const timer = setTimeout(() => setDebounced(query.trim()), 450); return () => clearTimeout(timer); }, [query]);
-  const webtoon = preferences.source === "webtoon";
-  const readerSite = preferences.source === "vortex" || preferences.source === "mangakakalot";
-  const alternate = webtoon || readerSite;
-  const effectiveSort = readerSite && !["updated", "title"].includes(preferences.sort) ? "smart" : webtoon && (preferences.sort !== "title" && (preferences.sort !== "trending" || preferences.webtoonCollection === "canvas")) ? "smart" : preferences.sort;
-  const options: BrowseOptions = useMemo(() => ({ source: preferences.source, language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: preferences.contentMode, sort: effectiveSort, period: preferences.period, query: debounced.length >= 2 ? debounced : "", refresh: reload > 0 || sourceSessionRevision > 0 }), [preferences.source, preferences.webtoonLanguage, preferences.webtoonCollection, preferences.contentMode, effectiveSort, preferences.period, debounced, reload, sourceSessionRevision]);
+  const info = providerInfo(preferences.source);
+  const webtoon = Boolean(info.languages?.length);
+  const alternate = info.rankOrder === "source";
+  const effectiveSort = useMemo(() => effectiveProviderSort(providerInfo(preferences.source), preferences.sort, preferences.webtoonCollection), [preferences.source, preferences.sort, preferences.webtoonCollection]);
+  const options: BrowseOptions = useMemo(() => ({ source: preferences.source, language: preferences.webtoonLanguage, collection: preferences.webtoonCollection, mode: preferences.contentMode, sort: effectiveSort, period: preferences.period, query: debounced.length >= 2 ? debounced : "", refresh: reload > 0 }), [preferences.source, preferences.webtoonLanguage, preferences.webtoonCollection, preferences.contentMode, effectiveSort, preferences.period, debounced, reload]);
   const sessionKey = JSON.stringify([provider, preferences.contentMode, effectiveSort, preferences.period, debounced]);
   const shortQuery = debounced.length === 1;
   const catalogIds = useMemo(() => new Set(catalog.map(item => item.slug)), [catalog]);
@@ -72,6 +73,7 @@ export function ExploreResults({ provider }: { provider: string }) {
       }
     } finally { if (version === generation.current) { busy.current = false; setLoading(false); setRefreshing(false); } }
   }, [browse, options, saveSession, rememberSearch, provider]);
+  const verify = useSourceRetry(() => { void loadMore(true); });
   const prefetch = useCallback(() => {
     const { height, content, offset } = viewport.current;
     if (!failed.current && !loadedIds.current.some(id => !catalogIds.has(id)) && height > 0 && content > 0 && content - offset - height <= height) void loadMore();
@@ -79,7 +81,7 @@ export function ExploreResults({ provider }: { provider: string }) {
   useEffect(() => {
     const version = ++generation.current; controller.current?.abort(); busy.current = true;
     const cached = exploreSession(sessionKey);
-    const refresh = reload > 0 || sourceSessionRevision > 0;
+    const refresh = reload > 0;
     cursor.current = cached && !refresh ? { ...cached.cursor } : { ...FIRST_PAGE };
     loadedIds.current = cached?.ids || []; more.current = refresh || (cached?.hasMore ?? true); failed.current = false;
     refreshingFirst.current = refresh && Boolean(cached);
@@ -94,7 +96,7 @@ export function ExploreResults({ provider }: { provider: string }) {
       else if (!cached || refresh) void loadMore(refresh);
     }, 0);
     return () => { clearTimeout(timer); saveSession(); generation.current = version + 1; controller.current?.abort(); };
-  }, [loadMore, reload, sourceSessionRevision, sessionKey, saveSession, shortQuery]);
+  }, [loadMore, reload, sessionKey, saveSession, shortQuery]);
   // A filtered page may add no rows, so FlatList won't emit another end-reached event.
   useEffect(() => { if (!loading && ids !== null) prefetch(); }, [loading, ids, prefetch]);
   const allowed = ids === null ? null : new Set(ids);
@@ -126,16 +128,16 @@ export function ExploreResults({ provider }: { provider: string }) {
       <View style={[ui.row, { marginHorizontal: 22, paddingHorizontal: 15, backgroundColor: color.surface, borderRadius: 13, marginBottom: 12 }]}><Icon name="search-outline" tint={color.muted} /><TextInput accessibilityLabel="Search selected source" placeholder={alternate ? "Search this source" : "Search comics and novels"} returnKeyType="search" onSubmitEditing={() => { setDebounced(query.trim()); setReload(value => value + 1); }} placeholderTextColor={color.muted} value={query} onChangeText={value => { setQuery(value); rememberExploreQuery(provider, value); }} style={{ flex: 1, height: 50, color: color.text }} />{query ? <Pressable accessibilityLabel="Clear search" onPress={() => { setQuery(""); setDebounced(""); rememberExploreQuery(provider, ""); }} style={{padding:12}}><Icon name="close" size={18} tint={color.muted}/></Pressable> : null}{(loading || query.trim() !== debounced) && <ActivityIndicator accessibilityLabel="Loading titles" size="small" color={color.lilac} />}</View>
       {!query && Boolean(preferences.searchHistory?.[provider]?.length) && <View style={{paddingHorizontal:22,marginBottom:12}}><View style={[ui.row,{justifyContent:"space-between"}]}><Text style={ui.muted}>Recent searches</Text><Pressable accessibilityLabel="Clear recent searches for this provider" onPress={()=>rememberSearch(provider,null)} style={{padding:10}}><Icon name="trash-outline" size={16} tint={color.muted}/></Pressable></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:7}}>{preferences.searchHistory![provider].map(term=><Chip key={term} text={term} active={false} onPress={()=>{setQuery(term);setDebounced(term);rememberExploreQuery(provider,term);}}/>)}</ScrollView></View>}
       {shortQuery && <Text style={[ui.muted, {marginHorizontal:22, marginBottom:8}]}>Type at least 2 characters to search this source.</Text>}
-      <DiscoveryControls /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ui.chips}>{(readerSite ? ([["smart", "Popular"], ["updated", "Latest updates"], ["title", "A–Z"]] as [SortOrder, string][]) : webtoon ? ([["smart", "Popular"], ...(preferences.webtoonCollection === "canvas" ? [] : [["trending", "Trending"]]), ["title", "A–Z"]] as [SortOrder, string][]) : SORTS).map(([value, label]) => <Chip key={value} text={label} active={effectiveSort === value} onPress={() => updatePreferences({ sort: value })} />)}</ScrollView>
+      <DiscoveryControls /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ui.chips}>{providerSorts(info, preferences.webtoonCollection).map(([value, label]) => <Chip key={value} text={label} active={effectiveSort === value} onPress={() => updatePreferences({ sort: value })} />)}</ScrollView>
       {!alternate && preferences.sort === "trending" && <View style={{ marginHorizontal: 22, marginBottom: 18 }}><PopularPeriods /></View>}
-      {webtoon && <Text style={[ui.muted, { fontSize: 11, marginHorizontal: 22, marginBottom: 14 }]}>Search {preferences.webtoonCollection === "canvas" ? "Canvas" : "Originals"} in the selected language. Rankings use WEBTOON’s current lists; A–Z sorts loaded titles.</Text>}
-      {!alternate && (preferences.sort === "smart" || preferences.sort === "chapters") && <Text style={[ui.muted, { fontSize: 11, marginHorizontal: 22, marginBottom: 14 }]}>Sorting applies to loaded titles. Scroll to discover more.</Text>}
+      {webtoon && <Text style={[ui.muted, { fontSize: 11, marginHorizontal: 22, marginBottom: 14 }]}>Search {preferences.webtoonCollection === "canvas" ? "Canvas" : "Originals"} in the selected language. Rankings use {info.name}’s current lists; A–Z sorts loaded titles.</Text>}
+      {!alternate && info.localSorts.includes(preferences.sort) && <Text style={[ui.muted, { fontSize: 11, marginHorizontal: 22, marginBottom: 14 }]}>Sorting applies to loaded titles. Scroll to discover more.</Text>}
     </>}
     ListEmptyComponent={loading || waitingForCatalog ? <View accessibilityLabel="Loading story previews" style={{ padding: 22, gap: 18 }}>{[0, 1, 2].map(index => <View key={index} style={{ height: 160, backgroundColor: color.surface, borderRadius: 16 }} />)}</View> : !hasMore ? <Text style={[ui.empty, { paddingHorizontal: 22 }]}>Nothing matches these filters. Try adjusting them.</Text> : null}
     ListFooterComponent={<View style={{ paddingHorizontal: 22, paddingVertical: 20, alignItems: "center", gap: 10 }}>
       {loading ? <View accessibilityLiveRegion="polite" style={ui.row}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>{ids === null ? "Finding stories…" : "Loading more stories…"}</Text></View> : <>
         {error ? <Text style={[ui.muted, { textAlign: "center" }]}>{error}</Text> : null}
-        {preferences.source === "mangakakalot" && /verification/i.test(error) && <Pressable onPress={() => router.push("/verify-source")} style={[ui.primary, { minWidth: 160 }]}><Text style={ui.primaryText}>Verify source</Text></Pressable>}
+        {info.verification && needsVerification(error) && <Pressable onPress={verify} style={[ui.primary, { minWidth: 160 }]}><Text style={ui.primaryText}>Verify and retry</Text></Pressable>}
         {error && hasMore ? <Pressable accessibilityLabel="Retry loading titles" onPress={() => void loadMore(true)} style={[ui.chip, { minWidth: 160, alignItems: "center" }]}><Text style={{ color: color.lilac }}>Retry</Text></Pressable> : !hasMore ? <Text style={ui.muted}>{preferences.sort === "trending" && !debounced ? "End of this ranking" : "You’ve reached the end"}</Text> : null}
       </>}
     </View>}

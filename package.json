@@ -1,6 +1,6 @@
 {
   "name": "nightshelf",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
@@ -31,7 +31,7 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "test": "node --no-warnings scripts/self-test.mjs",
+    "test": "node --no-warnings --import ./scripts/register-source.mjs scripts/self-test.mjs",
     "typecheck": "tsc --noEmit",
     "doctor": "expo-doctor",
     "lint": "expo lint"

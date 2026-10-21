@@ -1,7 +1,8 @@
 import { chapterSort, decodeHtml, plainText } from "./parser";
 import type { Series } from "./parser";
+import { providerInfo } from "./provider-info";
 
-export const WEBTOON_LANGUAGES = [["en", "English"], ["fr", "Français"], ["es", "Español"], ["de", "Deutsch"], ["id", "Indonesia"], ["th", "ภาษาไทย"], ["zh-hant", "中文 (繁體)"]] as const;
+export const WEBTOON_LANGUAGES = providerInfo("webtoon").languages!;
 export function webtoonLanguage(value = "en"): string { return WEBTOON_LANGUAGES.some(([id]) => id === value) ? value : "en"; }
 function attr(tag: string, name: string): string { return decodeHtml(tag.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']*)["']`, "i"))?.[1] || ""); }
 function meta(html: string, name: string): string { return attr([...html.matchAll(/<meta\b[^>]*>/gi)].find(([tag]) => attr(tag, "property") === name || attr(tag, "name") === name)?.[0] || "", "content"); }

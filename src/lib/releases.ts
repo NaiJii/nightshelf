@@ -84,7 +84,7 @@ TaskManager.defineTask(TASK, async () => {
         await guard();
         mergeCatalog([fresh]);
         await notifyReleases([fresh]);
-        if (backgroundTransfers && savedStories()[fresh.slug]?.autoDownload && !loadDownloads().some(job => job.series.slug === fresh.slug) && !["running", "preparing", "queued"].includes(transferStates(fresh.slug)[fresh.slug]?.state) && libraryBytes() < loadPreferences().autoDownloadLimitMB * 1024 ** 2 && freeBytes() >= 64 * 1024 ** 2) {
+        if (backgroundTransfers && savedStories()[fresh.slug]?.autoDownload && !loadDownloads().some(job => job.series.slug === fresh.slug) && !["running", "preparing", "queued"].includes(transferStates(fresh.slug)[fresh.slug]?.state) && libraryBytes(true) < loadPreferences().autoDownloadLimitMB * 1024 ** 2 && freeBytes() >= 64 * 1024 ** 2) {
           const ids = automaticReleaseIds(savedStories()[fresh.slug], fresh, releaseUpdates()[fresh.slug], readChapters()[fresh.slug]).slice(0, 20);
           if (ids.length) await downloadChapters(fresh, ids.join(","), () => {}, guard, undefined, ids, undefined, undefined, true, true);
         }

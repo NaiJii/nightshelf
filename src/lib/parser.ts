@@ -1,5 +1,7 @@
-export type SourceId = "asura" | "webtoon" | "vortex" | "mangakakalot";
-export const SOURCES: { id: SourceId; name: string }[] = [{ id: "asura", name: "Asura" }, { id: "webtoon", name: "WEBTOON" }, { id: "vortex", name: "Vortex" }, { id: "mangakakalot", name: "MangaKakalot" }];
+import { PROVIDERS, providerInfo, sourceIdForUrl } from "./provider-info";
+import type { SourceId } from "./provider-info";
+export type { SourceId } from "./provider-info";
+export const SOURCES = PROVIDERS;
 export type Series = {
   source?: SourceId;
   vortexId?: string;
@@ -10,6 +12,7 @@ export type Series = {
   url: string;
   slug: string;
   title: string;
+  alternativeTitles?: string[];
   summary: string;
   detailsCached?: boolean;
   chapterListComplete?: boolean;
@@ -38,9 +41,18 @@ export type Series = {
 export type Chapter = { id: string; url: string; locked?: boolean };
 export type Period = "week" | "month" | "all";
 export type ContentMode = "all" | "comics" | "novels";
-export type DiscoveryFilters = { source?: SourceId; webtoonLanguage?: string; webtoonCollection?: "originals" | "canvas"; genreFilters?: Partial<Record<SourceId, string[]>>; contentMode: ContentMode; hideDownloaded: boolean; hideLiked: boolean; hideBookmarked: boolean };
+export type DiscoveryFilters = { source?: SourceId; webtoonLanguage?: string; webtoonCollection?: string; genreFilters?: Partial<Record<SourceId, string[]>>; contentMode: ContentMode; hideDownloaded: boolean; hideLiked: boolean; hideBookmarked: boolean };
 export type ReadingList = "reading" | "planned" | "finished" | "hold";
 export type SavedStory = { liked?: boolean; bookmarked?: boolean; list?: ReadingList; autoDownload?: boolean; autoDownloadBaseline?: string[]; notifyReleases?: boolean };
+export function parseAlternativeTitles(value: unknown): string[] | undefined {
+  const entries = Array.isArray(value) ? value : typeof value === "string" ? value.split(/\s*[•;|\n]\s*|\s+\/\s+/) : [];
+  const unique = new Map<string, string>();
+  for (const entry of entries) if (typeof entry === "string") {
+    const title = plainText(entry).trim();
+    if (title && !/^(?:N\/A|none|unknown|-)$/i.test(title)) unique.set(title.toLocaleLowerCase(), title);
+  }
+  return unique.size ? [...unique.values()] : undefined;
+}
 export function formatRating(value: string): string {
   const parts = value.trim().match(/^(\d+(?:\.\d+)?)(?:\s*\/\s*(\d+(?:\.\d+)?))?$/);
   if (!parts || !Number.isFinite(Number(parts[1])) || (parts[2] && (!Number.isFinite(Number(parts[2])) || Number(parts[2]) <= 0))) return "";
@@ -63,19 +75,21 @@ export function mergeDiscovery(fresh: Series, previous?: Series): Series {
   for (const key of ["summary", "rating", "cover", "status", "bookmarks", "latestChapter"] as const) if (!fresh[key]) item[key] = previous?.[key] || "";
   if (!fresh.chapterCount) item.chapterCount = previous?.chapterCount || 0;
   if (!fresh.genres?.length) item.genres = previous?.genres;
+  if (!fresh.alternativeTitles?.length) item.alternativeTitles = previous?.alternativeTitles;
   return item;
 }
 
 export function chapterListCached(item: Series): boolean {
   if (!item.detailsCached || !Array.isArray(item.chapterIds) || (!item.chapterIds.length && !item.lockedChapterIds?.length && (item.chapterCount > 0 || !item.metadataSyncedAt))) return false;
-  if (sourceOf(item) === "asura") return kindOf(item) === "novel" || new Set([...item.chapterIds,...(item.lockedChapterIds || [])]).size >= item.chapterCount;
-  if (["vortex", "mangakakalot"].includes(sourceOf(item)) && item.chapterListComplete !== true) return false;
+  if (providerInfo(sourceOf(item)).chapterCache === "inline") return kindOf(item) === "novel" || new Set([...item.chapterIds,...(item.lockedChapterIds || [])]).size >= item.chapterCount;
+  if (providerInfo(sourceOf(item)).chapterCache === "explicit" && item.chapterListComplete !== true) return false;
   return item.chapterIds.every(id => Boolean(item.chapterUrls?.[id]));
 }
 export function chapterList(source: string[] = [], saved: string[] = [], read: Record<string, string> = {}, filter = "all", query = "", newest = true, titles: Record<string, string> = {}): string[] {
   const owned = new Set(saved);
+  const titleTerm = query.trim().toLowerCase();
   const term = query.trim().replace(/^chapter\s*/i, "").toLowerCase();
-  return [...new Set([...source, ...saved])].filter(id => (id.toLowerCase().includes(term) || (titles[id] || "").toLowerCase().includes(query.trim().toLowerCase()))
+  return [...new Set([...source, ...saved])].filter(id => (id.toLowerCase().includes(term) || (titles[id] || "").toLowerCase().includes(titleTerm))
     && (filter !== "saved" || owned.has(id)) && (filter !== "unread" || !read[id]))
     .sort((a, b) => newest ? chapterSort(b, a) : chapterSort(a, b));
 }
@@ -95,20 +109,26 @@ export function resumeTarget(item: Series, position: { chapter: string } | undef
 }
 export function kindOf(item: Series): "comic" | "novel" { return item.kind || (new URL(item.url).pathname.startsWith("/novels/") ? "novel" : "comic"); }
 export function sourceOf(item: Series): SourceId {
-  const host = new URL(item.url).hostname;
-  return host === "www.webtoons.com" ? "webtoon" : host === "vortexscans.org" || host === "www.vortexscans.org" ? "vortex" : host === "www.mangakakalot.gg" || host === "mangakakalot.gg" ? "mangakakalot" : "asura";
+  const source = sourceIdForUrl(item.url);
+  if (!source) throw new Error("Unsupported story source.");
+  return source;
 }
-export function sourceLabel(item: Series): string { const source = sourceOf(item); return source === "webtoon" ? `WEBTOON · ${(item.language || "en").toUpperCase()}` : SOURCES.find(value => value.id === source)!.name; }
+export function sourceLabel(item: Series): string {
+  const info = providerInfo(sourceOf(item));
+  return info.languages ? `${info.name} · ${(item.language || info.languages[0]?.[0] || "en").toUpperCase()}` : info.name;
+}
 export function filterDiscovery(items: Series[], filters: DiscoveryFilters, saved: Record<string, SavedStory>): Series[] {
+  const info = filters.source ? providerInfo(filters.source) : undefined;
   return items.filter(item => (!filters.source || sourceOf(item) === filters.source)
-    && (filters.source !== "webtoon" || item.language === (filters.webtoonLanguage || "en"))
-    && (filters.source !== "webtoon" || !filters.webtoonCollection || item.url.includes("/canvas/") === (filters.webtoonCollection === "canvas"))
-    && (filters.source && filters.source !== "asura" || filters.contentMode === "all" || kindOf(item) === (filters.contentMode === "novels" ? "novel" : "comic"))
+    && (!info?.languages || item.language === (filters.webtoonLanguage || info.languages[0]?.[0]))
+    && (!info?.collectionFromUrl || !filters.webtoonCollection || info.collectionFromUrl(item.url) === filters.webtoonCollection)
+    && (info && info.formats.length === 1 || filters.contentMode === "all" || kindOf(item) === (filters.contentMode === "novels" ? "novel" : "comic"))
     && (!filters.hideDownloaded || (!item.localChapters?.length && !item.hasLocalFiles))
     && (!filters.hideLiked || !saved[item.slug]?.liked)
     && (filters.genreFilters?.[sourceOf(item)] || []).every(tag => item.genres?.some(genre => genre.toLowerCase() === tag.toLowerCase()))
     && (!filters.hideBookmarked || !saved[item.slug]?.bookmarked));
 }
+
 export function publicationState(item: Series, now = Date.now()): { label: string; color: string } {
   const status = item.status.toLowerCase();
   if (/drop|cancel/.test(status)) return { label: "Dropped", color: "#f08080" };
@@ -183,8 +203,7 @@ export function parseChapters(source: string, baseUrl: string): Chapter[] {
   return [...chapters.values()].sort((a,b)=>chapterSort(a.id,b.id));
 }
 
-export function parseSeries(source: string, url: string): Series {
-  const chapters = parseChapters(source, url);
+export function parseSeries(source: string, url: string, chapters = parseChapters(source, url)): Series {
   const slug = new URL(url).pathname.split("/").filter(Boolean).at(-1) ?? "series";
   const text = plainText(source);
   const dates = [...decodeHtml(source).matchAll(/"published_at"\s*:\s*(?:\[0,)?"([^"]+)"/g)].map(match => match[1]).filter(value => Number.isFinite(Date.parse(value)) && Date.parse(value) <= Date.now()).sort((a, b) => Date.parse(b) - Date.parse(a));
@@ -192,6 +211,7 @@ export function parseSeries(source: string, url: string): Series {
     url,
     slug,
     title: (meta(source, "og:title") || source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || slug).split(" | ")[0].trim(),
+    alternativeTitles: parseAlternativeTitles(source.match(/<[^>]+\bid=["']alt-titles["'][^>]*>([\s\S]*?)<\//i)?.[1]),
     summary: plainText(source.match(/<div\b[^>]*\bid=["']description-text["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || meta(source, "og:description") || meta(source, "description")),
     cover: meta(source, "og:image"),
     rating: beforeLabel(text, "Rating"),
@@ -269,7 +289,7 @@ export function parseApiSeries(raw: unknown, kind: "comic" | "novel"): Series | 
   const recent = Array.isArray(data.recent_chapters) ? data.recent_chapters : [];
   const latest = data.latest_chapter_number ?? (recent.reduce((max, item) => Math.max(max, Number(item.number) || 0), 0) || data.chapter_count);
   return {
-    url: url.toString(), slug, kind, title: data.title, summary: plainText(String(data.description || "")),
+    url: url.toString(), slug, kind, title: data.title, alternativeTitles: parseAlternativeTitles(data.alternative_titles ?? data.alternativeTitles), summary: plainText(String(data.description || "")),
     cover: String(data.cover_url || data.cover || ""), rating: String(data.rating || ""), bookmarks: String(data.bookmarks || ""),
     status: String(data.status || "unknown"), type: kind === "novel" ? "Novel" : String(data.type || "Comic"),
     chapterCount: Number(data.chapter_count) || 0, latestChapter: String(latest || ""),

@@ -154,3 +154,73 @@ const nativePriority=new DownloadQueue([{series:series('native-a'),status:'queue
 nativePriority.move('native-b',-1);
 assert.deepEqual(nativePriority.jobs.map(job=>job.series.slug),['native-b','native-a'],'Android-waiting jobs can be reordered after handoff');
 console.log('Download priority checks passed');
+
+// Read now borrows the queue until both JS and native writers are closed.
+const urgentStarts=[], urgentStops=[]; let finishStop;
+const urgent=new DownloadQueue([],async(job,signal)=>{
+  urgentStarts.push(job.series.slug);
+  await new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+},()=>{},()=>{});
+for(const id of ['bulk-a','bulk-b','bulk-c'])urgent.enqueue(series(id),'1');
+await tick(); assert.deepEqual(urgentStarts,['bulk-a','bulk-b']);
+let priorityReady=false;
+const borrow=urgent.holdForReader(async id=>{urgentStops.push(id);if(id==='bulk-a')await new Promise(resolve=>{finishStop=resolve;});}).then(release=>{priorityReady=true;return release;});
+await tick();
+assert.equal(priorityReady,false,'the reader cannot write while a previous writer is still closing');
+urgent.enqueue(series('bulk-d'),'1');await tick();
+assert.equal(urgentStarts.length,2,'newly queued work waits behind Read now');
+const heldSnapshot=urgent.getStatusSnapshot();
+urgent.pause('bulk-a');assert.notEqual(urgent.getStatusSnapshot(),heldSnapshot,'explicitly pausing a held job immediately updates its action controls');
+await urgent.cancel('bulk-b');
+finishStop();const returnQueue=await borrow;
+assert.equal(priorityReady,true);assert.equal(urgentStops.length,2);
+returnQueue();returnQueue();await tick();
+assert.equal(urgent.jobs.find(job=>job.series.slug==='bulk-a').status,'paused','an explicit pause during Read now is preserved');
+assert.ok(!urgent.jobs.some(job=>job.series.slug==='bulk-b'),'a cancelled bulk download is not resurrected');
+assert.deepEqual(urgentStarts.slice(2),['bulk-c','bulk-d'],'remaining downloads resume in their original order');
+urgent.pause('bulk-c');urgent.pause('bulk-d');await tick();
+
+const nativeStarts=[];
+const borrowNative=new DownloadQueue([{...nativeJob,status:'downloading'}],async job=>{nativeStarts.push(job.series.slug);return 'native';},()=>{},()=>{});
+const lease1=await borrowNative.holdForReader(async()=>{});
+const lease2=await borrowNative.holdForReader(async()=>{});
+borrowNative.reconcileNative({reopened:{state:'paused',active:false,hasPlan:true,message:'Paused',progress:.3}});
+assert.equal(borrowNative.jobs[0].readerHeld,true,'native reconciliation cannot erase the temporary hold');
+lease1();await tick();assert.equal(nativeStarts.length,0,'overlapping reader requests keep the queue held until both finish');
+lease2();await tick();assert.deepEqual(nativeStarts,['reopened'],'native plans resume once the final reader releases them');
+assert.equal(borrowNative.jobs[0].readerHeld,false);
+const failedBorrow=new DownloadQueue([{...nativeJob,status:'queued'}],async()=> 'native',()=>{},()=>{});
+await assert.rejects(()=>failedBorrow.holdForReader(async()=>{throw Error('Cannot stop native writer');}),/Cannot stop/);
+assert.equal(failedBorrow.jobs[0].readerHeld,false,'a failed pause releases its hold instead of permanently blocking the queue');
+console.log('Read-now writer draining, queue suspension, restoration, nested leases and explicit user intent checks passed');
+
+const nestedStarts=[];
+const lateQueue=new DownloadQueue([],async job=>{nestedStarts.push(job.series.slug);return 'native';},()=>{},()=>{});
+const releaseFirst=await lateQueue.holdForReader(async()=>{});
+lateQueue.enqueue(series('late-target'),'1');
+const releaseSecond=await lateQueue.holdForReader(async()=>{});
+releaseFirst(); await tick();
+assert.equal(lateQueue.jobs[0].status,'paused');
+assert.equal(lateQueue.jobs[0].readerHeld,true,'late queued chapters cannot be mistaken for an active bulk writer by Read now');
+lateQueue.resume('late-target');
+assert.equal(lateQueue.jobs[0].readerHeld,true,'an explicit resume still waits for the active reader');
+assert.equal(nestedStarts.length,0);
+releaseSecond();await tick();
+assert.deepEqual(nestedStarts,['late-target']);
+console.log('Late enqueue and explicit resume during nested reader holds passed');
+
+let failPublication=true; const afterFailureStarts=[];
+const diskFailure=new DownloadQueue([],async job=>{afterFailureStarts.push(job.series.slug);return 'native';},()=>{if(failPublication){failPublication=false;throw Error('Disk full');}},()=>{});
+await assert.rejects(()=>diskFailure.holdForReader(async()=>{}),/Disk full/);
+diskFailure.enqueue(series('after-failure'),'1');await tick();
+assert.deepEqual(afterFailureStarts,['after-failure'],'a failed reader-hold publication cannot leave the queue permanently borrowed');
+
+let lateDisk=[], closeLateWriter; const lateNativeStarts=[];
+const lateNative=new DownloadQueue([],async job=>{lateNativeStarts.push(job.series.slug);return 'native';},()=>{},()=>{},()=>true,()=>lateDisk);
+const returnLate=await lateNative.holdForReader(async()=>{await new Promise(resolve=>{closeLateWriter=resolve;});});
+lateDisk=[{...nativeJob,series:series('late-native'),status:'downloading'}];
+lateNative.enqueue(series('other'),'1');await tick();returnLate();await tick();
+assert.deepEqual(lateNativeStarts,[],'releasing a reader cannot restart workers while a late Android writer is still closing');
+closeLateWriter();await tick();await tick();
+assert.deepEqual(lateNativeStarts,['other','late-native']);
+console.log('Disk-failure lease recovery and late native writer draining passed');

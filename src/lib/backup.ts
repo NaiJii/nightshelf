@@ -1,7 +1,10 @@
+import { readJson, writeJson } from "./json-store";
 import { File, Paths } from "expo-file-system";
-import { DEFAULT_PREFERENCES, ROOT, loadCatalog, loadPreferences, mergeCatalog, readingHistory, readChapters, savedStories, savePreferences } from "./storage";
+import { DEFAULT_PREFERENCES, ROOT, catalogMetadata, loadCatalog, loadPreferences, mergeCatalog, readingHistory, readChapters, savedStories, savePreferences } from "./storage";
 import type { Preferences } from "./storage";
+import { parseAlternativeTitles } from "./parser";
 import type { SavedStory, Series } from "./parser";
+import { PROVIDERS, sourceIdForUrl } from "./provider-info";
 
 const part = (value: string) => /^[a-zA-Z0-9_.-]+$/.test(value) && value !== "." && value !== ".." && !["__proto__", "constructor", "prototype"].includes(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -17,8 +20,8 @@ export function validateBackup(text: string) {
   const catalog: Series[] = data.catalog.map(raw => {
     if (!object(raw) || typeof raw.slug !== "string" || !part(raw.slug) || typeof raw.url !== "string" || typeof raw.title !== "string") throw new Error("Backup contains an invalid story.");
     const url = new URL(raw.url);
-    if (url.protocol !== "https:" || url.port || url.username || url.password || !["asurascans.com", "www.webtoons.com", "vortexscans.org", "www.vortexscans.org", "www.mangakakalot.gg", "mangakakalot.gg"].includes(url.hostname)) throw new Error("Backup contains an unsupported source.");
-    return { genres: Array.isArray(raw.genres) ? raw.genres.filter((tag): tag is string => typeof tag === "string" && tag.length <= 100).slice(0, 100) : undefined, slug: raw.slug, url: raw.url, title: raw.title.slice(0, 1000), summary: typeof raw.summary === "string" ? raw.summary.slice(0, 100_000) : "", cover: typeof raw.cover === "string" && raw.cover.startsWith("https://") ? raw.cover : "", rating: typeof raw.rating === "string" ? raw.rating : "", bookmarks: "", status: typeof raw.status === "string" ? raw.status : "", type: typeof raw.type === "string" ? raw.type : "", chapterCount: typeof raw.chapterCount === "number" && Number.isFinite(raw.chapterCount) ? raw.chapterCount : 0, latestChapter: typeof raw.latestChapter === "string" ? raw.latestChapter : "", language: typeof raw.language === "string" ? raw.language : undefined, kind: raw.kind === "novel" || url.pathname.startsWith("/novels/") ? "novel" : "comic", updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined, sourceDates: Boolean(raw.sourceDates), detailsCached: false };
+    if (!sourceIdForUrl(url.href)) throw new Error("Backup contains an unsupported source.");
+    return { alternativeTitles: parseAlternativeTitles(Array.isArray(raw.alternativeTitles) ? raw.alternativeTitles.filter((title): title is string => typeof title === "string").slice(0, 50).map(title => title.slice(0, 1000)) : undefined), genres: Array.isArray(raw.genres) ? raw.genres.filter((tag): tag is string => typeof tag === "string" && tag.length <= 100).slice(0, 100) : undefined, slug: raw.slug, url: raw.url, title: raw.title.slice(0, 1000), summary: typeof raw.summary === "string" ? raw.summary.slice(0, 100_000) : "", cover: typeof raw.cover === "string" && raw.cover.startsWith("https://") ? raw.cover : "", rating: typeof raw.rating === "string" ? raw.rating : "", bookmarks: "", status: typeof raw.status === "string" ? raw.status : "", type: typeof raw.type === "string" ? raw.type : "", chapterCount: typeof raw.chapterCount === "number" && Number.isFinite(raw.chapterCount) ? raw.chapterCount : 0, latestChapter: typeof raw.latestChapter === "string" ? raw.latestChapter : "", language: typeof raw.language === "string" ? raw.language : undefined, kind: raw.kind === "novel" || url.pathname.startsWith("/novels/") ? "novel" : "comic", updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined, sourceDates: Boolean(raw.sourceDates), detailsCached: false };
   });
   const known = new Set(catalog.map(item => item.slug));
   const saved: Record<string, SavedStory> = {}, read: Record<string, Record<string, string>> = {}, history: ReturnType<typeof readingHistory> = {};
@@ -39,7 +42,7 @@ export function validateBackup(text: string) {
     for (const key of ["readerContinuous", "readerPrefetch", "readerKeepAwake", "readerVolumeScroll", "deleteAfterReading", "autoSync", "hideDownloaded", "hideLiked", "hideBookmarked"] as const) if (typeof data.preferences[key] === "boolean") preferences[key] = data.preferences[key];
     if (object(data.preferences.genreFilters)) {
       preferences.genreFilters = {};
-      for (const source of ["asura", "webtoon", "vortex", "mangakakalot"] as const) {
+      for (const { id: source } of PROVIDERS) {
         const tags = data.preferences.genreFilters[source];
         if (Array.isArray(tags)) preferences.genreFilters[source] = [...new Set(tags.filter((tag): tag is string => typeof tag === "string" && tag.length > 0 && tag.length <= 100))].slice(0, 100);
       }
@@ -47,7 +50,7 @@ export function validateBackup(text: string) {
     if (typeof data.preferences.novelFontSize === "number") preferences.novelFontSize = Math.max(14, Math.min(30, data.preferences.novelFontSize));
     if (data.preferences.novelTheme === "sepia" || data.preferences.novelTheme === "dark") preferences.novelTheme = data.preferences.novelTheme;
     if (typeof data.preferences.readerBrightness === "number" && Number.isFinite(data.preferences.readerBrightness)) preferences.readerBrightness = Math.max(-1, Math.min(1, data.preferences.readerBrightness));
-    const enums = { source: ["asura", "webtoon", "vortex", "mangakakalot"], webtoonLanguage: ["en", "fr", "es", "de", "th", "id", "zh-hant"], webtoonCollection: ["originals", "canvas"], contentMode: ["all", "comics", "novels"], sort: ["smart", "trending", "rating", "updated", "title", "chapters"], period: ["week", "month", "all"], mobileData: ["ask", "never", "allow"] };
+    const enums: Record<string, readonly string[]> = { source: PROVIDERS.map(info => info.id), webtoonLanguage: PROVIDERS.flatMap(info => info.languages?.map(([id]) => id) || []), webtoonCollection: ["originals", "canvas"], contentMode: ["all", "comics", "novels"], sort: ["smart", "trending", "rating", "updated", "title", "chapters"], period: ["week", "month", "all"], mobileData: ["ask", "never", "allow"] };
     for (const [key, allowed] of Object.entries(enums)) if (allowed.includes(String(data.preferences[key]))) Object.assign(preferences, { [key]: data.preferences[key] });
     if (data.preferences.releaseCheckInterval === 60 || data.preferences.releaseCheckInterval === 120) preferences.releaseCheckInterval = data.preferences.releaseCheckInterval;
     if (data.preferences.interval === 5 || data.preferences.interval === 10) preferences.interval = data.preferences.interval;
@@ -58,7 +61,8 @@ export function validateBackup(text: string) {
 }
 export function restoreBackup(text: string): number {
   const imported = validateBackup(text);
-  const oldCatalog = loadCatalog(), saved = savedStories(), read = readChapters(), history = readingHistory();
+  const existingSlugs = new Set(catalogMetadata().map(item => item.slug));
+  const saved = savedStories(), read = readChapters(), history = readingHistory();
   for (const [slug, value] of Object.entries(imported.saved)) saved[slug] = { ...value, ...saved[slug], liked: Boolean(saved[slug]?.liked || value.liked), bookmarked: Boolean(saved[slug]?.bookmarked || value.bookmarked), list: saved[slug]?.list || value.list, autoDownload: saved[slug]?.autoDownload || false };
   // Unread resets have dated positions too. An older backup must not resurrect a read mark.
   for (const item of imported.catalog) {
@@ -87,12 +91,12 @@ export function restoreBackup(text: string): number {
   }
   // Validate everything before writing; retain a rollback snapshot for write failures.
   const names = ["catalog.json", "saved.json", "read.json", "history.json", "preferences.json"];
-  const before = names.map(name => { const file = new File(ROOT, name); return file.exists ? file.textSync() : null; });
+  const before = names.map(name => { const file = new File(ROOT, name); return readJson<Record<string, unknown> | unknown[] | null>(file, null); });
   try {
-    mergeCatalog(imported.catalog.filter(item => !oldCatalog.some(old => old.slug === item.slug)));
-    new File(ROOT, "saved.json").write(JSON.stringify(saved)); new File(ROOT, "read.json").write(JSON.stringify(read)); new File(ROOT, "history.json").write(JSON.stringify(history));
+    mergeCatalog(imported.catalog.filter(item => !existingSlugs.has(item.slug)));
+    writeJson(new File(ROOT, "saved.json"), saved); writeJson(new File(ROOT, "read.json"), read); writeJson(new File(ROOT, "history.json"), history);
     savePreferences({ ...DEFAULT_PREFERENCES, ...loadPreferences(), ...imported.preferences });
-  } catch (error) { names.forEach((name, index) => { const file = new File(ROOT, name); if (before[index] !== null) file.write(before[index]!); else if (file.exists) file.delete(); }); throw error; }
+  } catch (error) { names.forEach((name, index) => { const file = new File(ROOT, name); if (before[index] !== null) writeJson(file, before[index]!); else if (file.exists) file.delete(); }); throw error; }
   return imported.catalog.length;
 }
 export function backupFile(): File {

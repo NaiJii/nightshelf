@@ -7,16 +7,18 @@ import { readingHistory } from "../../lib/storage";
 import { filterDiscovery, kindOf, resumeTarget } from "../../lib/parser";
 import { color, Icon, Page, ui } from "../../components/ui";
 import { DiscoveryControls, PopularPeriods } from "../../components/discovery-controls";
+import { AppUpdateNotice } from "../../components/app-update-notice";
 import { ReadingShortcut } from "../../components/reading-shortcut";
 import { ReleaseFeed } from "../../components/release-feed";
 import { StoryRow } from "../../components/story-row";
 import { FIRST_PAGE } from "../../lib/scraper";
+import { providerInfo } from "../../lib/provider-info";
 
 export default function Home() {
   const { catalog, preferences, saved, read, browse, sourceSessionRevision } = useShelf();
   const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceError, setSourceError] = useState("");
-  const alternate = Boolean(preferences.source && preferences.source !== "asura");
+  const alternate = providerInfo(preferences.source).rankOrder === "source";
   useEffect(() => {
     if (!alternate) return;
     const controller = new AbortController();
@@ -32,6 +34,7 @@ export default function Home() {
   const recent = [...catalog].filter(item => resumeTarget(item,history[item.slug],read[item.slug])).sort((a,b)=>(Date.parse(history[b.slug]?.readAt || "")||0)-(Date.parse(history[a.slug]?.readAt || "")||0))[0];
   const latest = [...visible].filter(item => item.updatedAt).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")).slice(0, 8);
   return <Page title="NightShelf" subtitle="COMICS & NOVELS" action={<Pressable accessibilityLabel="Search stories" onPress={() => router.navigate("/explore")} style={{ padding: 12 }}><Icon name="search-outline" /></Pressable>}>
+    <AppUpdateNotice />
     <DiscoveryControls />
     {recent && <ReadingShortcut key={recent.slug} item={recent} chapter={resumeTarget(recent,history[recent.slug],read[recent.slug])!}/>}
     <ReleaseFeed />

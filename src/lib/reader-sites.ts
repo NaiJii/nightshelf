@@ -1,4 +1,4 @@
-import { chapterSort, decodeHtml, plainText, parseGenreLinks } from "./parser";
+import { chapterSort, decodeHtml, plainText, parseGenreLinks, parseAlternativeTitles } from "./parser";
 import type { Series, SortOrder } from "./parser";
 
 export type ReaderSite = "vortex" | "mangakakalot";
@@ -74,7 +74,7 @@ export function parseVortexCards(html: string, popular = false, metadataOnly = f
     const counts = block.slice(block.indexOf("_count:"));
     const chapterCount = block.includes("_count:") ? Number(numericField(counts, "chapters")) : 0;
     const numbers = [...block.matchAll(/(?:^|[,{}])\s*"?number"?\s*:\s*(\d+(?:\.\d+)?)/g)].map(value => value[1]).sort(chapterSort);
-    items.set(url, { source: "vortex", vortexId: numericField(match.block, "id"), slug: `vortex-${numericField(match.block, "id")}`, url, title, summary: plainText(scalar(match.block, "postContent")), cover: safeUrl(scalar(match.block, "featuredImage"), SITE_HOME.vortex), rating, bookmarks: block.includes("_count:") ? numericField(counts, "bookmarks") : "", status: scalar(match.block, "seriesStatus"), type: scalar(match.block, "seriesType") || "Comic", kind: "comic", chapterCount, latestChapter: numbers.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) });
+    items.set(url, { source: "vortex", vortexId: numericField(match.block, "id"), slug: `vortex-${numericField(match.block, "id")}`, url, title, alternativeTitles: parseAlternativeTitles(scalar(match.block, "alternativeTitles")), summary: plainText(scalar(match.block, "postContent")), cover: safeUrl(scalar(match.block, "featuredImage"), SITE_HOME.vortex), rating, bookmarks: block.includes("_count:") ? numericField(counts, "bookmarks") : "", status: scalar(match.block, "seriesStatus"), type: scalar(match.block, "seriesType") || "Comic", kind: "comic", chapterCount, latestChapter: numbers.at(-1) || "", updatedAt, sourceDates: Boolean(updatedAt) });
   }
   if (metadataOnly) return [...items.values()];
   let body = html.slice(html.indexOf("<body"));
@@ -154,14 +154,14 @@ export function parseVortexMetadata(html: string, item: Series): Series {
   return { ...item, ...own, slug: item.slug, vortexId: vortexPostId(html, item.url) || own?.vortexId || item.vortexId, title, summary, genres: parseGenreLinks(body), cover: own?.cover || cover || item.cover, rating: own?.rating || text.match(/([\d.]+)\s+Ratings?\b/i)?.[1] || "", bookmarks: own?.bookmarks || text.match(/([\d.,]+[KM]?)\s+Favorites\b/i)?.[1] || "", status: own?.status || fields.get("status") || "Unknown", type: own?.type || fields.get("type") || "Comic", chapterCount: own?.chapterCount || Number(fields.get("chapters")?.replace(/,/g, "")) || 0, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
 }
 export function parseVortexPostPayload(raw: unknown, item: Series): Series {
-  const payload = raw as { post?: { id?: number; slug?: string; postTitle?: string; postContent?: string; featuredImage?: string; averageRating?: number; seriesStatus?: string; seriesType?: string; lastChapterAddedAt?: string; genres?: { name?: string }[]; _count?: { bookmarks?: number } }; totalChapterCount?: number };
+  const payload = raw as { post?: { id?: number; slug?: string; postTitle?: string; alternativeTitles?: string; postContent?: string; featuredImage?: string; averageRating?: number; seriesStatus?: string; seriesType?: string; lastChapterAddedAt?: string; genres?: { name?: string }[]; _count?: { bookmarks?: number } }; totalChapterCount?: number };
   const post = payload?.post;
   if (!post || !Number.isSafeInteger(post.id) || post.id! <= 0 || typeof post.slug !== "string" || !/^[a-z\d_-]+$/i.test(post.slug) || typeof post.postTitle !== "string" || !post.postTitle.trim() || !Number.isSafeInteger(payload.totalChapterCount) || payload.totalChapterCount! < 0) throw new Error("Vortex returned invalid story details. Pull down to retry.");
   const knownId = item.vortexId || item.slug.match(/^vortex-(\d+)$/)?.[1];
   const route = decodeURIComponent(new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!);
   if (knownId ? String(post.id) !== knownId : post.slug !== route) throw new Error("Vortex returned details for a different story. Pull down to retry.");
   const updatedAt = date(post.lastChapterAddedAt || "");
-  return { ...item, vortexId: String(post.id), url: `${SITE_HOME.vortex}/series/${encodeURIComponent(post.slug)}`, title: plainText(post.postTitle), summary: plainText(post.postContent || ""), cover: safeUrl(post.featuredImage || "", SITE_HOME.vortex) || item.cover, rating: Number.isFinite(post.averageRating) && post.averageRating! >= 0 ? String(post.averageRating) : item.rating, bookmarks: Number.isSafeInteger(post._count?.bookmarks) ? String(post._count!.bookmarks) : item.bookmarks, status: post.seriesStatus || item.status, type: post.seriesType || item.type, genres: Array.isArray(post.genres) ? [...new Set(post.genres.map(genre => typeof genre?.name === "string" ? plainText(genre.name) : "").filter(Boolean))] : item.genres, chapterCount: payload.totalChapterCount!, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
+  return { ...item, vortexId: String(post.id), url: `${SITE_HOME.vortex}/series/${encodeURIComponent(post.slug)}`, title: plainText(post.postTitle), alternativeTitles: parseAlternativeTitles(post.alternativeTitles) || item.alternativeTitles, summary: plainText(post.postContent || ""), cover: safeUrl(post.featuredImage || "", SITE_HOME.vortex) || item.cover, rating: Number.isFinite(post.averageRating) && post.averageRating! >= 0 ? String(post.averageRating) : item.rating, bookmarks: Number.isSafeInteger(post._count?.bookmarks) ? String(post._count!.bookmarks) : item.bookmarks, status: post.seriesStatus || item.status, type: post.seriesType || item.type, genres: Array.isArray(post.genres) ? [...new Set(post.genres.map(genre => typeof genre?.name === "string" ? plainText(genre.name) : "").filter(Boolean))] : item.genres, chapterCount: payload.totalChapterCount!, updatedAt, sourceDates: Boolean(updatedAt), metadataSyncedAt: new Date().toISOString() };
 }
 export function parseVortexChapterPayload(raw: unknown, item: Series, postId = item.vortexId || item.slug.match(/^vortex-(\d+)$/)?.[1]): Series {
   const payload = raw as { post?: { chapters?: unknown }; totalChapterCount?: number };
@@ -235,7 +235,9 @@ export function parseKakalotDetails(html: string, item: Series): Series {
   for (const [, text] of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     try { const parsed = JSON.parse(text.replace(/[\u0000-\u001f]/g, " ")); for (const value of [parsed, parsed.mainEntity, ...(parsed["@graph"] || [])]) if (value?.["@type"] === "Book") data.push(value); } catch { /* ignore unrelated invalid structured metadata */ }
   }
-  const book = Object.assign({}, ...data) as { name?: string; description?: string; image?: string; genre?: string[]; numberOfPages?: string; aggregateRating?: { ratingValue?: string; bestRating?: string } };
+  const book = Object.assign({}, ...data) as { name?: string; alternateName?: string | string[]; description?: string; image?: string; genre?: string[]; numberOfPages?: string; aggregateRating?: { ratingValue?: string; bestRating?: string } };
+  const alternateRow = [...html.matchAll(/<(?:li|tr)\b[^>]*>([\s\S]*?)<\/(?:li|tr)>/gi)].map(match => plainText(match[1])).find(text => /^(?:Alternative(?: names?| titles?)?(?:\(s\))?|Other names?)\s*:/i.test(text));
+  const alternatives = parseAlternativeTitles(book.alternateName || alternateRow?.replace(/^[^:]+:\s*/, ""));
   const content = section(html, "class", "manga-info-top");
   const canonical = metadata(html, "og:url");
   if (canonical && siteStoryUrl(canonical, "mangakakalot") !== item.url.replace(/\/$/, "")) throw new Error("MangaKakalot redirected to another page. Verify the source and retry.");
@@ -246,7 +248,7 @@ export function parseKakalotDetails(html: string, item: Series): Series {
   const visibleRating = text.match(/rate\s*:\s*([\d.]+)\s*\/\s*([\d.]+)/i);
   const rating = Number(book?.aggregateRating?.ratingValue || visibleRating?.[1]), scale = Number(book?.aggregateRating?.bestRating || visibleRating?.[2] || 5);
   const genres = parseGenreLinks(content);
-  return { ...item, title, genres: genres.length ? genres : Array.isArray(book.genre) ? book.genre.filter(value => typeof value === "string").map(plainText).filter(Boolean) : item.genres || [], summary: summary === "N/A" ? "" : plainText(summary), cover: safeUrl(book?.image || metadata(html, "og:image"), item.url) || item.cover, rating: rating > 0 && scale > 0 ? `${rating.toFixed(2)}/${scale}` : "", chapterCount: item.chapterListComplete && item.chapterIds ? item.chapterIds.length : Number(book?.numberOfPages) || item.chapterCount, status: text.match(/Status\s*:\s*(Ongoing|Completed|Hiatus|Dropped)/i)?.[1] || "Unknown", metadataSyncedAt: new Date().toISOString() };
+  return { ...item, title, alternativeTitles: alternatives || item.alternativeTitles, genres: genres.length ? genres : Array.isArray(book.genre) ? book.genre.filter(value => typeof value === "string").map(plainText).filter(Boolean) : item.genres || [], summary: summary === "N/A" ? "" : plainText(summary), cover: safeUrl(book?.image || metadata(html, "og:image"), item.url) || item.cover, rating: rating > 0 && scale > 0 ? `${rating.toFixed(2)}/${scale}` : "", chapterCount: item.chapterListComplete && item.chapterIds ? item.chapterIds.length : Number(book?.numberOfPages) || item.chapterCount, status: text.match(/Status\s*:\s*(Ongoing|Completed|Hiatus|Dropped)/i)?.[1] || "Unknown", metadataSyncedAt: new Date().toISOString() };
 }
 export function parseReaderSiteImages(html: string, source: ReaderSite): string[] {
   const body = source === "vortex" ? html : section(html, "class", "container-chapter-reader");

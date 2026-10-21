@@ -25,8 +25,9 @@ try {
   assert.deepEqual(sites.parseVortexMetadata(visibleStory + '<a itemProp="genre" href="/series?genres=%2B1">Action</a>', card).genres, ['Action']);
   assert.equal(visibleMetadata.slug,'vortex-url-legacy','metadata recovery preserves old bookmarks and read history');
   assert.equal(visibleMetadata.vortexId,'42','public series identity is retained separately from legacy library keys');
-  const publicPost={totalChapterCount:4,post:{id:42,slug:'example',postTitle:'Example',postContent:'<p>API summary.</p>',averageRating:9.08,genres:[{name:'Action'}],_count:{bookmarks:12}}};
+  const publicPost={totalChapterCount:4,post:{id:42,slug:'example',postTitle:'Example',alternativeTitles:'Other title / 別名',postContent:'<p>API summary.</p>',averageRating:9.08,genres:[{name:'Action'}],_count:{bookmarks:12}}};
   const postDetails=sites.parseVortexPostPayload(publicPost,{...card,slug:'vortex-url-legacy'});
+  assert.deepEqual(postDetails.alternativeTitles,['Other title','別名']);
   assert.equal(postDetails.vortexId,'42');assert.equal(postDetails.summary,'API summary.');assert.deepEqual(postDetails.genres,['Action']);
   assert.equal(postDetails.chapterIds,undefined,'public metadata does not falsely cache the empty post.chapters field');
   assert.throws(()=>sites.parseVortexPostPayload({...publicPost,post:{...publicPost.post,id:99}},card),/different story/);
@@ -77,6 +78,8 @@ try {
   assert.equal(story.latestChapter, "3");
   const structured = '<script type="application/ld+json">{"@type":"Book","name":"Example","description":"A summary\nwith raw newline","image":"https://img-r1.2xstorage.com/thumb/example.webp","numberOfPages":"17","aggregateRating":{"ratingValue":"4.43","bestRating":"5"}}</script><div class="manga-info-top"><h1>Example</h1></div>';
   const kakalotMetadata=sites.parseKakalotDetails(structured,story);
+  assert.deepEqual(sites.parseKakalotDetails(structured.replace('"name":"Example"', '"name":"Example","alternateName":["Other title","別名"]'),story).alternativeTitles,['Other title','別名']);
+  assert.deepEqual(sites.parseKakalotDetails(structured+'<li>Alternative name(s): Other title; 別名</li>',story).alternativeTitles,['Other title','別名']);
   assert.equal(kakalotMetadata.rating,'4.43/5'); assert.equal(kakalotMetadata.chapterCount,17);
   assert.equal(kakalotMetadata.summary,'A summary with raw newline'); assert.equal(kakalotMetadata.chapterIds,undefined);
   assert.equal(sites.parseKakalotDetails(structured,{...story,chapterListComplete:true,chapterIds:['0','1','2']}).chapterCount,3,'metadata cannot replace a complete chapter count with inaccurate structured numberOfPages');

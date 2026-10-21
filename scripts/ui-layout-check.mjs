@@ -3,11 +3,14 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import * as parser from "../src/lib/parser.ts";
+import * as providerInfo from "../src/lib/provider-info.ts";
+import * as providerErrors from "../src/lib/provider-errors.ts";
 import * as releasePolicy from "../src/lib/release-policy.ts";
 import * as exploreSessions from "../src/lib/explore-session.ts";
+import * as readingUx from "../src/lib/reading-ux.ts";
 import * as requestControl from "../src/lib/request-control.ts";
 
-function component(file, extraModules = {}) {
+function component(file, extraModules = {}, globals = {}) {
   const slots = [], effects = []; let cursor = 0;
   const element = (type, props) => ({ type, props });
   const modules = {
@@ -27,7 +30,7 @@ function component(file, extraModules = {}) {
   };
   const exports = {};
   const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, require: name => { if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; assert.ok(modules[name], name); return modules[name]; } });
+  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, ...globals, require: name => { if (name.endsWith("/provider-info")) return providerInfo; if (name.endsWith("/provider-errors")) return providerErrors; if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; assert.ok(modules[name], name); return modules[name]; } });
   return { effects, render(name, ...args) { cursor = 0; effects.length = 0; return exports[name](...args); } };
 }
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
@@ -45,6 +48,7 @@ const exploreShelf = {
   catalog: [{slug:'first',title:'First'}], saved: {}, preferences: {source:'asura',sort:'title'},
   rememberSearch:()=>{},browse: (options, cursor, signal, manual) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,resolve,reject})),
 };
+let retryExplore;
 const exploreModules = {
   'expo-router': {router:{}},
   '../../lib/app-state': {useShelf:()=>exploreShelf},
@@ -53,6 +57,7 @@ const exploreModules = {
   '../../lib/scraper': {FIRST_PAGE:{page:1}},
   '../../components/ui': {ui:{},color:{},Icon:'Icon',Chip:'Chip',PageHeading:'PageHeading'},
   '../../components/series-card': {SeriesCard:'SeriesCard'},
+  '../../components/use-source-retry': {useSourceRetry:retry=>{retryExplore=retry;return ()=>{};}},
   '../../components/discovery-controls': {DiscoveryControls:'DiscoveryControls',PopularPeriods:'PopularPeriods'},
 };
 const explore = component('../src/app/(tabs)/explore.tsx', exploreModules);
@@ -85,7 +90,9 @@ discovery.props.onEndReached();
 discovery.props.onContentSizeChange(400,2900);
 discovery.props.onScroll({nativeEvent:{contentOffset:{y:2100}}});
 assert.equal(browseRequests.length,3,'failed pagination stops automatic requests until explicitly retried');
-nodes(discovery.props.ListFooterComponent).find(node=>node.props?.accessibilityLabel==='Retry loading titles').props.onPress();
+assert.ok(nodes(discovery.props.ListFooterComponent).find(node=>node.props?.accessibilityLabel==='Retry loading titles'));
+retryExplore();
+assert.equal(browseRequests.at(-1).cursor.page,browseRequests[2].cursor.page,'verification recovery retries the failed page instead of resetting the whole search');
 assert.equal(browseRequests.length,4);
 assert.equal(browseRequests[3].manual,true);
 browseRequests[3].resolve({ids:[],cursor:{page:4},hasMore:false});
@@ -160,19 +167,23 @@ const requested = [];
 const estimateCalls = [];
 const positions = {example:{chapter:"2",fraction:0.6,chapters:{"1":{fraction:0.4},"2":{fraction:0.6}}}};
 const shelf = { catalog: [story], read: {example:{}}, saved: {}, preferences: {}, downloads: [], detailsLoading: [], notice: '', downloadBusy: () => false, startDownload: (_, selection) => {requested.push(selection);return true;}, setReadStatus(slug, ids, value) {for (const id of ids) {if(value) shelf.read[slug][id]='read';else {delete shelf.read[slug][id];positions[slug].chapters[id].fraction=0;}}} };
+const chapterSheets = [], readNowChoices = [];
 const details = component('../src/app/series/[slug].tsx', {
   'expo-router': {useLocalSearchParams: () => ({slug:'example'}), useFocusEffect: () => {}, router: {}},
   '../../lib/parser': parser,
-  '../../lib/storage': {readingHistory: () => positions},
+  '../../lib/storage': {readingHistory: () => positions, chapterIntact:()=>true},
   '../../lib/app-state': {useShelf: () => shelf,useDownloads:()=>shelf.downloads},
   '../../lib/library-tools': {estimateDownload: (...args) => {estimateCalls.push(args);return {bytes:1};}, formatBytes: () => '1 MB', freeBytes: () => 1000},
   '../../components/ui': {color: {}, ui: {}, Cover: 'Cover', Icon: 'Icon', Chip: 'Chip'},
   '../../components/story-row': {PublicationStatus: 'Status', SaveActions: 'SaveActions'},
+  '../../lib/reading-ux': readingUx,
+  '../../components/use-source-retry': {useSourceRetry:()=>()=>{}},
+  '../../components/use-reader-navigation': {useReaderNavigation:()=>({go:id=>readNowChoices.push(id)})},
   '../../components/story-options': {ReadingListAction: 'ReadingListAction', ReleaseActions: 'ReleaseActions'},
   '../../components/download-list': {DownloadList: 'DownloadList'},
   '../../components/download-drawer': {useDownloadDrawer:()=>()=>{}},
   '../../components/expandable-summary': {ExpandableSummary: 'Summary'},
-  '../../components/action-sheet': {useActionSheet: () => () => {}},
+  '../../components/action-sheet': {useActionSheet: () => (...args) => chapterSheets.push(args)},
 });
 const list = () => nodes(details.render('default',{})).find(node => node.type === 'FlatList');
 const header = () => nodes(list().props.ListHeaderComponent);
@@ -205,6 +216,23 @@ const estimatesBeforeProgress=estimateCalls.length;
 for(let i=0;i<10;i++)details.render('default',{});
 assert.equal(estimateCalls.length,estimatesBeforeProgress,'download progress rerenders do not rescan files for an unchanged size estimate');
 console.log("Measured summary overflow, themed sheets and read/unread selection checks passed");
+row('2').find(node=>node.props?.onLongPress).props.onLongPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Read from here').onPress();
+assert.equal(row('1').find(node=>node.props?.accessibilityLabel==='Select chapter 1').props.accessibilityState.checked,false);
+assert.equal(row('2').find(node=>node.props?.accessibilityLabel==='Select chapter 2').props.accessibilityState.checked,true,'long-press selects only the requested forward range');
+row('2').find(node=>node.props?.onLongPress).props.onLongPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Read now').onPress();
+assert.deepEqual(readNowChoices,['2'],'Read now uses the priority reader download path');
+shelf.connection={label:'Offline'};
+row('2').find(node=>node.props?.onLongPress).props.onPress();
+assert.equal(chapterSheets.at(-1)[0],'Internet required','an unavailable unsaved chapter explains the connection requirement');
+shelf.connection={label:'Wi-Fi'};story.lockedChapterIds=['3'];
+row('3').find(node=>node.props?.onLongPress).props.onPress();
+assert.equal(chapterSheets.at(-1)[0],'Provider access required');
+assert.ok(!chapterSheets.at(-1)[2].some(action=>action.text==='Read now'),'restricted chapters never offer an unavailable download');
+delete story.lockedChapterIds;
+console.log('Chapter long-press range selection, Read now and contextual unavailable actions passed');
+
 
 shelf.detailsErrors={example:'Vortex request failed (503)'};
 shelf.loadDetails=(...args)=>requested.push(args);
@@ -214,7 +242,7 @@ retry.props.onPress();
 assert.equal(JSON.stringify(requested.at(-1)),JSON.stringify(['example',true]));
 
 // Exercise the actual app-state handlers while keeping native effects dormant.
-let route='/series/example', settings={source:'vortex',mobileData:'ask',autoSync:false,interval:10}, rejectDetails, rejectSync;
+let route='/series/example', settings={source:'vortex',mobileData:'ask',autoSync:false,interval:10}, rejectDetails, rejectSync, detailsSignal;
 const nativeControls={backgroundTransfers:null};
 const automaticQueued=[], localDeletions=[];
 let resolveNetwork;
@@ -225,7 +253,7 @@ const provider = component('../src/lib/app-state.tsx', {
   './parser': parser,
   './release-policy': releasePolicy,
   './storage': {catalogMetadata:()=>[story],loadCatalogAsync:async()=>[story],loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
-  './scraper': {refreshSeries:()=>new Promise((_,reject)=>{rejectDetails=reject;}),syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
+  './scraper': {refreshSeries:(_item,_guard,signal)=>{detailsSignal=signal;return new Promise((_,reject)=>{rejectDetails=reject;});},syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
   './network': {networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy': {connectionLabel:()=>({label:'Offline'})},
   './releases': {configureReleaseChecks:async()=>{}},
@@ -238,11 +266,20 @@ const app=()=>provider.render('AppProvider',{}).props.value;
 const navigate=path=>{route=path;app();provider.effects[0].callback();};
 navigate('/series/example');
 const detailsPending=app().loadDetails('example',true);
+await Promise.resolve();
 navigate('/settings');
 rejectDetails(Error('Vortex chapter list could not be read'));
 await detailsPending;
 assert.equal(app().notice,'','chapter failures cannot leak into other screens, including late failures');
 assert.equal(app().detailsErrors.example,'Vortex chapter list could not be read','chapter errors stay attached to the affected story');
+provider.render('AppProvider',{});
+const abortedDetails=app().loadDetails('example',true);
+await Promise.resolve();
+app().cancelDetails('example');
+assert.equal(detailsSignal.aborted,true,'leaving a story aborts the provider request itself');
+await abortedDetails;
+await requestControl.yieldToForeground();
+assert.equal(app().detailsLoading.length,0,'leaving a story releases loading and foreground priority even if its request never settles');
 const visibleSync=app().sync();rejectSync(Error('Source unavailable'));await visibleSync;
 assert.equal(app().notice,'Source unavailable');
 navigate('/library');
@@ -266,13 +303,13 @@ assert.equal(app().notice,'Could not pause Android transfer','native pause failu
 app().resumeDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(app().notice,'Could not stop Android transfer','native resume failures become visible instead of unhandled rejections');
 nativeControls.transferStates=()=>({});
-app();provider.effects[2].callback();
+app();provider.effects.find(effect=>effect.deps?.length===5).callback();
 const deletionPending=app().removeDownloads(story,['1']);
 resolveNetwork({type:'wifi',isConnected:true});
 await deletionPending;
 assert.equal(localDeletions.length,1);
 assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
-app();provider.effects[2].callback();resolveNetwork({type:'wifi',isConnected:true});
+app();provider.effects.find(effect=>effect.deps?.length===5).callback();resolveNetwork({type:'wifi',isConnected:true});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(automaticQueued.length,1,'automatic transfers work again once deletion finishes');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');
@@ -301,7 +338,7 @@ console.log('Auto-download icon, release alert proposal, grouped feed and unread
 const readerSheets=[], readerRoutes=[], readerFetches=[];
 const readerSaved=new Set(['1']);let readerFocus;
 const readerShelf={preferences:{readerContinuous:true,readerPrefetch:true},fetchReaderChapter:(slug,chapter,automatic,signal,progress)=>new Promise((resolve,reject)=>{
-  readerFetches.push({slug,chapter,automatic,signal,progress,resolve:()=>{readerSaved.add(chapter);resolve();}});
+  readerFetches.push({slug,chapter,automatic,signal,progress,reject,resolve:()=>{readerSaved.add(chapter);resolve();}});
   signal.addEventListener('abort',()=>reject(Object.assign(new Error('Cancelled'),{name:'AbortError'})),{once:true});
 })};
 const readerNavigation=component('../src/components/use-reader-navigation.ts',{
@@ -310,6 +347,7 @@ const readerNavigation=component('../src/components/use-reader-navigation.ts',{
   '../lib/app-state':{useShelf:()=>readerShelf},
   '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter)},
   './action-sheet':{useActionSheet:()=>(...args)=>readerSheets.push(args)},
+  './use-source-retry':{useSourceRetry:()=>()=>{}},
 });
 const readerNav=()=>readerNavigation.render('useReaderNavigation','example','Example','2');
 let nav=readerNav();const leaveReader=readerFocus();
@@ -326,6 +364,13 @@ nav.go('2',true);readerFetches[0].resolve();await new Promise(resolve=>setTimeou
 assert.equal(readerFetches.length,1,'edge navigation reuses in-flight prefetch');
 nav=readerNav();nav.go('1',true,true);await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(readerRoutes.at(-1).params.entry,'end','continuous backward navigation lands at the previous end');
+nav=readerNav();nav.go('1',false,true);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.at(-1).params.entry,'end','the Previous button also lands at the final panels');
+const inPlace=[];const routesBeforeInPlace=readerRoutes.length;
+nav=readerNavigation.render('useReaderNavigation','example','Example','2',undefined,false,(id,end)=>inPlace.push({id,end}));
+nav.go('1',false,true);await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(inPlace,[{id:'1',end:true}]);
+assert.equal(readerRoutes.length,routesBeforeInPlace,'continuous navigation reuses the existing WebView without replacing the route');
 readerShelf.preferences.readerContinuous=false;nav=readerNav();const routesBefore=readerRoutes.length;nav.go('1',true);
 assert.equal(readerRoutes.length,routesBefore,'continuous navigation can be disabled');
 readerShelf.preferences.readerContinuous=true;readerSaved.delete('2');nav=readerNav();nav.go('2');readerSheets.at(-1)[2].find(action=>action.text==='Download and read').onPress();await new Promise(resolve=>setTimeout(resolve,0));
@@ -334,7 +379,7 @@ assert.equal(readerRoutes.length,routesBefore,'an aborted download never navigat
 console.log('Reader download consent, prefetch deduplication, continuous settings and cancellation checks passed');
 
 let readerNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}}, closeReaderWriter;
-const directReaderCalls=[], readerDeletions=[];
+const directReaderCalls=[], readerDeletions=[], readerPriority=[];
 const intactReaderChapters=new Set(['1']);
 const readerStory={...story,chapterIds:['1','2'],localChapters:['1']};
 const readerProvider=component('../src/lib/app-state.tsx',{
@@ -343,10 +388,10 @@ const readerProvider=component('../src/lib/app-state.tsx',{
   '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>readerNetwork}},
   './parser':parser,'./release-policy':releasePolicy,
   './storage':{catalogMetadata:()=>[readerStory],loadCatalogAsync:async()=>[readerStory],loadPreferences:()=>({source:'asura',deleteAfterReading:true,autoDownloadLimitMB:2048}),savedStories:()=>({}),readChapters:()=>({example:{'1':'read'}}),releaseUpdates:()=>({}),loadDownloads:()=>[],localChapters:()=>['1'],chapterIntact:(_,chapter)=>intactReaderChapters.has(chapter),deleteChapters:(...args)=>readerDeletions.push(args)},
-  './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});intactReaderChapters.add(args[1]);}},
+  './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});requestControl.throwIfAborted(args[4]);intactReaderChapters.add(args[1]);}},
   './network':{networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
-  './releases':{},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];isBusy(){return false;}}},
+  './releases':{},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];isBusy(){return false;}async holdForReader(){readerPriority.push('hold');return ()=>readerPriority.push('release');}}},
   './request-control':requestControl,'./background-downloads':{transferStates:()=>({})},
   './library-tools':{freeBytes:()=>1024**3,libraryBytesAsync:async()=>0},
 });
@@ -366,6 +411,26 @@ assert.equal(readerApp().downloadBusy('example'),false,'writer lock is released 
 intactReaderChapters.delete('2');readerNetwork={type:'cellular',isConnected:true};
 await assert.rejects(()=>readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{}),/unmetered Wi-Fi/);
 assert.equal(directReaderCalls.length,1,'speculative downloads never use cellular');
+readerNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}};
+const urgentReader=readerApp().fetchReaderChapter('example','2',false,new AbortController().signal,()=>{});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(readerPriority,['hold'],'manual Read now acquires queue priority');
+closeReaderWriter();await urgentReader;
+assert.deepEqual(readerPriority,['hold','release'],'the bulk queue resumes after the reader finishes saving');
+
+intactReaderChapters.delete('2');
+const retiringSignal=new AbortController();
+const retiringReader=readerApp().fetchReaderChapter('example','2',true,retiringSignal.signal,()=>{});
+await new Promise(resolve=>setTimeout(resolve,0));
+retiringSignal.abort();
+const retired=assert.rejects(retiringReader,{name:'AbortError'});
+const callsBeforeRetry=directReaderCalls.length;
+const replacementReader=readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(directReaderCalls.length,callsBeforeRetry,'retry waits until the cancelled writer has actually closed');
+closeReaderWriter();await retired;await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(directReaderCalls.length,callsBeforeRetry+1,'a fresh request does not inherit the cancelled writer failure');
+closeReaderWriter();await replacementReader;
 console.log('Reader writer locks, deletion safety and Wi-Fi prefetch policy checks passed');
 
 // Chapter-number jumps locate exact decimals and never select restricted rows.
@@ -417,3 +482,131 @@ const translatedCard=nodes(cardUI.render('SeriesCard',{item:{...story,url:'https
 assert.ok(translatedCard.some(node=>node.type==='Icon'&&node.props.name==='globe-outline'));
 assert.ok(translatedCard.some(node=>node.type==='Text'&&JSON.stringify(node.props.children).includes('WEBTOON · FR')));
 console.log('Home resume navigation and source/language card checks passed');
+
+// The reader prepares exactly two ahead sequentially, not two concurrent writers.
+let twoAhead=readerNavigation.render('useReaderNavigation','example','Example','8',undefined,false,undefined,'9');
+readerNavigation.effects.find(effect=>effect.deps?.[0]==='8').callback();
+const stopTwo=readerFocus();const beforeTwo=readerFetches.length, preparedAhead=[];
+const buffered=twoAhead.prefetch(.7,id=>preparedAhead.push(id));
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerFetches.length,beforeTwo+1);assert.equal(readerFetches.at(-1).chapter,'8');
+readerFetches.at(-1).resolve();await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(preparedAhead,['8'],'the immediate neighbor becomes readable before the second download finishes');
+assert.equal(readerFetches.length,beforeTwo+2);assert.equal(readerFetches.at(-1).chapter,'9');
+assert.equal(readerFetches.at(-1).automatic,true);
+readerFetches.at(-1).resolve();await buffered;
+assert.deepEqual(preparedAhead,['8','9']);
+assert.equal(twoAhead.prefetch(.9),undefined,'repeated progress events cannot extend the buffer beyond two');
+stopTwo();
+
+let retryRevision=1,retryFocus,replayed=0;const verificationRoutes=[];
+const verifiedRetry=component('../src/components/use-source-retry.ts',{
+  'expo-router':{router:{push:route=>verificationRoutes.push(route)},useFocusEffect:callback=>{retryFocus=callback;}},
+  '../lib/app-state':{useShelf:()=>({sourceSessionRevision:retryRevision})},
+});
+const beginVerify=()=>{const start=verifiedRetry.render('useSourceRetry',()=>replayed++);verifiedRetry.effects.forEach(effect=>effect.callback());return start;};
+let verify=beginVerify();retryFocus();verify();verify();assert.equal(verificationRoutes.length,1,'rapid taps cannot stack duplicate verification screens');assert.equal(verificationRoutes.at(-1),'/verify-source');
+retryRevision++;beginVerify();retryFocus();assert.equal(replayed,1,'successful verification replays the original operation once on return');
+retryFocus();assert.equal(replayed,1,'subsequent focus changes cannot repeatedly replay a failed request');
+verify=beginVerify();verify();beginVerify();retryFocus();assert.equal(replayed,1,'backing out of verification does not retry');
+retryRevision++;beginVerify();retryFocus();assert.equal(replayed,1,'a later unrelated verification cannot revive a cancelled retry');
+console.log('Two-chapter sequential prefetch and one-shot verification retry checks passed');
+
+// Update discovery stays quiet on metered connections and keeps a validated
+// cached offer across app launches. Manual checks bypass the daily throttle.
+const updatePolicy=await import('../src/lib/app-update-policy.ts');
+const installedUpdate={version:'2.0.6',versionCode:23,architecture:'armv7',canInstall:false};
+const publishedUpdate={version:'2.0.7',architecture:'armv7',url:'https://github.com/NaiJii/nightshelf/releases/download/v2.0.7/NightShelf-2.0.7-armv7.apk',sha256:'a'.repeat(64),size:40000000,notes:'Changes'};
+const updateReleases=[{tag_name:'v2.0.7',draft:false,prerelease:false,body:'Changes',assets:[{name:'NightShelf-2.0.7-armv7.apk',state:'uploaded',browser_download_url:publishedUpdate.url,digest:'sha256:'+publishedUpdate.sha256,size:publishedUpdate.size}]}];
+let updateNetwork={type:'cellular',isConnected:true}, updateRequests=0, updateConsent=0, updateCache='', updateHttpOk=true;
+const updatePreferences={autoAppUpdates:true};
+const updateModules={
+ 'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
+ '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>updateNetwork,addEventListener:()=>()=>{}}},
+ 'expo-file-system':{File:class{textSync(){return updateCache;}write(text){updateCache=text;}},Directory:class{exists=false;},Paths:{cache:'file:///cache/'}},
+ '../lib/app-state':{useShelf:()=>({preferences:updatePreferences})},
+ '../lib/storage':{ROOT:{create(){}}},'../lib/network':{networkGuard:()=>async()=>{updateConsent++;}},
+ '../lib/app-updates':{installedApp:()=>installedUpdate},'../lib/app-update-policy':updatePolicy,
+};
+const updateGlobals={fetch:async()=>{updateRequests++;return {ok:updateHttpOk,status:updateHttpOk?200:403,json:async()=>updateReleases};}};
+const updateProvider=component('../src/components/app-updates-provider.tsx',updateModules,updateGlobals);
+const updater=()=>updateProvider.render('AppUpdatesProvider',{}).props.value;
+await updater().check();assert.equal(updateRequests,0,'automatic update checks do not use mobile data');
+updateNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}};
+await updater().check();assert.equal(updateRequests,1);assert.equal(updater().update.version,'2.0.7');
+await updater().check();assert.equal(updateRequests,1,'reopening within 24 hours cannot repeatedly call GitHub');
+updatePreferences.autoAppUpdates=false;await updater().check(true);
+assert.equal(updateRequests,2);assert.equal(updateConsent,1,'manual checks honor the existing connection consent policy');
+updateHttpOk=false;await updater().check(true);
+assert.match(updater().error,/limiting/);assert.equal(updater().update.version,'2.0.7','a failed check preserves the last valid update offer');
+const reopenedUpdateProvider=component('../src/components/app-updates-provider.tsx',updateModules,updateGlobals);
+assert.equal(reopenedUpdateProvider.render('AppUpdatesProvider',{}).props.value.update.version,'2.0.7','a cached update survives reopening offline');
+
+let apkFile=false, apkSize=publishedUpdate.size, badUpdateHash=false, permissionResult='installer', appStateCallback;
+const installationCalls=[], verifiedUpdates=[], deletedUpdates=[];
+let updateFocus, waitForApk=false, finishApk;
+const fakeUpdater={verify:async(...args)=>{verifiedUpdates.push(args);if(badUpdateHash)throw Error('Update checksum mismatch');return true;},install:async(...args)=>{installationCalls.push(args);return permissionResult;}};
+const installerModules={
+ 'react-native':{ActivityIndicator:'ActivityIndicator',Text:'Text',View:'View',AppState:{currentState:'active',addEventListener:(_,callback)=>{appStateCallback=callback;return {remove(){}};}}},
+ 'expo-router':{router:{},useFocusEffect:callback=>{updateFocus=callback;}},
+ '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>({type:'wifi',isConnected:true}),addEventListener:()=>()=>{}}},
+ 'expo-file-system/legacy':{cacheDirectory:'file:///cache/',makeDirectoryAsync:async()=>{},deleteAsync:async uri=>{apkFile=false;deletedUpdates.push(uri);},getInfoAsync:async()=>({exists:apkFile,size:apkSize}),getContentUriAsync:async()=> 'content://com.ji.nightshelf.FileSystemFileProvider/cache/update.apk',createDownloadResumable:()=>({downloadAsync:async()=>{if(waitForApk)await new Promise(resolve=>{finishApk=resolve;});apkFile=true;return {status:200};},cancelAsync:async()=>{}})},
+ '../components/app-updates-provider':{useAppUpdates:()=>({installed:installedUpdate,update:publishedUpdate,check(){}})},
+ '../components/ui':{color:{},Icon:'Icon',Page:'Page',ui:{}},
+ '../lib/app-updates':{appUpdates:fakeUpdater,installedApp:()=>installedUpdate},
+ '../lib/network':{networkGuard:()=>async()=>{}},'../lib/storage':{loadPreferences:()=>({mobileData:'ask'})},
+ '../lib/library-tools':{formatBytes:()=> '40 MB',freeBytes:()=>1024**3},
+};
+const installer=component('../src/app/app-update.tsx',installerModules);
+const installView=()=>nodes(installer.render('default',{}));
+const downloadUpdate=()=>installView().find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Download and install')).props.onPress();
+downloadUpdate();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(verifiedUpdates.length,2,'both download completion and installation revalidate the APK');
+assert.equal(installationCalls.length,1);assert.equal(verifiedUpdates[0][1],publishedUpdate.sha256);
+assert.ok(installationCalls[0][1].startsWith('content://'),'the installer receives a granted content URI rather than a private file path');
+
+badUpdateHash=true;apkFile=false;
+const invalidInstaller=component('../src/app/app-update.tsx',installerModules);
+nodes(invalidInstaller.render('default',{})).find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Download and install')).props.onPress();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(installationCalls.length,1,'a failed checksum can never launch the installer');
+assert.equal(apkFile,false,'failed update downloads are deleted');
+assert.ok(nodes(invalidInstaller.render('default',{})).some(node=>node.props?.children==='Update checksum mismatch'));
+
+badUpdateHash=false;permissionResult='permission';apkFile=false;
+const permissionInstaller=component('../src/app/app-update.tsx',installerModules);
+nodes(permissionInstaller.render('default',{})).find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Download and install')).props.onPress();
+await new Promise(resolve=>setTimeout(resolve,0));
+permissionInstaller.render('default',{});permissionInstaller.effects[1].callback();
+installedUpdate.canInstall=true;permissionResult='installer';const beforePermission=installationCalls.length;
+appStateCallback('active');appStateCallback('active');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(installationCalls.length,beforePermission+1,'granting installation permission resumes once without stacking installer prompts');
+console.log('Automatic Wi-Fi update checks, daily throttling, caching, APK validation failures and installer permission recovery passed');
+
+waitForApk=true;apkFile=false;
+const blurredUpdater=component('../src/app/app-update.tsx',installerModules);
+const blurredView=()=>nodes(blurredUpdater.render('default',{}));
+blurredView();const blurUpdate=updateFocus();
+blurredView().find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Download and install')).props.onPress();
+await new Promise(resolve=>setTimeout(resolve,0));
+const installsBeforeBlur=installationCalls.length;
+blurUpdate();finishApk();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(installationCalls.length,installsBeforeBlur,'an update finishing behind the reader cannot open the Android installer');
+assert.ok(blurredView().some(node=>node.props?.children==='Install update'),'the verified download remains ready for later installation');
+console.log('Update downloads finishing outside the update screen never interrupt reading');
+
+const retryPrefetch=readerNavigation.render('useReaderNavigation','retry-story','Retry story','10');
+readerNavigation.effects.find(effect=>effect.deps?.[0]==='10').callback();
+const stopRetryPrefetch=readerFocus();
+const failedPrefetch=retryPrefetch.prefetch(.75);await new Promise(resolve=>setTimeout(resolve,0));
+readerFetches.at(-1).reject(Error('Waiting for Wi-Fi'));await failedPrefetch;
+assert.equal(retryPrefetch.prefetch(.8),undefined,'failed speculative downloads have a cooldown instead of retrying on every scroll');
+readerShelf.connection={label:'Wi-Fi'};
+const recoveredPrefetch=readerNavigation.render('useReaderNavigation','retry-story','Retry story','10');
+readerNavigation.effects.find(effect=>effect.deps?.[0]==='Wi-Fi').callback();
+const beforeRetry=readerFetches.length;
+const retriedPrefetch=recoveredPrefetch.prefetch(.8);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerFetches.length,beforeRetry+1,'returning to Wi-Fi makes a failed prefetch eligible again');
+readerFetches.at(-1).resolve();await retriedPrefetch;
+stopRetryPrefetch();
+console.log('Failed prefetch cooldown and connection recovery passed');

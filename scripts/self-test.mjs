@@ -1,3 +1,7 @@
+import "./provider-contract-check.mjs";
+import './app-update-check.mjs';
+import { unreadFromHere, libraryScopeCounts, unavailableChapter, matchesStoryQuery, readingActionLabel } from "../src/lib/reading-ux.ts";
+import './reader-stream-check.mjs';
 import assert from "node:assert/strict";
 import { DEFAULT_WEIGHTS, filterDiscovery, kindOf, nextUnread, resumeTarget, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, parseTrending, publicationState, releaseLabel, selectChapters, sortExplore } from "../src/lib/parser.ts";
 import { readerHtml } from "../src/lib/reader-html.ts";
@@ -12,7 +16,7 @@ import "./library-menu-check.mjs";
 import "./background-wait-check.mjs";
 import "./android-build-check.mjs";
 import "./ui-layout-check.mjs";
-import { formatRating } from "../src/lib/parser.ts";
+import { formatRating, parseAlternativeTitles } from "../src/lib/parser.ts";
 import { withLinkedAbort, withForeground, yieldToForeground } from "../src/lib/request-control.ts";
 
 let finishForeground, backgroundContinued=false;
@@ -428,3 +432,26 @@ assert.equal(failedPanel.hidden,false);assert.equal(failedPanel.nextElementSibli
 assert.equal(panelRepair.getScroll(),1100,'repaired layout preserves the visible anchor when a preceding panel grows');
 assert.equal(panelRepair.messages.at(-1).repaired,0);
 console.log('Inline panel retry, cache refresh and reading-anchor checks passed');
+
+assert.deepEqual(unreadFromHere(['0','1','1.5','2','3'],'1',{'0':'read','1':'read','2':'read'}),['1','1.5','3'],'Read from here includes the chosen chapter and only unread later chapters');
+assert.deepEqual(unreadFromHere(['1'],'2',{}),[],'missing chapters cannot select an unrelated range');
+assert.deepEqual(libraryScopeCounts([{slug:'a',hasLocalFiles:true},{slug:'b',hasLocalFiles:false},{slug:'c',hasLocalFiles:true}],{a:{bookmarked:true,liked:true},b:{bookmarked:true,autoDownload:true,list:'reading'},c:{autoDownload:true}}),{downloads:2,bookmarked:2,liked:1,lists:1,autoDownload:1},'scope counts follow the same membership rules as library filters');
+assert.match(unavailableChapter({locked:true,offline:true}),/provider/);
+assert.match(unavailableChapter({offline:true}),/Connect/);
+assert.match(unavailableChapter({damaged:true}),/repair/);
+assert.match(unavailableChapter({failed:true}),/Read now/);
+assert.equal(unavailableChapter({}),undefined);
+console.log('Read-from-here range, library counts and unavailable chapter explanations passed');
+
+assert.deepEqual(parseAlternativeTitles('Ragnar • ラグナール ; Ragnar / Other Title'),['Ragnar','ラグナール','Other Title']);
+assert.equal(parseAlternativeTitles(undefined),undefined);
+const aliasStory=parseSeries('<meta property="og:title" content="Example"><p id="alt-titles">Ragnar • L’Héritier de la Lame</p>','https://asurascans.com/comics/example');
+assert.deepEqual(aliasStory.alternativeTitles,['Ragnar','L’Héritier de la Lame']);
+assert.ok(matchesStoryQuery(aliasStory,'lheritier'),'library aliases ignore accents and apostrophe variants');
+assert.ok(matchesStoryQuery(aliasStory,'ragnar'));assert.ok(!matchesStoryQuery(aliasStory,'another story'));
+assert.deepEqual(parseApiSeries({slug:'example',title:'Example',alternative_titles:['Other title','別名']},'comic').alternativeTitles,['Other title','別名']);
+assert.equal(readingActionLabel('42',true,.4),'Resume chapter 42');
+assert.equal(readingActionLabel('43',true,0),'Start chapter 43');
+assert.equal(readingActionLabel('43',false,0),'Download chapter 43');
+assert.equal(readingActionLabel('42',true,1,true),'Read chapter 42 again');
+console.log('Provider aliases, accent-insensitive offline search and explicit reading action labels passed');

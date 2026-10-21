@@ -46,6 +46,31 @@ try {
   const storage = await import("../src/lib/storage.ts");
   const { File, Directory, reads } = await import("expo-file-system");
   storage.initializeStorage();
+  const { readJson, writeJson } = await import('../src/lib/json-store.ts');
+  const durable = new File(storage.ROOT, 'durable-test.json');
+  writeJson(durable, {version:1}); writeJson(durable, {version:2});
+  const originalWrite=File.prototype.write, originalMove=File.prototype.move;
+  try {
+    File.prototype.write=function(value) {
+      if(this.name==='durable-test.json.tmp') { originalWrite.call(this,'{');throw Error('Disk full'); }
+      return originalWrite.call(this,value);
+    };
+    assert.throws(()=>writeJson(durable,{version:3}),/Disk full/);
+    assert.deepEqual(readJson(durable,{}),{version:2},'an interrupted temp write leaves the live metadata untouched');
+  } finally { File.prototype.write=originalWrite; }
+  try {
+    File.prototype.move=function(target) { if(target.uri===durable.uri)throw Error('Interrupted commit'); return originalMove.call(this,target); };
+    assert.throws(()=>writeJson(durable,{version:3}),/Interrupted commit/);
+    assert.equal(durable.exists,false,'simulate process interruption between backup rotation and installation');
+    assert.deepEqual(readJson(durable,{}),{version:2},'missing primary recovers the last committed version');
+  } finally { File.prototype.move=originalMove; }
+  writeJson(durable,{version:3});durable.write('{');
+  assert.deepEqual(readJson(durable,{}),{version:2},'corrupt metadata recovers from the backup');
+  writeJson(durable,{version:4});
+  assert.deepEqual(readJson(new File(storage.ROOT,'durable-test.json.bak'),{}),{version:2},'a corrupt primary cannot replace a valid backup');
+  durable.write('[]');assert.deepEqual(readJson(durable,{}),{version:2},'wrong-shaped primary data uses the valid backup');
+  console.log('Interrupted metadata writes, failed installation and last-good recovery passed');
+
   for (const chapter of ["1", "2"]) {
     const folder = storage.chapterDirectory("example", chapter);
     folder.create();
@@ -86,7 +111,15 @@ try {
   const scansBeforeMetadata=reads.directories;
   storage.mergeCatalog([cached]);
   assert.equal(reads.directories,scansBeforeMetadata,'metadata commits do not synchronously rescan downloaded chapter folders');
+  storage.mergeCatalog([{...cached,alternativeTitles:['Offline alias']}]);
+  storage.mergeCatalog([{...cached,alternativeTitles:undefined}]);
+  assert.deepEqual(storage.catalogMetadata().find(item=>item.slug==='example').alternativeTitles,['Offline alias'],'partial discovery metadata cannot erase cached aliases');
   storage.saveCatalog([cached]);
+  const scansBeforeSync = reads.directories;
+  const hydrated = storage.loadCatalog()[0];
+  assert.equal(reads.directories - scansBeforeSync, 1, 'catalog hydration lists each story folder once');
+  assert.deepEqual(hydrated.localChapters, ['1', '2'], 'partial chapters remain excluded');
+  assert.equal(hydrated.hasLocalFiles, true, 'partial and completed files still count as local files');
   const scansBeforeAsync=reads.directories;
   const catalogPending=storage.loadCatalogAsync();
   assert.equal(reads.directories,scansBeforeAsync,'catalog hydration yields before accessing chapter folders');
@@ -113,10 +146,27 @@ try {
   assert.ok(outside.exists && cover.exists, "deletion stays inside the story's download folder");
   console.log("Storage deletion check passed");
   const tools = await import('../src/lib/library-tools.ts');
+  const partialSize=storage.chapterDirectory('size-test','1');partialSize.create();
+  new File(partialSize,'001.webp.part').write('stale partial');
+  assert.equal(await tools.libraryBytesAsync(undefined,true),tools.libraryBytes(true));
+  assert.ok(tools.libraryBytes(true)<tools.libraryBytes(),'retry budget ignores replaceable partials while storage reporting counts their actual disk use');
+  partialSize.delete();
+  const beforeBulk=storage.savedStories(), writes=[];
+  try {
+    File.prototype.write=function(value) { writes.push(this.name); return originalWrite.call(this,value); };
+    const slugs=Array.from({length:1500},(_,index)=>'bulk-'+index);
+    tools.updateStoriesOptions(slugs,{bookmarked:true});
+    assert.equal(storage.savedStories()['bulk-1499'].bookmarked,true);
+    assert.deepEqual(writes.sort(),['release-updates.json.tmp','releases.json.tmp','saved.json.tmp'],'large selections commit each metadata map once');
+    assert.throws(()=>tools.updateStoriesOptions(['bulk-0','../outside'],{list:'reading'}),/Invalid/);
+    assert.equal(storage.savedStories()['bulk-0'].list,undefined,'invalid batch input is rejected before any item is changed');
+  } finally { File.prototype.write=originalWrite; writeJson(new File(storage.ROOT,'saved.json'),beforeBulk); }
+  console.log('Large bulk library changes and replaceable-partial storage budgets passed');
+
   assert.equal(await tools.libraryBytesAsync(),tools.libraryBytes(),'batched size accounting matches exact recursive totals');
   assert.deepEqual(await tools.storageSummaryAsync(),tools.storageSummary());
   const backup = await import('../src/lib/backup.ts');
-  const backupStory={...storage.SEED[0],slug:'backup-story',title:'Backup story',localChapters:['1'],genres:['Action']};
+  const backupStory={...storage.SEED[0],slug:'backup-story',title:'Backup story',alternativeTitles:['Other name','Another title'],localChapters:['1'],genres:['Action']};
   storage.saveCatalog([backupStory]);tools.updateStoryOptions('backup-story',{bookmarked:true,liked:true,list:'planned',autoDownload:true});
   storage.savePosition('backup-story','2',0.25);
   storage.savePosition('backup-story','1',0.4);storage.setChaptersRead('backup-story',['1'],true);
@@ -127,6 +177,7 @@ try {
   assert.equal(decoded.saved['backup-story'].autoDownload,undefined,'portable backups cannot silently enable new automatic transfers');
   assert.equal(decoded.catalog[0].localChapters,undefined,'phone-specific chapter paths are not portable');
   assert.deepEqual(decoded.catalog[0].genres,['Action']);
+  assert.deepEqual(decoded.catalog[0].alternativeTitles,['Other name','Another title'],'offline alias search survives a phone-to-phone metadata restore');
   assert.deepEqual(decoded.preferences.genreFilters,{asura:['Action'],vortex:['Fantasy']},'tag filters survive backup and restore');
   const roundTrip=JSON.parse(exported);roundTrip.history['backup-story'].readAt='2020-01-01T00:00:00Z';roundTrip.history['backup-story'].fraction=0.1;
   backup.restoreBackup(JSON.stringify(roundTrip));
@@ -316,6 +367,10 @@ export async function fetch(url,options={}){
     assert.equal(storage.loadCatalog().find(item=>item.slug==='example').summary,'A newer summary.','a stale sync cannot overwrite fresher details');
     const options={mode:'comics',sort:'updated',period:'week',query:''};
     const first=await browseCatalog(options,FIRST_PAGE,async()=>{});
+    const catalogBeforeBadCursor=JSON.stringify(storage.catalogMetadata());
+    await assert.rejects(()=>browseCatalog({...options,source:'webtoon'},first.cursor,async()=>{}),/different provider/);
+    await assert.rejects(()=>browseCatalog(options,{source:'asura',state:{comic:-1}},async()=>{}),/Invalid provider cursor/);
+    assert.equal(JSON.stringify(storage.catalogMetadata()),catalogBeforeBadCursor,'invalid or cross-provider cursors cannot commit catalog changes');
     const second=await browseCatalog(options,first.cursor,async()=>{});
     assert.equal(first.ids.length,20);assert.equal(second.ids.length,3);assert.equal(second.hasMore,false);
     assert.equal(new Set([...first.ids,...second.ids]).size,23,'offset paging appends distinct results');
