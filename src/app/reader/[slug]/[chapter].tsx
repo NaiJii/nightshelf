@@ -1,6 +1,6 @@
 import { Pressable } from "../../../components/pressable";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Animated, AppState, ScrollView, Text, View } from "react-native";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
@@ -13,6 +13,15 @@ import { useShelf } from "../../../lib/app-state";
 import { useActionSheet } from "../../../components/action-sheet";
 import { useReaderNavigation } from "../../../components/use-reader-navigation";
 import { ReaderOptions, useReaderConveniences } from "../../../components/reader-options";
+
+function ReaderChrome({ hidden, edge, children }: { hidden: boolean; edge: "top" | "bottom"; children: React.ReactNode }) {
+  const [value] = useState(() => new Animated.Value(hidden ? 0 : 1));
+  useEffect(() => {
+    const animation = Animated.timing(value, { toValue: hidden ? 0 : 1, duration: 180, useNativeDriver: true });
+    animation.start(); return () => animation.stop();
+  }, [hidden, value]);
+  return <Animated.View pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"} style={{position:"absolute",left:0,right:0,[edge]:0,opacity:value,transform:[{translateY:value.interpolate({inputRange:[0,1],outputRange:[edge === "top" ? -18 : 18,0]})}]}}>{children}</Animated.View>;
+}
 
 export default function ReaderScreen() {
   const params = useLocalSearchParams<{ slug: string; chapter: string; title?: string; entry?: string; transition?: string }>();
@@ -39,6 +48,12 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   const baseUrl = `${chapterDirectory(slug, initialChapter).uri.replace(/\/$/, "")}/`;
   const web = useRef<WebView>(null);
   const scrubberBottom = useRef(96);
+  const lastProgressWrite = useRef(0);
+  const pendingProgress = useRef<{ chapter: string; fraction: number } | null>(null);
+  useEffect(() => () => {
+    const pending = pendingProgress.current;
+    if (pending && !manualUnread.current.has(pending.chapter)) savePosition(slug, pending.chapter, pending.fraction);
+  }, [slug]);
   const repair = useRef<AbortController | null>(null);
   const controlsError = useReaderConveniences(web, Boolean(files.length || novel));
   const focused = useRef(false);
@@ -184,11 +199,12 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
             });
           }
           if (data.complete === true && !manualUnread.current.has(sourceChapter) && (sourceIntact || chapterIntact(slug,sourceChapter)) && !error && focused.current && AppState.currentState === "active") completeChapter(slug, sourceChapter);
-          if (Number.isFinite(data.fraction) && !manualUnread.current.has(sourceChapter)) savePosition(slug, sourceChapter, Math.max(0, Math.min(1, data.fraction)));
+          if (Number.isFinite(data.fraction) && !manualUnread.current.has(sourceChapter)) pendingProgress.current = {chapter:sourceChapter,fraction:Math.max(0,Math.min(1,data.fraction))};
+          if (Number.isFinite(data.fraction) && !manualUnread.current.has(sourceChapter) && (data.complete || data.fraction === 0 || event.timeStamp - lastProgressWrite.current >= 1500)) { savePosition(slug, sourceChapter, Math.max(0, Math.min(1, data.fraction))); lastProgressWrite.current = event.timeStamp; }
           if (Number.isInteger(data.page) && sourceChapter === currentChapter.current) setPage(Math.max(1, Math.min(sourceFiles.length, data.page)));
         } catch { /* ignore malformed messages */ }
       }} /> : <Pressable accessibilityLabel="No saved pages found. Show reader controls" onPress={() => setHidden(false)} style={{ flex: 1, padding: 25 }}><Text style={ui.empty}>No saved pages found.</Text></Pressable>}
-    {!hidden && <SafeAreaView edges={["top", "left", "right"]} style={{ position: "absolute", top: 0, left: 0, right: 0, backgroundColor: color.surface }}>
+    <ReaderChrome hidden={hidden} edge="top"><SafeAreaView edges={["top", "left", "right"]} style={{ backgroundColor: color.surface }}>
     <View style={[ui.row, { paddingHorizontal: 10, height: 60, borderBottomWidth: 1, borderColor: color.line }]}>
       <Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>
       <View style={{ flex: 1 }}><Text numberOfLines={1} style={{ color: color.text, fontWeight: "800" }}>{title || "NightShelf"}</Text><Text style={{ color: color.muted, fontSize: 11, marginTop: 3 }}>{catalog.find(item => item.slug === slug)?.chapterTitles?.[chapter] || `Chapter ${chapter}`} · {novel ? "Novel" : `${page}/${files.length}`} · offline</Text></View>
@@ -196,18 +212,18 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
     </View>
     {optionsOpen && <ScrollView style={{ maxHeight: 340 }}><ReaderOptions error={controlsError} /></ScrollView>}
     {novel && <View style={[ui.row, { justifyContent: "center", paddingVertical: 3, borderBottomWidth: 1, borderColor: color.line }]}><Pressable accessibilityLabel="Smaller novel text" onPress={() => updatePreferences({ novelFontSize: Math.max(14, preferences.novelFontSize - 1) })} style={{ padding: 12 }}><Text style={ui.text}>A−</Text></Pressable><Text style={ui.muted}>{preferences.novelFontSize}</Text><Pressable accessibilityLabel="Larger novel text" onPress={() => updatePreferences({ novelFontSize: Math.min(30, preferences.novelFontSize + 1) })} style={{ padding: 12 }}><Text style={ui.text}>A+</Text></Pressable><Pressable accessibilityLabel="Toggle sepia reading theme" onPress={() => updatePreferences({ novelTheme: preferences.novelTheme === "dark" ? "sepia" : "dark" })} style={{ padding: 12 }}><Icon name={preferences.novelTheme === "dark" ? "sunny-outline" : "moon-outline"} size={18} /></Pressable></View>}
-    </SafeAreaView>}
+    </SafeAreaView></ReaderChrome>
     {navigation.needsVerification && <Pressable onPress={navigation.verify} style={{position:"absolute",bottom:hidden?65:145,alignSelf:"center",padding:12,borderRadius:12,backgroundColor:color.surface}}><Text style={{color:color.lilac}}>Verify and retry</Text></Pressable>}
     {navigation.status && !error ? <Pressable accessibilityLabel={navigation.busy ? "Cancel reader download" : "Show reader controls"} onPress={navigation.busy ? navigation.cancel : () => setHidden(false)} style={[ui.row, {position:"absolute",bottom:hidden?22:100,alignSelf:"center",maxWidth:"90%",paddingHorizontal:12,paddingVertical:8,gap:8,borderRadius:14,backgroundColor:color.surface}]}>{navigation.busy && <ActivityIndicator size="small" color={color.lilac}/>}<Text accessibilityLiveRegion="polite" numberOfLines={2} style={{color:color.muted,fontSize:11,flexShrink:1}}>{navigation.status}</Text>{navigation.busy && <Icon name="close" size={14} tint={color.muted}/>}</Pressable> : null}
     {error ? <Pressable onPress={() => { setError("");
       if (chapter === initialChapter) web.current?.reload();
       else router.replace({ pathname: "/reader/[slug]/[chapter]", params: { slug, chapter, title } }); }} style={{ position: "absolute", bottom: hidden ? 20 : 100, left: 10, right: 10, padding: 14, backgroundColor: color.surface, borderRadius: 12 }}><Text style={ui.muted}>{error} Tap to retry.</Text></Pressable> : null}
-    {!hidden && <SafeAreaView edges={["bottom", "left", "right"]} onLayout={event => { scrubberBottom.current = event.nativeEvent.layout.height + 8; web.current?.injectJavaScript(`window.readerScrubberBottom=${scrubberBottom.current};window.readerUpdateControls?.();true;`); }} style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: color.surface }}>
+    <ReaderChrome hidden={hidden} edge="bottom"><SafeAreaView edges={["bottom", "left", "right"]} onLayout={event => { scrubberBottom.current = event.nativeEvent.layout.height + 8; web.current?.injectJavaScript(`window.readerScrubberBottom=${scrubberBottom.current};window.readerUpdateControls?.();true;`); }} style={{ backgroundColor: color.surface }}>
     <View style={[ui.row, { paddingHorizontal: 18, paddingVertical: 10, justifyContent: "space-between" }]}>
       <Pressable accessibilityLabel="Previous chapter" disabled={!previous || navigation.busy} onPress={() => navigation.go(previous, false, true)} style={{ padding: 12, opacity: previous ? 1 : 0.25 }}><Icon name="play-skip-back" size={20} />{previous && !chaptersSaved(previous) && <Icon name="download-outline" size={12} tint={color.lilac} />}</Pressable>
       <Pressable accessibilityRole="checkbox" accessibilityLabel="Chapter read" accessibilityState={{ checked: Boolean(read[slug]?.[chapter]) }} onPress={() => { const value = !read[slug]?.[chapter]; if (value) manualUnread.current.delete(chapter); else manualUnread.current.add(chapter); setReadStatus(slug, [chapter], value); }} style={[ui.row, { paddingVertical: 12, gap: 6 }]}><Icon name={read[slug]?.[chapter] ? "checkmark-circle" : "checkmark-circle-outline"} size={19} tint={read[slug]?.[chapter] ? "#65cba1" : color.muted} /><Text style={{ color: color.muted, fontSize: 12 }}>{read[slug]?.[chapter] ? "Read · mark unread" : "Mark as read"}</Text></Pressable>
       <Pressable accessibilityLabel="Next chapter" disabled={!next || navigation.busy} onPress={() => navigation.go(next)} style={{ padding: 12, opacity: next ? 1 : 0.25 }}><Icon name="play-skip-forward" size={20} />{next && !chaptersSaved(next) && <Icon name="download-outline" size={12} tint={color.lilac} />}</Pressable>
-    </View></SafeAreaView>}
+    </View></SafeAreaView></ReaderChrome>
   </View>;
 }
 

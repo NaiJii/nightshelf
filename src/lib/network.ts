@@ -17,7 +17,7 @@ export function networkGuard(reason: string, automatic = false, backgroundDownlo
     if (access === "allow") return;
     if (access === "deny") throw new NetworkPaused(connectionPauseMessage(access));
     if (AppState.currentState !== "active") throw new NetworkPaused("Waiting for Wi-Fi or mobile-data approval in the app.");
-    if (automatic && Date.now() < nextAutomaticPrompt) throw new NetworkPaused(connectionPauseMessage(access));
+    if (automatic || Date.now() < nextAutomaticPrompt) throw new NetworkPaused(connectionPauseMessage(access));
     if (!pendingConsent) {
       pendingConsent = new Promise<boolean>(resolve => Alert.alert("Use mobile data?",
         `${reason} This connection is cellular, metered, or cannot be verified as Wi-Fi. Downloads can be large. Never keeps NightShelf Wi-Fi-only until you change Settings.`,

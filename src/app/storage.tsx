@@ -35,7 +35,12 @@ export default function StorageManager() {
   }
   function clearAllRead() {
     const stories = catalog.filter(item => item.localChapters?.some(id => read[item.slug]?.[id]));
-    showSheet("Delete all read downloads?", `${stories.length} stories contain read chapters. Active or queued downloads will be skipped. Your reading history stays.`, [{ text: "Cancel", style: "cancel" }, { text: "Delete read", style: "destructive", onPress: () => { void (async () => { for (const item of stories) await removeDownloads(item, (item.localChapters || []).filter(id => read[item.slug]?.[id])); setSummary(await storageSummaryAsync()); })().catch(error => setReport(String(error))); } }]);
+    showSheet("Delete all read downloads?", `${stories.length} stories contain read chapters. Active or queued downloads will be skipped. Your reading history stays.`, [{ text: "Cancel", style: "cancel" }, { text: "Delete read", style: "destructive", onPress: () => { void (async () => { setBusy("cleanup"); let removed = 0, skipped = 0;
+          try { for (const item of stories) {
+            if (downloadBusy(item.slug) || downloads.some(job => job.series.slug === item.slug)) { skipped++; continue; }
+            if (await removeDownloads(item, (item.localChapters || []).filter(id => read[item.slug]?.[id]))) removed++;
+          } setSummary(await storageSummaryAsync()); setReport(`${removed} stories cleaned${skipped ? ` · ${skipped} busy stories skipped` : ""}`); }
+          finally { setBusy(""); } })().catch(error => setReport(String(error))); } }]);
   }
   return <Page title="Storage" subtitle="ON THIS PHONE" action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>}><View style={{ paddingHorizontal: 22 }}>
     {!summary ? <ActivityIndicator color={color.lilac} /> : <><Text style={ui.title}>{formatBytes(summary.stories.reduce((sum, row) => sum + row.bytes, 0))} of chapters</Text><Text style={[ui.muted, { marginVertical: 10 }]}>{formatBytes(summary.free)} free on phone · {formatBytes(summary.covers)} cached covers</Text></>}

@@ -46,6 +46,10 @@ try {
   const storage = await import("../src/lib/storage.ts");
   const { File, Directory, reads } = await import("expo-file-system");
   storage.initializeStorage();
+  storage.savePreferences({...storage.loadPreferences(),readerContinuous:false,readerKeepAwake:false});
+  assert.equal(storage.loadPreferences().readerContinuous,true,'continuous reading is enabled even for older disabled preferences');
+  assert.equal(storage.loadPreferences().readerKeepAwake,true,'reader screen stays awake without a user-facing toggle');
+
   const { readJson, writeJson } = await import('../src/lib/json-store.ts');
   const durable = new File(storage.ROOT, 'durable-test.json');
   writeJson(durable, {version:1}); writeJson(durable, {version:2});
@@ -690,6 +694,12 @@ export async function fetch(url,options={}){
     storage.savePreferences({...storage.loadPreferences(),mobileData:'ask'});
     Alert.alert=(title,text,buttons)=>{net.setNetwork({type:'wifi',isConnected:true});buttons.find(button=>button.text==='No').onPress();};
     await networkGuard('Connection changed during the dialog')();
+
+    let automaticPrompts=0;Alert.alert=()=>{automaticPrompts++;};
+    net.setNetwork({type:'cellular',isConnected:true});
+    storage.savePreferences({...storage.loadPreferences(),mobileData:'ask'});
+    await assert.rejects(()=>networkGuard('Automatic refresh',true)(),/Wi-Fi|approval|data/i);
+    assert.equal(automaticPrompts,0,'automatic requests pause quietly rather than repeatedly opening a data-consent dialog');
     console.log('Live connection guard recovery check passed');
   } finally { nativeHook.deregister(); }
 } finally {

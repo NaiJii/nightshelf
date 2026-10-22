@@ -27,7 +27,7 @@ export type ReadingPosition = { chapter: string; fraction: number; readAt: strin
 
 export function loadPreferences(): Preferences {
   initializeStorage();
-  try { return { ...DEFAULT_PREFERENCES, ...readJson(PREFERENCES, {}) }; } catch { return DEFAULT_PREFERENCES; }
+  try { return { ...DEFAULT_PREFERENCES, ...readJson(PREFERENCES, {}), readerKeepAwake: true, readerContinuous: true }; } catch { return DEFAULT_PREFERENCES; }
 }
 export function savePreferences(value: Preferences): void { initializeStorage(); writeJson(PREFERENCES, value); }
 export function savedStories(): Record<string, SavedStory> {

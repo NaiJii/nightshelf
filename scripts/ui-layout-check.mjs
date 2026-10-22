@@ -610,3 +610,13 @@ assert.equal(readerFetches.length,beforeRetry+1,'returning to Wi-Fi makes a fail
 readerFetches.at(-1).resolve();await retriedPrefetch;
 stopRetryPrefetch();
 console.log('Failed prefetch cooldown and connection recovery passed');
+
+const deletedRead=[];
+shelf.removeDownloads=async(...args)=>{deletedRead.push(args);return true;};
+shelf.read.example={'1':'read','2':'read'};
+header().find(node=>node.props?.accessibilityLabel==='Chapter actions').props.onPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Delete read chapters (1)').onPress();
+assert.equal(deletedRead.length,0,'per-story read deletion requires confirmation');
+chapterSheets.at(-1)[2].find(action=>action.text==='Delete').onPress();
+assert.equal(JSON.stringify(deletedRead[0][1]),JSON.stringify(['1']),'only saved read chapters of this series are removed');
+console.log('Per-series saved read deletion confirmation and scope passed');

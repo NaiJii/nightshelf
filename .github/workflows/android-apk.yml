@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightshelf-android-apk
+  group: nightshelf-android-apk-${{ inputs.architecture || 'arm64' }}
   cancel-in-progress: false
 
 jobs:

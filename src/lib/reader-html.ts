@@ -78,7 +78,8 @@ function showScrubPreview() {
   if (images.length && target.node && target.rect) {
     const ratio = 132 / Math.max(1, target.rect.right - target.rect.left);
     const offset = Math.min(target.within * ratio, Math.max(0, (target.rect.bottom - target.rect.top) * ratio - crop.clientHeight));
-    crop.style.backgroundImage = 'url(' + JSON.stringify(target.node.src) + ')';
+    const image = 'url(' + JSON.stringify(target.node.src) + ')';
+    if (crop.style.backgroundImage !== image) crop.style.backgroundImage = image;
     crop.style.backgroundSize = '132px auto'; crop.style.backgroundPosition = 'center -' + offset + 'px';
   } else snippet.textContent = (target.node?.textContent || '').slice(0, 180);
   range.setAttribute('aria-valuetext', target.label); scrubPosition.textContent = target.label;
