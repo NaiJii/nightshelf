@@ -19,7 +19,7 @@ export function DownloadDrawerProvider({ children }: { children: ReactNode }) {
     <View style={{flex:1,justifyContent:"flex-end"}}><Pressable accessibilityLabel="Close downloads" onPress={()=>setOpenedPath(null)} style={{position:"absolute",inset:0,backgroundColor:"#0009"}}/>
       <SafeAreaView edges={["bottom"]} accessibilityViewIsModal style={{maxHeight:"85%",backgroundColor:color.surface,borderTopLeftRadius:24,borderTopRightRadius:24,paddingHorizontal:20}}>
         <View style={[ui.row,{justifyContent:"space-between",paddingTop:12}]}><Text style={ui.title}>Download queue</Text><Pressable accessibilityLabel="Close download queue" onPress={()=>setOpenedPath(null)} style={{padding:14}}><Icon name="close"/></Pressable></View>
-        <ScrollView keyboardShouldPersistTaps="handled"><DownloadList onOpenStory={()=>setOpenedPath(null)}/><EmptyQueue/></ScrollView>
+        <ScrollView keyboardShouldPersistTaps="handled"><DownloadList showHeading={false} onOpenStory={()=>setOpenedPath(null)}/><EmptyQueue/></ScrollView>
       </SafeAreaView>
     </View>
   </Modal></DownloadDrawerContext.Provider>;

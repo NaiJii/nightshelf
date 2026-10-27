@@ -15,6 +15,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
     DownloadService.checkId(id)
     if (!File(DownloadService.directory(applicationContext), "$id.plan").exists()) return Result.success()
     val flag = DownloadService.acquire(id) ?: return Result.retry()
+    applicationContext.getSystemService(android.app.NotificationManager::class.java).cancel(id.hashCode())
     cancelled = flag
     try {
       val notification = DownloadService.makeNotification(applicationContext, "Downloading bookmarked releases…", 0)
@@ -27,8 +28,11 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
       return Result.success()
     } catch (error: Exception) {
       val paused = DownloadService.wasUserPaused(id)
-      DownloadService.state(applicationContext, id, if (paused) "paused" else if (flag.get() || error is NetworkWait) "waiting" else "error", error.message ?: "Background download failed", 0.0)
-      return if (!paused && (flag.get() || error is NetworkWait)) Result.retry() else Result.failure()
+      val retry = !paused && (flag.get() || error is NetworkWait || (runAttemptCount < 5 && DownloadRetry.transient(error.message, error is java.io.IOException)))
+      val message = if (retry) "Retrying automatically · ${error.message ?: "Connection interrupted"}" else error.message ?: "Background download needs attention"
+      DownloadService.state(applicationContext, id, if (paused) "paused" else if (retry) "waiting" else "error", message, 0.0)
+      if (!paused && !retry) DownloadService.attention(applicationContext, id, message)
+      return if (retry) Result.retry() else Result.failure()
     } finally { DownloadService.release(id, flag) }
   }
   override fun onStopped() { cancelled?.set(true); super.onStopped() }
@@ -39,9 +43,9 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
         val preferences = File(context.filesDir, "nightshelf/preferences.json")
         try { preferences.exists() && JSONObject(preferences.readText()).optString("mobileData") == "never" } catch (_: Exception) { true }
       }
-      val request = OneTimeWorkRequest.Builder(DownloadWorker::class.java).setInputData(Data.Builder().putString("id", id).build()).setConstraints(Constraints.Builder().setRequiredNetworkType(if (metered) NetworkType.CONNECTED else NetworkType.UNMETERED).build()).build()
+      val request = OneTimeWorkRequest.Builder(DownloadWorker::class.java).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS).setInputData(Data.Builder().putString("id", id).build()).setConstraints(Constraints.Builder().setRequiredNetworkType(if (metered) NetworkType.CONNECTED else NetworkType.UNMETERED).build()).build()
       DownloadService.state(context, id, "queued", "Waiting for Android · Wi-Fi downloads", 0.0)
-      WorkManager.getInstance(context).enqueueUniqueWork("nightshelf-$id", ExistingWorkPolicy.REPLACE, request)
+      WorkManager.getInstance(context).enqueueUniqueWork("nightshelf-$id", ExistingWorkPolicy.KEEP, request)
     }
     fun pause(context: Context, id: String) = WorkManager.getInstance(context).cancelUniqueWork("nightshelf-$id").result
   }

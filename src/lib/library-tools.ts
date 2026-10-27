@@ -46,7 +46,8 @@ export function updateStoryOptions(slug: string, change: Partial<SavedStory>): v
 }
 export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory>): void {
   if (slugs.some(slug => !/^[a-zA-Z0-9_.-]+$/.test(slug) || slug === "." || slug === "..")) throw new Error("Invalid story.");
-  const all = savedStories(), snapshots = releaseSnapshots(), updates = releaseUpdates();
+  const all = savedStories();
+  let snapshots: ReturnType<typeof releaseSnapshots> | undefined, updates: ReturnType<typeof releaseUpdates> | undefined;
   let metadata: Map<string, ReturnType<typeof catalogMetadata>[number]> | undefined;
   let snapshotsChanged = false, updatesChanged = false;
   for (const slug of new Set(slugs)) {
@@ -56,14 +57,14 @@ export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory
     if (needsBaseline) metadata ||= new Map(catalogMetadata().map(item => [item.slug, item]));
     const item = needsBaseline ? metadata?.get(slug) : undefined;
     const baseline = item && chapterListCached(item) ? item.chapterIds : undefined;
-    const snapshot = () => { if (baseline) snapshots[slug] = [...baseline]; else delete snapshots[slug]; snapshotsChanged = true; };
-    const clearUpdates = () => { delete updates[slug]; updatesChanged = true; };
+    const snapshot = () => { snapshots ||= releaseSnapshots(); if (baseline) snapshots[slug] = [...baseline]; else delete snapshots[slug]; snapshotsChanged = true; };
+    const clearUpdates = () => { updates ||= releaseUpdates(); delete updates[slug]; updatesChanged = true; };
     if (next.bookmarked && !previous.bookmarked) {
       snapshot(); clearUpdates(); next.notifyReleases ??= false;
     } else if (next.notifyReleases && !previous.notifyReleases) snapshot();
     if (!next.bookmarked) {
       next.autoDownload = false; next.notifyReleases = false;
-      if (previous.bookmarked) { delete snapshots[slug]; snapshotsChanged = true; clearUpdates(); }
+      if (previous.bookmarked) { snapshots ||= releaseSnapshots(); delete snapshots[slug]; snapshotsChanged = true; clearUpdates(); }
     }
     if (next.autoDownload && !previous.autoDownload) next.autoDownloadBaseline = baseline ? [...baseline] : undefined;
     all[slug] = next;

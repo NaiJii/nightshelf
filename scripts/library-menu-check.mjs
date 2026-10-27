@@ -92,7 +92,7 @@ libraryHeader().find(node=>node.type==='PageHeading').props.action.props.onPress
 let selectable=findList();
 nodes(selectable.props.renderItem({item:story})).find(node=>node.props?.accessibilityLabel==='Select Example').props.onPress();
 let selectionNodes=nodes(render());
-selectionNodes.find(node=>node.props?.accessibilityLabel==='Select visible stories').props.onPress();
+selectionNodes.find(node=>node.props?.accessibilityLabel==='Select all stories').props.onPress();
 nodes(render()).find(node=>node.props?.accessibilityLabel==='Bulk library actions').props.onPress();
 alerts.at(-1)[2].find(action=>action.text==='Move to Reading').onPress();
 assert.equal(bulkEdits.length,1,'a bulk selection dispatches one storage mutation');

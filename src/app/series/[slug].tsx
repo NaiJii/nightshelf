@@ -1,3 +1,4 @@
+import { downloadDetail } from "../../lib/download-display";
 import { Pressable } from "../../components/pressable";
 import { ExpandableSummary } from "../../components/expandable-summary";
 import { useActionSheet } from "../../components/action-sheet";
@@ -6,7 +7,7 @@ import { ActivityIndicator, FlatList, RefreshControl, ScrollView, Text, TextInpu
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useDownloads, useShelf } from "../../lib/app-state";
-import { Chip, color, Cover, DownloadIndicator, Icon, ui } from "../../components/ui";
+import { Chip, color, Cover, DownloadBadge, DownloadIndicator, Icon, ui } from "../../components/ui";
 import { PublicationStatus, SaveActions } from "../../components/story-row";
 import { useDownloadDrawer } from "../../components/download-drawer";
 import { chapterProgress, chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating, selectChapters, resumeTarget } from "../../lib/parser";
@@ -24,7 +25,7 @@ function useDownloadEstimate(slug: string, count: number, novel: boolean, sample
 }
 function DownloadStatus({ slug, showControls }: { slug: string; showControls: () => void }) {
   const job = useDownloads().find(value => value.series.slug === slug);
-  return job ? <Pressable accessibilityLabel="Show download controls" onPress={showControls} style={[ui.row, { padding: 14, borderTopWidth: 1, borderColor: color.line }]}><Icon name="download-outline" tint={color.lilac} size={18} /><Text numberOfLines={1} style={[ui.muted, { flex: 1 }]}>{job.message} · {Math.round(job.progress * 100)}%</Text><Text style={{ color: color.lilac }}>Controls</Text></Pressable> : null;
+  return job ? <Pressable accessibilityLabel="Show download controls" onPress={showControls} style={[ui.row, { padding: 14, borderTopWidth: 1, borderColor: color.line }]}><Icon name="download-outline" tint={color.lilac} size={18} /><Text numberOfLines={1} style={[ui.muted, { flex: 1 }]}>{downloadDetail(job)}</Text><Icon name="chevron-up" size={17} tint={color.lilac}/></Pressable> : null;
 }
 
 export default function SeriesDetails() {
@@ -32,7 +33,7 @@ export default function SeriesDetails() {
   const showDownloads = useDownloadDrawer();
   const { slug, filter: initialFilter } = useLocalSearchParams<{ slug: string; filter?: string }>();
   const { catalog, startDownload, loadDetails, cancelDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, connection } = useShelf();
-  const downloads = useDownloads(true);
+  const downloads = useDownloads();
   const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : initialFilter === "unread" ? "unread" : "all");
   const [query, setQuery] = useState("");
   const [newest, setNewest] = useState(true);
@@ -94,6 +95,10 @@ export default function SeriesDetails() {
     ]);
     return true;
   }
+  function withFullList(action: () => void) {
+    if (!fullList) { showSheet("Chapter list incomplete", "Refresh the full chapter list first.", [{text:"Close",style:"cancel"},{text:"Refresh chapters",onPress:()=>void loadDetails(slug,true)}]); return; }
+    action();
+  }
   function chapterActions(chapter: string) {
     if (locked.has(chapter)) { explain(chapter); return; }
     showSheet(item?.chapterTitles?.[chapter] || `Chapter ${chapter}`, undefined, [
@@ -103,6 +108,9 @@ export default function SeriesDetails() {
         const ids = unreadFromHere(chapterList(item?.chapterIds, owned, {}, "all", "", false), chapter, read[slug] || {});
         setSelected(ids); setFilter("all"); setQuery("");
       } },
+      { text: "Select from here", onPress: () => withFullList(() => { const ids = chapterList(item?.chapterIds, owned, {}, "all", "", false); setSelected(ids.slice(ids.indexOf(chapter))); setFilter("all"); setQuery(""); }) },
+      { text: "Mark previous chapters read", onPress: () => withFullList(() => { const ids = chapterList(item?.chapterIds, owned, {}, "all", "", false); mark(ids.slice(0, ids.indexOf(chapter))); }) },
+      ...(selected.length ? [{ text: "Select range to here", onPress: () => withFullList(() => { const ids = chapterList(item?.chapterIds, owned, {}, "all", "", false); const a = ids.indexOf(selected[0]), b = ids.indexOf(chapter); if(a>=0 && b>=0) setSelected(ids.slice(Math.min(a,b),Math.max(a,b)+1)); }) }] : []),
       { text: ledger[chapter] ? "Mark unread" : "Mark read", onPress: () => { setReadStatus(slug, [chapter], !read[slug]?.[chapter]); setHistory(readingHistory()); } },
       { text: "Cancel", style: "cancel" },
     ]);
@@ -148,7 +156,7 @@ export default function SeriesDetails() {
       jumpTimer.current=setTimeout(scrollToJump,150);
     }} data={visible} keyExtractor={id => id} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={detailsLoading.includes(slug)} onRefresh={() => void loadDetails(slug, true)} tintColor={color.lilac} colors={[color.purple]} />}
       ListHeaderComponent={<>
-        <View style={[ui.row, { marginTop: 24, alignItems: "flex-start" }]}><Cover item={item} style={{ width: 115, height: 165, borderRadius: 17 }} /><View style={{ flex: 1 }}><Text style={[ui.title, { fontSize: 25 }]}>{item.title}</Text><Text style={[ui.muted, { marginTop: 12 }]}>{item.type} · {item.chapterCount} chapters</Text><Text style={{ color: color.lilac, marginTop: 12, fontWeight: "800" }}>{rating ? `★ ${rating} · ` : ""}{item.bookmarks ? `${item.bookmarks} ${providerInfo(sourceOf(item)).audienceNoun}` : ""}</Text></View></View>
+        <View style={[ui.row, { marginTop: 24, alignItems: "flex-start" }]}><Cover item={item} style={{ width: 115, height: 165, borderRadius: 17 }} /><DownloadBadge slug={slug}/><View style={{ flex: 1 }}><Text style={[ui.title, { fontSize: 25 }]}>{item.title}</Text><Text style={[ui.muted, { marginTop: 12 }]}>{item.type} · {item.chapterCount} chapters</Text><Text style={{ color: color.lilac, marginTop: 12, fontWeight: "800" }}>{rating ? `★ ${rating} · ` : ""}{item.bookmarks ? `${item.bookmarks} ${providerInfo(sourceOf(item)).audienceNoun}` : ""}</Text></View></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingVertical: 10 }}>{item.genres?.map(tag => <View key={tag} style={[ui.chip, { minHeight: 30, paddingHorizontal: 10 }]}><Text style={{ color: color.muted, fontSize: 11 }}>{tag}</Text></View>)}</ScrollView>
         <PublicationStatus item={item} /><View style={[ui.row, { gap: 0, marginTop: 6, borderBottomWidth: 1, borderColor: color.line }]}><SaveActions item={item} labels iconsOnly /><ReadingListAction item={item} iconsOnly /><ReleaseActions item={item} /></View>
         {notice ? <Pressable onPress={dismissNotice} style={{ paddingVertical: 12 }}><Text style={ui.muted}>{notice} · Dismiss</Text></Pressable> : null}
@@ -165,8 +173,7 @@ export default function SeriesDetails() {
         {chapterError && !loadingChapters && <View accessibilityLiveRegion="polite" style={{ paddingVertical: 12 }}><Text style={{ color: "#f08080", fontSize: 12 }}>{chapterError}</Text><Pressable accessibilityLabel="Retry loading chapters" onPress={() => void loadDetails(slug, true)} style={{ minHeight: 44, justifyContent: "center", alignSelf: "flex-start" }}><Text style={{ color: color.lilac, fontWeight: "700" }}>Retry chapters</Text></Pressable></View>}
         <TextInput accessibilityLabel="Search chapters" placeholder="Find a chapter…" placeholderTextColor={color.muted} value={query} onChangeText={setQuery} style={{ color: color.text, padding: 14, borderRadius: 12, backgroundColor: color.surface, marginTop: 14 }} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, marginVertical: 12 }}>{[["all", "All"], ["unread", "Unread"], ["saved", "Saved"]].map(([key, label]) => <Chip key={key} text={label} active={filter === key} onPress={() => setFilter(key)} />)}<Pressable accessibilityLabel={`Chapter order: ${newest ? "newest first" : "oldest first"}. Tap to reverse.`} onPress={() => setNewest(value => !value)} style={[ui.chip, ui.row]}><Icon name="swap-vertical-outline" size={16} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12, fontWeight: "700" }}>{newest ? "Newest" : "Oldest"}</Text></Pressable></View>
-        <View style={[ui.row, { flexWrap: "wrap", paddingBottom: 12 }]}><Pressable disabled={deleting || !visible.length || (loadingChapters && !fullList)} onPress={() => setSelected(current => [...new Set([...current, ...visible.filter(id=>!locked.has(id))])])} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Select visible ({visible.length})</Text></Pressable><Pressable accessibilityLabel={`Select all ${unread.length} unread chapters`} disabled={deleting || !fullList || !unread.length} onPress={() => { setSelected(unread); setFilter("unread"); setQuery(""); }} style={{ minHeight: 44, justifyContent: "center", opacity: deleting || !fullList || !unread.length ? 0.4 : 1 }}><Text style={{ color: color.lilac }}>Select all unread ({unread.length})</Text></Pressable></View>
-        <Text style={[ui.muted, { fontSize: 11, paddingBottom: 12 }]}>Select all unread includes saved chapters. Download saves only missing chapters.</Text>
+        <View style={[ui.row, { flexWrap: "wrap", paddingBottom: 12 }]}><Pressable disabled={deleting || !all.length || !fullList} onPress={() => setSelected(current => [...new Set([...current, ...all.filter(id=>!locked.has(id))])])} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Select all ({all.length})</Text></Pressable><Pressable accessibilityLabel={`Select all ${unread.length} unread chapters`} accessibilityHint="Includes saved chapters. Download saves only missing chapters." disabled={deleting || !fullList || !unread.length} onPress={() => { setSelected(unread); setFilter("unread"); setQuery(""); }} style={{ minHeight: 44, justifyContent: "center", opacity: deleting || !fullList || !unread.length ? 0.4 : 1 }}><Text style={{ color: color.lilac }}>Select all unread ({unread.length})</Text></Pressable></View>
       </>}
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes. Restricted episodes require WEBTOON." : "No chapters loaded. Pull to refresh.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {
@@ -177,7 +184,7 @@ export default function SeriesDetails() {
           <View pointerEvents="none" accessibilityRole="progressbar" accessibilityLabel={`Chapter ${chapter} reading progress`} accessibilityValue={{ min: 0, max: 100, now: Math.floor(progress * 100) }} style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${progress * 100}%`, backgroundColor: isRead ? "#65cba118" : "#8b5cf61c" }} />
           <Pressable disabled={deleting || locked.has(chapter)} accessibilityRole="checkbox" accessibilityLabel={`Select chapter ${chapter}`} accessibilityState={{ checked }} onPress={() => toggle(chapter)} style={{ padding: 12 }}><Icon name={checked ? "checkbox" : "square-outline"} tint={checked ? color.lilac : color.muted} /></Pressable>
           <Pressable disabled={deleting} accessibilityLabel={`${chapterTitle}, ${isSaved ? "downloaded" : "not downloaded"}`} accessibilityHint={isSaved ? "Read chapter. Hold for more actions." : locked.has(chapter) ? "Provider access required" : "Select for download. Hold for Read now or Read from here."} onPress={() => isSaved ? open(chapter) : toggle(chapter)} onLongPress={() => chapterActions(chapter)} style={{ flex: 1, paddingVertical: 16 }}><View style={[ui.row, { gap: 7 }]}>{locked.has(chapter)?<Icon name="lock-closed-outline" size={16} tint={color.muted}/>:isSaved && <Icon name="download-outline" size={16} tint="#9de1bf" />}<Text style={[ui.text, { flex: 1, fontWeight: "600", color: isSaved ? "#9de1bf" : color.text }]}>{chapterTitle}</Text></View></Pressable>
-          <Pressable accessibilityRole="checkbox" accessibilityLabel={`Chapter ${chapter} read`} accessibilityState={{ checked: isRead }} onPress={() => { setReadStatus(slug, [chapter], !isRead); setHistory(readingHistory()); }} style={{ padding: 14 }}><Icon name={isRead ? "checkmark-circle" : "checkmark-circle-outline"} tint={isRead ? "#65cba1" : color.muted} /></Pressable>
+          <View style={{marginLeft:4}}>{!isSaved && <DownloadBadge slug={slug} chapter={chapter}/>}</View><Pressable accessibilityLabel={`Actions for chapter ${chapter}`} onPress={() => chapterActions(chapter)} style={{padding:10,minHeight:44,justifyContent:"center"}}><Icon name="ellipsis-vertical" size={18} tint={color.muted}/></Pressable><Pressable accessibilityRole="checkbox" accessibilityLabel={`Chapter ${chapter} read`} accessibilityState={{ checked: isRead }} onPress={() => { setReadStatus(slug, [chapter], !isRead); setHistory(readingHistory()); }} style={{ padding: 14 }}><Icon name={isRead ? "checkmark-circle" : "checkmark-circle-outline"} tint={isRead ? "#65cba1" : color.muted} /></Pressable>
         </View>;
       }} />
     <DownloadStatus slug={slug} showControls={showDownloads} />

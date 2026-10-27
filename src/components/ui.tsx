@@ -1,3 +1,4 @@
+import { queuedChapters } from "../lib/download-display";
 import { Pressable } from "./pressable";
 import { ComponentProps, ReactNode } from "react";
 import { ActivityIndicator, ColorValue, Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -22,6 +23,16 @@ export function Page({ title, subtitle, children, action }: { title: string; sub
       {children}
     </ScrollView>
   </SafeAreaView>;
+}
+export function DownloadBadge({ slug, chapter }: { slug: string; chapter?: string }) {
+  const job = useDownloads().find(value => value.series.slug === slug);
+  if (!job || (chapter && !queuedChapters(job).includes(chapter))) return null;
+  const active = job.status === "downloading" && (!chapter || job.currentChapter === chapter);
+  const progress = Math.max(0, Math.min(1, chapter ? job.chapterProgress || 0 : job.progress));
+  const tint = job.status === "error" ? "#f08080" : color.lilac;
+  return <View pointerEvents="none" accessibilityLabel={job.status === "error" ? "Download needs attention" : active ? `Saving ${Math.floor(progress * 100)} percent` : job.status === "paused" ? "Download paused" : "Download pending"} style={{width:28,height:28,borderRadius:14,borderWidth:2,borderColor:color.raised,borderTopColor:active ? tint : color.raised,borderRightColor:active && progress>=0.25?tint:color.raised,borderBottomColor:active && progress>=0.5?tint:color.raised,borderLeftColor:active && progress>=0.75?tint:color.raised,backgroundColor:color.bg,alignItems:"center",justifyContent:"center"}}>
+    {active ? <Text style={{color:tint,fontSize:8,fontWeight:"700"}}>{Math.floor(progress*100)}%</Text> : <Icon name={job.status === "error" ? "alert" : job.status === "paused" ? "pause" : "time-outline"} tint={tint} size={14}/>}
+  </View>;
 }
 export function DownloadIndicator() {
   const downloads = useDownloads(), show = useDownloadDrawer();

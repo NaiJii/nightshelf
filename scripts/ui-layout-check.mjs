@@ -1,3 +1,4 @@
+import * as downloadDisplay from "../src/lib/download-display.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
@@ -23,21 +24,26 @@ function component(file, extraModules = {}, globals = {}) {
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
-    "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput", "ActivityIndicator"].map(name => [name, name])),
+    "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput", "ActivityIndicator", "Switch"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "./ui": { color: {}, ui: {}, Icon: "Icon" },
     ...extraModules,
   };
   const exports = {};
   const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, ...globals, require: name => { if (name.endsWith("/provider-info")) return providerInfo; if (name.endsWith("/provider-errors")) return providerErrors; if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; assert.ok(modules[name], name); return modules[name]; } });
+  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, ...globals, require: name => { if (name.endsWith("/provider-info")) return providerInfo; if (name.endsWith("/provider-errors")) return providerErrors; if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; if (name.endsWith('/download-display')) return downloadDisplay;
+assert.ok(modules[name], name); return modules[name]; } });
   return { effects, render(name, ...args) { cursor = 0; effects.length = 0; return exports[name](...args); } };
 }
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
 const touch=component('../src/components/pressable.tsx');
 const touchHandler=()=>{};
 const touchButton=touch.render('Pressable',{onPress:touchHandler,accessibilityLabel:'Bookmark',disabled:false,style:{minHeight:48}});
-assert.equal(touchButton.props.onPress,touchHandler);
+let stoppedPropagation=false;
+assert.equal(typeof touchButton.props.onPress,'function');
+touchButton.props.onPress({stopPropagation:()=>{stoppedPropagation=true;}});
+assert.equal(stoppedPropagation,true,'nested icon presses cannot activate the containing row');
+assert.equal(touchButton.props.pressRetentionOffset,8,'drifting off an icon cancels before reaching an unrelated control');
 assert.equal(touchButton.props.accessibilityLabel,'Bookmark');
 assert.ok(touchButton.props.android_ripple,'Android touch feedback is native and does not await storage/network work');
 assert.equal(touchButton.props.style({pressed:true})[0].minHeight,48,'touch feedback preserves button sizing');
@@ -620,3 +626,76 @@ assert.equal(deletedRead.length,0,'per-story read deletion requires confirmation
 chapterSheets.at(-1)[2].find(action=>action.text==='Delete').onPress();
 assert.equal(JSON.stringify(deletedRead[0][1]),JSON.stringify(['1']),'only saved read chapters of this series are removed');
 console.log('Per-series saved read deletion confirmation and scope passed');
+
+const switchRows=component('../src/components/toggle-row.tsx');
+let switchValue=false;const switchChanges=[];
+const drawSwitch=()=>switchRows.render('ToggleRow',{title:'Delete after reading',description:'Only completed chapters',value:switchValue,onValueChange:value=>{switchValue=value;switchChanges.push(value);}});
+let switchRow=drawSwitch();
+assert.equal(switchRow.props.style.width,'100%','setting rows use all available content width');
+nodes(switchRow).find(node=>node.type==='Pressable').props.onPress();
+switchRow=drawSwitch();
+assert.equal(nodes(switchRow).find(node=>node.type==='Switch').props.value,true,'label taps update the same controlled switch');
+nodes(switchRow).find(node=>node.type==='Switch').props.onValueChange(false);
+assert.deepEqual(switchChanges,[true,false],'label and native switch each produce exactly one toggle');
+const disabledSetting=nodes(switchRows.render('ToggleRow',{title:'Notifications',value:true,busy:true,onValueChange:()=>{}}));
+assert.ok(disabledSetting.find(node=>node.type==='Switch').props.disabled);
+assert.ok(disabledSetting.find(node=>node.type==='Pressable').props.disabled,'busy settings block both label and switch');
+const ownStyle={backgroundColor:'transparent',borderRadius:0};
+const checkedButton=touch.render('Pressable',{style:ownStyle,accessibilityState:{checked:true}});
+assert.equal(checkedButton.props.style({pressed:false})[0],ownStyle,'generic checked buttons cannot replace their component styling');
+assert.equal(checkedButton.props.style({pressed:false}).filter(Boolean).length,1,'checked semantics do not inject a permanent highlight');
+const readerToggleSettings=component('../src/components/reader-options.tsx',{
+  './toggle-row':{ToggleRow:'ToggleRow'},
+  '../lib/app-state':{useShelf:()=>({preferences:{readerBrightness:-1,readerVolumeScroll:true,readerPrefetch:true,deleteAfterReading:false},updatePreferences:()=>{}})},
+  '../lib/reader-controls':{readerControls:null},
+  'expo-router':{useFocusEffect:()=>{}},'react-native-webview':{},
+});
+const readerOptions=nodes(readerToggleSettings.render('ReaderOptions',{error:''}));
+assert.equal(readerOptions.filter(node=>node.type==='ToggleRow').length,3,'all reader boolean options share the switch row');
+assert.ok(!readerOptions.some(node=>node.props?.accessibilityRole==='checkbox'));
+console.log('Full-width switch rows, label and switch interactions, busy states and highlight isolation passed');
+
+row('2').find(node=>node.props?.accessibilityLabel==='Actions for chapter 2').props.onPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Select from here').onPress();
+assert.equal(row('2').find(node=>node.props?.accessibilityLabel==='Select chapter 2').props.accessibilityState.checked,true);
+assert.equal(row('125.5').find(node=>node.props?.accessibilityLabel==='Select chapter 125.5').props.accessibilityState.checked,true);
+row('1').find(node=>node.props?.accessibilityLabel==='Actions for chapter 1').props.onPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Select range to here').onPress();
+assert.equal(row('1').find(node=>node.props?.accessibilityLabel==='Select chapter 1').props.accessibilityState.checked,true);
+assert.equal(row('125.5').find(node=>node.props?.accessibilityLabel==='Select chapter 125.5').props.accessibilityState.checked,false);
+row('2').find(node=>node.props?.accessibilityLabel==='Actions for chapter 2').props.onPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Mark previous chapters read').onPress();
+chapterSheets.at(-1)[2].find(action=>action.text==='Mark read').onPress();
+assert.ok(shelf.read.example['1']);
+const displayJob={series:story,selection:'1-2',status:'downloading',progress:.3,message:story.title+' · 2 · 3/10',currentChapter:'2',chapterProgress:.3,completedChapters:1,totalChapters:2};
+assert.deepEqual(downloadDisplay.queuedChapters(displayJob),['1','2']);
+assert.equal(downloadDisplay.downloadDetail(displayJob),'Chapter 2 · 3/10 panels · 1 chapter left');
+assert.match(downloadDisplay.downloadDetail({...displayJob,status:'waiting',message:'Retrying automatically · Image request failed (503)'}),/Retrying automatically/,'retry reasons stay visible alongside chapter context');
+console.log('Visible chapter actions, range selection, previous-read actions and contextual download labels passed');
+
+const compactJobs=[{series:story,selection:'1',status:'downloading',message:'Saving chapter 1',progress:.25}];
+const queueActions=[], stopSheets=[];
+const compactDownloads=component('../src/components/download-list.tsx',{
+  '../lib/app-state':{useDownloads:()=>compactJobs,useShelf:()=>({pauseDownload:slug=>queueActions.push(['pause',slug]),resumeDownload:slug=>queueActions.push(['resume',slug]),cancelDownload:(...args)=>queueActions.push(['stop',...args]),moveDownload:()=>{}})},
+  './series-card':{openSeries:()=>{}},'../lib/parser':parser,
+  './action-sheet':{useActionSheet:()=>(...args)=>stopSheets.push(args)},
+  '../lib/background-downloads':{queueSummary:()=>({total:1,completed:0,progress:.25})},
+  'expo-router':{router:{}},
+});
+let compactNodes=nodes(compactDownloads.render('DownloadList',{showHeading:false}));
+assert.equal(compactNodes.filter(node=>node.type==='Text'&&node.props.children==='Downloads').length,0,'the drawer has one download heading');
+assert.equal(compactNodes.filter(node=>node.type==='Text'&&node.props.children===story.title).length,1,'each download title appears once');
+assert.equal(compactNodes.filter(node=>node.props?.accessibilityRole==='progressbar').length,1,'one pending job has one progress bar');
+compactNodes.find(node=>node.props?.accessibilityLabel==='Pause Example').props.onPress();
+assert.deepEqual(queueActions,[['pause','example']]);
+const stopControl=compactNodes.find(node=>node.props?.accessibilityLabel==='Stop Example');
+assert.equal(stopControl.props.style.minWidth,44,'compact icon controls retain comfortable tap targets');
+stopControl.props.onPress();assert.equal(queueActions.length,1,'compact Stop still opens a confirmation');
+stopSheets.at(-1)[2].find(action=>action.text==='Stop · keep files').onPress();
+assert.deepEqual(queueActions.at(-1),['stop','example']);
+compactJobs[0]={...compactJobs[0],status:'error',message:'Image request failed (403)'};
+compactNodes=nodes(compactDownloads.render('DownloadList',{showHeading:false}));
+assert.ok(compactNodes.some(node=>node.props?.children==='Image request failed (403)'),'compact layout preserves actionable failure text');
+compactNodes.find(node=>node.props?.accessibilityLabel==='Retry Example').props.onPress();
+assert.deepEqual(queueActions.at(-1),['resume','example']);
+console.log('Compact download controls preserve labels, actions, error details and stop confirmation');

@@ -89,11 +89,11 @@ class TransferEngine(context: Context) : ContextWrapper(context) {
             }
             urls.put(url); hashes.put(if (reusable) digest else hash(output)); done++
             val message = "${plan.getString("title")} · ${chapter.getString("id")} · ${index + 1}/${files.length()}"
-            state(this, id, "running", message, done.toDouble() / total); update(message, done * 100 / total)
+            state(this, id, "running", message, done.toDouble() / total, chapter.getString("id"), (index + 1).toDouble() / files.length(), chapterIndex, chapters.length()); update(message, done * 100 / total)
           }
           writeMetadata(marker, JSONObject().put("quality", 2).put("urls", urls).put("hashes", hashes).toString())
         }
-        state(this, id, "running", "Chapter ${chapter.getString("id")} saved", done.toDouble() / total)
+        state(this, id, "running", "Chapter ${chapter.getString("id")} saved", done.toDouble() / total, chapter.getString("id"), 1.0, chapterIndex + 1, chapters.length())
       }
       state(this, id, "done", "Saved for offline reading", 1.0)
       update("Saved for offline reading", 100)

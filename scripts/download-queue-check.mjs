@@ -68,7 +68,7 @@ foreground=true; queue.resumeWaiting(); await tick();
 assert.equal(queue.jobs.find(job=>job.series.slug==='manual').status,'paused','network recovery never resumes a user-paused job');
 tasks.get('background').resolve(); await tick(); await queue.cancel('manual');
 const restored = new DownloadQueue([{series:series('restart'),selection:'1-2',chapters:['1','2'],status:'downloading',message:'x',progress:0.5}],async()=>{},()=>{},()=>{});
-assert.equal(restored.jobs[0].status,'paused','an app restart does not silently start downloads');
+assert.equal(restored.jobs[0].status,'waiting','an interrupted preparation remains eligible for safe automatic rescheduling');
 assert.deepEqual(restored.jobs[0].chapters,['1','2']);
 assert.equal(peak,2); assert.ok(changes.length>0);
 console.log('Concurrent download queue check passed');
@@ -224,3 +224,31 @@ assert.deepEqual(lateNativeStarts,[],'releasing a reader cannot restart workers 
 closeLateWriter();await tick();await tick();
 assert.deepEqual(lateNativeStarts,['other','late-native']);
 console.log('Disk-failure lease recovery and late native writer draining passed');
+
+let retryCalls=0;
+const transientQueue=new DownloadQueue([],async()=>{retryCalls++;throw Error('Image request failed (503)');},()=>{},()=>{});
+transientQueue.enqueue(series('temporary-image'),'1');await tick();
+assert.equal(transientQueue.jobs[0].status,'waiting');assert.equal(retryCalls,1);
+transientQueue.pump();await tick();assert.equal(retryCalls,1,'backoff prevents immediate retry loops');
+transientQueue.jobs[0].retryAt=Date.now()-1;transientQueue.pump();await tick();
+assert.equal(retryCalls,2);assert.equal(transientQueue.jobs[0].retryCount,2);
+transientQueue.pause('temporary-image');transientQueue.pump();await tick();assert.equal(retryCalls,2,'intentional pause cancels automatic retry');
+const restrictedQueue=new DownloadQueue([],async()=>{throw Error('Image request failed (403)');},()=>{},()=>{});
+restrictedQueue.enqueue(series('restricted'),'1');await tick();
+assert.equal(restrictedQueue.jobs[0].status,'error','verification/access failures require attention instead of blind retries');
+const cancelledRestart=new DownloadQueue([{series:series('cancelled-restart'),selection:'1',status:'cancelling',message:'Cancelling',progress:0}],async()=>{},()=>{},()=>{});
+assert.equal(cancelledRestart.jobs[0].status,'cancelling','a process restart must not revive a cancelled transfer');
+console.log('Transient image retries, backoff, explicit pause and cancellation preservation passed');
+
+let cappedAttempts=0;
+const cappedRetry=new DownloadQueue([],async()=>{cappedAttempts++;throw Error('Image request failed (503)');},()=>{},()=>{});
+cappedRetry.enqueue(series('capped'),'1');await tick();
+for(let attempt=0;attempt<5;attempt++){cappedRetry.jobs[0].retryAt=Date.now()-1;cappedRetry.pump();await tick();}
+assert.equal(cappedAttempts,6);assert.equal(cappedRetry.jobs[0].status,'error','exhausted image retries become an actionable error');
+const chapterQueue=new DownloadQueue([{...nativeJob}],async()=>{},()=>{},()=>{},()=>false);
+chapterQueue.reconcileNative({reopened:{state:'running',active:true,hasPlan:true,progress:.25,message:'Saving',currentChapter:'2',chapterProgress:.4,completedChapters:1,totalChapters:4}});
+assert.equal(chapterQueue.jobs[0].currentChapter,'2');assert.equal(chapterQueue.jobs[0].chapterProgress,.4);
+const chapterSnapshot=chapterQueue.getSnapshot();
+chapterQueue.reconcileNative({reopened:{state:'running',active:true,hasPlan:true,progress:.25,message:'Saving',currentChapter:'2',chapterProgress:.6,completedChapters:1,totalChapters:4}});
+assert.notEqual(chapterQueue.getSnapshot(),chapterSnapshot,'chapter metadata updates notify the visible chapter progress indicators');
+console.log('Bounded retry exhaustion and live chapter progress reconciliation passed');

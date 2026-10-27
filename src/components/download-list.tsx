@@ -1,3 +1,4 @@
+import { downloadDetail } from "../lib/download-display";
 import { Pressable } from "./pressable";
 import { useActionSheet } from "./action-sheet";
 import { ActivityIndicator, Text, View } from "react-native";
@@ -10,7 +11,7 @@ import { queueSummary } from "../lib/background-downloads";
 import { providerInfo } from "../lib/provider-info";
 import { needsVerification } from "../lib/provider-errors";
 
-export function DownloadList({ slug: scope, onOpenStory }: { slug?: string; onOpenStory?: () => void } = {}) {
+export function DownloadList({ slug: scope, onOpenStory, showHeading = true }: { slug?: string; onOpenStory?: () => void; showHeading?: boolean } = {}) {
   const showSheet = useActionSheet();
   const { pauseDownload, resumeDownload, cancelDownload, moveDownload } = useShelf();
   const allDownloads = useDownloads();
@@ -28,23 +29,23 @@ export function DownloadList({ slug: scope, onOpenStory }: { slug?: string; onOp
       { text: "Stop · delete all", style: "destructive", onPress: () => void cancelDownload(slug, true) },
     ]);
   }
-  return <View style={{ paddingVertical: 16 }}><View style={[ui.row, { justifyContent: "space-between" }]}><Text style={[ui.title, { fontSize: 18 }]}>{scope ? "Download" : `Downloads · ${allDownloads.length}`}</Text><Text style={{ color: color.lilac, fontWeight: "700", fontSize: 16 }}>{percent}%</Text></View>{!scope && <><Text style={[ui.muted, { fontSize: 11, marginTop: 5 }]}>{overall.completed}/{overall.total} series complete{paused ? ` · ${paused} paused` : ""}{waiting ? ` · ${waiting} waiting` : ""}</Text><View accessibilityRole="progressbar" accessibilityLabel="Overall download queue, averaged by series" accessibilityValue={{ min: 0, max: 100, now: percent }} style={{ height: 5, backgroundColor: color.raised, borderRadius: 4, marginTop: 10, overflow: "hidden" }}><View style={{ width: `${percent}%`, height: 5, backgroundColor: color.lilac }} /></View></>}{downloads.map(job => {
+  return <View style={{ paddingVertical: 8 }}><View style={[ui.row, { justifyContent: "space-between", paddingVertical: 6 }]}>{showHeading && <Text style={[ui.title, { fontSize: 18 }]}>{scope ? "Download" : "Downloads"}</Text>}<Text style={[ui.muted, { fontSize: 11 }]}>{downloads.length} pending{paused ? ` · ${paused} paused` : ""}{waiting ? ` · ${waiting} waiting` : ""}</Text>{!scope && allDownloads.length > 1 && <Text style={{color:color.lilac,fontWeight:"700"}}>{percent}%</Text>}</View>{!scope && allDownloads.length > 1 && <View accessibilityRole="progressbar" accessibilityLabel="Overall download queue, averaged by series" accessibilityValue={{min:0,max:100,now:percent}} style={{height:3,backgroundColor:color.raised,borderRadius:3,marginTop:6}}><View style={{width:`${percent}%`,height:3,backgroundColor:color.lilac}}/></View>}{downloads.map(job => {
     const slug = job.series.slug;
     const busy = job.status === "downloading" || job.status === "cancelling";
     const status = job.status === "error" ? "Needs attention" : job.status === "waiting" ? "Waiting" : job.status === "paused" ? "Paused" : job.status === "cancelling" ? "Stopping…" : job.status === "queued" ? "Queued" : job.message.startsWith("Preparing") || job.message.startsWith("Saving story") ? "Preparing" : "Downloading";
-    return <View key={slug} style={{ paddingVertical: 14, borderBottomWidth: 1, borderColor: color.line }}>
+    return <View key={slug} style={{ paddingVertical: 10, borderBottomWidth: 1, borderColor: color.line }}>
       <View style={[ui.row, { gap: 8 }]}>{busy ? <ActivityIndicator size="small" color={color.lilac} /> : <Icon name={job.status === "error" ? "alert-circle-outline" : job.status === "paused" ? "pause-circle-outline" : "time-outline"} size={18} tint={color.lilac} />}<Pressable onPress={() => { onOpenStory?.(); openSeries(job.series); }} style={{ flex: 1 }}><Text numberOfLines={1} style={[ui.text, { fontWeight: "700" }]}>{job.series.title}</Text></Pressable></View>
-      <Text accessibilityLiveRegion="polite" style={{ color: job.status === "error" ? "#f08080" : color.lilac, fontSize: 11, marginTop: 5 }}>{status} · {sourceLabel(job.series)}</Text><Text style={[ui.muted, { fontSize: 11, marginTop: 6 }]}>{job.message} · {Math.floor(job.progress * 100)}%</Text>
+      <Text accessibilityLiveRegion="polite" style={{ color: job.status === "error" ? "#f08080" : color.lilac, fontSize: 11, marginTop: 5 }}>{status === "Downloading" ? sourceLabel(job.series) : `${status} · ${sourceLabel(job.series)}`} · {Math.floor(job.progress * 100)}%</Text><Text style={[ui.muted, { fontSize: 11, marginTop: 6 }]}>{downloadDetail(job)}</Text>
       {job.status === "error" && providerInfo(sourceOf(job.series)).verification && needsVerification(job.message) && <Pressable onPress={() => { onOpenStory?.(); router.push({ pathname: "/verify-source", params: { retryDownload: slug } }); }} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify and retry</Text></Pressable>}
       <View accessibilityRole="progressbar" accessibilityLabel={`${job.series.title} download`} accessibilityValue={{ min: 0, max: 100, now: Math.floor(job.progress * 100) }} style={{ height: 3, backgroundColor: color.raised, borderRadius: 3, marginTop: 9 }}><View style={{ width: `${job.progress * 100}%`, height: 3, backgroundColor: color.lilac, borderRadius: 3 }} /></View>
-      <View style={[ui.row, { justifyContent: "flex-end", gap: 8 }]}>{job.status !== "cancelling" && <>
+      <View style={[ui.row, { justifyContent: "flex-end", gap: 4 }]}>{job.status !== "cancelling" && <>
         {queued.some(value => value.series.slug === slug) && queued.length > 1 && <>
-          <Pressable accessibilityLabel={`Move ${job.series.title} earlier in queue`} disabled={queued[0].series.slug === slug} onPress={() => moveDownload(slug, -1)} style={{ padding: 12, opacity: queued[0].series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-up" size={18} tint={color.lilac} /></Pressable>
-          <Pressable accessibilityLabel={`Move ${job.series.title} later in queue`} disabled={queued.at(-1)?.series.slug === slug} onPress={() => moveDownload(slug, 1)} style={{ padding: 12, opacity: queued.at(-1)?.series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-down" size={18} tint={color.lilac} /></Pressable>
+          <Pressable accessibilityLabel={`Move ${job.series.title} earlier in queue`} disabled={queued[0].series.slug === slug} onPress={() => moveDownload(slug, -1)} style={{ padding: 12, minWidth:44,minHeight:44, opacity: queued[0].series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-up" size={18} tint={color.lilac} /></Pressable>
+          <Pressable accessibilityLabel={`Move ${job.series.title} later in queue`} disabled={queued.at(-1)?.series.slug === slug} onPress={() => moveDownload(slug, 1)} style={{ padding: 12, minWidth:44,minHeight:44, opacity: queued.at(-1)?.series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-down" size={18} tint={color.lilac} /></Pressable>
         </>}
-        {job.status === "downloading" || job.status === "queued" ? <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={[ui.row, { padding: 12, gap: 5 }]}><Icon name="pause" size={15} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12 }}>Pause</Text></Pressable> : <Pressable accessibilityLabel={`Resume ${job.series.title}`} onPress={() => resumeDownload(slug)} style={[ui.row, { padding: 12, gap: 5 }]}><Icon name="play" size={15} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12 }}>{job.status === "error" ? "Retry" : "Resume"}</Text></Pressable>}
-        {job.status === "waiting" && <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{ padding: 12, minHeight: 44 }}><Text style={{ color: color.lilac, fontSize: 12 }}>Pause</Text></Pressable>}
-        <Pressable accessibilityLabel={`Stop ${job.series.title}`} onPress={() => cancel(slug)} style={{ padding: 12, minHeight: 44 }}><Text style={{ color: color.muted, fontSize: 12 }}>Stop</Text></Pressable>
+        {job.status === "downloading" || job.status === "queued" ? <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{ minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center" }}><Icon name="pause" size={19} tint={color.lilac} /></Pressable> : <Pressable accessibilityLabel={`${job.status === "error" ? "Retry" : "Resume"} ${job.series.title}`} onPress={() => resumeDownload(slug)} style={{ minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center" }}><Icon name={job.status === "error" ? "refresh" : "play"} size={19} tint={color.lilac} /></Pressable>}
+        {job.status === "waiting" && <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center"}}><Icon name="pause" size={19} tint={color.lilac}/></Pressable>}
+        <Pressable accessibilityLabel={`Stop ${job.series.title}`} onPress={() => cancel(slug)} style={{minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center"}}><Icon name="close" size={20} tint={color.muted}/></Pressable>
       </>}</View>
     </View>;
   })}</View>;

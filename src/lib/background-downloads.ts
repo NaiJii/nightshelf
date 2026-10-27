@@ -1,7 +1,7 @@
 import { NativeModule, requireOptionalNativeModule } from "expo";
 import { NetworkPaused } from "./network";
 import { throwIfAborted } from "./request-control";
-export type TransferState = { state: "queued" | "preparing" | "running" | "done" | "paused" | "waiting" | "error"; progress: number; message: string; active: boolean; hasPlan: boolean };
+export type TransferState = { state: "queued" | "preparing" | "running" | "done" | "paused" | "waiting" | "error"; progress: number; message: string; active: boolean; hasPlan: boolean; currentChapter?: string; chapterProgress?: number; completedChapters?: number; totalChapters?: number };
 export type NativeChapter = { id: string; marker: string; files: {url: string; target: string; original: string; agent: string; referer: string; hash?: string}[]; text?: string; textTarget?: string };
 declare class Transfers extends NativeModule {
   states(id: string | null): string;

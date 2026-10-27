@@ -40,16 +40,15 @@ object QueueProgress {
   @Synchronized fun summary(context: Context): JSONObject {
     val current = read(context)
     val jobs = current.getJSONArray("jobs")
-    val completed = current.optInt("completed")
-    var done = completed; var progress = completed.toDouble()
+    var pending = 0; var progress = 0.0
     for (index in 0 until jobs.length()) {
       val job = jobs.getJSONObject(index)
       val value = if (job.optBoolean("native")) state(context, job.getString("id")) else JSONObject()
-      if (value.optString("state") == "done") done++
+      if (value.optString("state") == "done") continue
+      pending++
       val fraction = maxOf(job.optDouble("progress", 0.0), value.optDouble("progress", 0.0))
       progress += if (fraction.isFinite()) fraction.coerceIn(0.0, 1.0) else 0.0
     }
-    val total = completed + jobs.length()
-    return JSONObject().put("total", total).put("completed", done).put("progress", if (total > 0) progress / total else 0.0)
+    return JSONObject().put("total", pending).put("completed", 0).put("progress", if (pending > 0) progress / pending else 0.0)
   }
 }

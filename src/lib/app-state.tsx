@@ -271,7 +271,7 @@ function useAppState() {
 
   const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
     updateStoryOptions(slug, { [field]: !savedStories()[slug]?.[field] });
-    setSaved(savedStories()); setUpdates(releaseUpdates());
+    setSaved(savedStories()); if (field === "bookmarked") setUpdates(releaseUpdates());
   }, []);
 
   const providerViews = useRef<Partial<Record<string, Partial<Preferences>>>>({});
@@ -378,7 +378,7 @@ function useAppState() {
       const after = queue.jobs.filter(job => job.native).map(job => `${job.series.slug}:${job.progress}:${job.status}`).join("|");
       if (before !== after) void refreshCatalog();
     };
-    poll(); const timer = setInterval(poll, 1000);
+    poll(); const timer = setInterval(() => { poll(); queue.pump(); }, 1000);
     return () => clearInterval(timer);
   }, [queue, refreshCatalog]);
 

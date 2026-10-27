@@ -1,6 +1,7 @@
+import { ToggleRow } from "./toggle-row";
 import { Pressable } from "./pressable";
 import { useState } from "react";
-import { ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ScrollView, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { SOURCES, filterDiscovery } from "../lib/parser";
 import { providerInfo } from "../lib/provider-info";
@@ -22,7 +23,7 @@ export function DiscoveryControls() {
   function setTags(values: string[]) { update({ genreFilters: { ...p.genreFilters, [source]: values } }); }
   return <View style={{ marginHorizontal: 22 }}>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 6, gap: 8 }}>{SOURCES.map(({ id: source, name }) => <Chip key={source} text={name} active={(p.source || "asura") === source} onPress={() => { setTagQuery(""); update({ source }); }} />)}</ScrollView>
-    {info.verification && <Pressable accessibilityLabel="Verify source" onPress={() => router.push({ pathname: "/verify-source", params: { source: p.source } })} style={[ui.row, { paddingVertical: 12 }]}><Icon name="shield-checkmark-outline" size={18} tint={color.lilac} /><Text style={{ color: color.lilac }}>Verify source</Text><Text style={[ui.muted, { fontSize: 11 }]}>If the website blocks requests</Text></Pressable>}
+    {info.verification && <Pressable accessibilityLabel="Verify source" onPress={() => router.push({ pathname: "/verify-source", params: { source: p.source } })} style={[ui.row, { paddingVertical: 6, minHeight:44 }]}><Icon name="shield-checkmark-outline" size={18} tint={color.lilac} /><Text style={{ color: color.lilac }}>Verify source</Text></Pressable>}
     {languages.length > 0 && <Pressable accessibilityLabel={`Choose ${info.name} language`} onPress={() => setLanguagesOpen(value => !value)} style={[ui.row, { paddingVertical: 14 }]}><Icon name="language-outline" tint={color.lilac} size={20} /><Text style={[ui.text, { flex: 1 }]}>{languages.find(([id]) => id === language)?.[1] || languages[0]?.[1] || "English"}</Text><Icon name="chevron-down" tint={color.muted} size={17} /></Pressable>}
     {languages.length > 0 && languagesOpen && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingBottom: 14 }}>{languages.map(([webtoonLanguage, text]) => <Chip key={webtoonLanguage} text={text} active={language === webtoonLanguage} onPress={() => { update({ webtoonLanguage, genreFilters: { ...p.genreFilters, [source]: [] } }); setTagQuery(""); setLanguagesOpen(false); }} />)}</View>}
     <View style={[ui.row, { borderBottomWidth: 1, borderColor: color.line }]}>
@@ -34,8 +35,7 @@ export function DiscoveryControls() {
       {tags.length > 12 && <TextInput accessibilityLabel="Find a tag" placeholder="Find a tag…" placeholderTextColor={color.muted} value={tagQuery} onChangeText={setTagQuery} style={{ color: color.text, backgroundColor: color.surface, borderRadius: 10, padding: 12, marginVertical: 8 }} />}
       <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled contentContainerStyle={{ flexDirection: "row", flexWrap: "wrap", gap: 7, paddingVertical: 8 }}>{tags.filter(tag => selectedTags.includes(tag) || tag.toLowerCase().includes(tagQuery.trim().toLowerCase())).map(tag => <Chip key={tag} text={tag} active={selectedTags.includes(tag)} onPress={() => setTags(selectedTags.includes(tag) ? selectedTags.filter(value => value !== tag) : [...selectedTags, tag])} />)}</ScrollView>
       <Text style={[ui.muted, { fontSize: 11, marginBottom: 10 }]}>{tags.length ? "Matches all selected tags in loaded stories." : "Tags appear as story details load."}</Text>
-      {([["hideDownloaded", "Hide downloaded"], ["hideLiked", "Hide liked"], ["hideBookmarked", "Hide bookmarked"]] as const).map(([key, label]) => <View key={key} style={[ui.row, { justifyContent: "space-between", paddingVertical: 3 }]}><Text style={ui.text}>{label}</Text><Switch accessibilityLabel={label} value={p[key]} onValueChange={value => update({ [key]: value })} trackColor={{ true: color.purple }} /></View>)}
-      <Text style={[ui.muted, { fontSize: 11, marginVertical: 5 }]}>Applies to Home and Explore.</Text>
+      {([["hideDownloaded", "Hide downloaded"], ["hideLiked", "Hide liked"], ["hideBookmarked", "Hide bookmarked"]] as const).map(([key, label]) => <ToggleRow key={key} title={label} value={p[key]} onValueChange={value => update({ [key]: value })} />)}
     </View>}
   </View>;
 }
