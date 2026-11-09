@@ -916,3 +916,20 @@ notificationPermission={granted:false,status:'undetermined',canAskAgain:true};
 await Promise.all([permissionModule.render('requestReleasePermission',false),permissionModule.render('requestReleasePermission',false)]);
 assert.equal(permissionPrompts,1,'concurrent first downloads share one Android permission request');
 console.log('Single cellular confirmation, shared reader progress, cancellation, notification cleanup and permission deduplication passed');
+const homeChapterRoutes=[], homeReads=[];
+const resumeShortcut=component('../src/components/reading-shortcut.tsx',{
+  'expo-router':{router:{push:route=>homeChapterRoutes.push(route)}},
+  '../lib/app-state':{useShelf:()=>({read:{example:{}}})},
+  '../lib/parser':parser,'../lib/reading-ux':readingUx,
+  '../lib/storage':{readingHistory:()=>({example:{chapter:'1',fraction:0}})},
+  './use-reader-navigation':{useReaderNavigation:()=>({busy:false,status:'',go:id=>homeReads.push(id)})},
+});
+const resumeHomeNodes=nodes(resumeShortcut.render('ReadingShortcut',{item:story,chapter:'1'}));
+const resumeHomeButton=resumeHomeNodes.find(node=>node.props?.accessibilityLabel==='Resume chapter 1 · Example');
+assert.ok(resumeHomeButton,'a previously opened first panel is resumable even at zero percent');
+const homeChapterButton=resumeHomeNodes.find(node=>node.props?.accessibilityLabel==='Chapter list for Example');
+assert.ok(!nodes(resumeHomeButton).includes(homeChapterButton),'the rightmost chapter control is separate from the resume tap target');
+homeChapterButton.props.onPress();assert.equal(homeReads.length,0);
+assert.equal(homeChapterRoutes.at(-1).params.chapters,'1','the shortcut requests the chapter-list anchor');
+resumeHomeButton.props.onPress();assert.deepEqual(homeReads,['1']);
+console.log('Home Resume label and separate right-aligned chapter-list navigation passed');

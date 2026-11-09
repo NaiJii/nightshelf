@@ -31,7 +31,7 @@ function DownloadStatus({ slug, showControls }: { slug: string; showControls: ()
 export default function SeriesDetails() {
   const showSheet = useActionSheet();
   const showDownloads = useDownloadDrawer();
-  const { slug, filter: initialFilter } = useLocalSearchParams<{ slug: string; filter?: string }>();
+  const { slug, filter: initialFilter, chapters: showChapters } = useLocalSearchParams<{ slug: string; filter?: string; chapters?: string }>();
   const { catalog, startDownload, loadDetails, cancelDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, connection } = useShelf();
   const downloads = useDownloads();
   const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : initialFilter === "unread" ? "unread" : "all");
@@ -49,6 +49,13 @@ export default function SeriesDetails() {
   useEffect(()=>()=>{if(jumpTimer.current)clearTimeout(jumpTimer.current);},[]);
   const [history, setHistory] = useState(readingHistory);
   const listRef = useRef<FlatList<string>>(null);
+  const chapterShortcut = useRef(showChapters === "1"), chapterOffset = useRef<number | null>(null);
+  const chapterContentReady = useRef(false);
+  function openChapterList() {
+    if (chapterShortcut.current && chapterContentReady.current && chapterOffset.current !== null && listRef.current) {
+      listRef.current.scrollToOffset({offset:chapterOffset.current,animated:false}); chapterShortcut.current = false;
+    }
+  }
   useFocusEffect(useCallback(() => { setHistory(readingHistory()); }, [setHistory]));
   useFocusEffect(useCallback(() => { void loadDetails(slug); return () => cancelDetails(slug); }, [loadDetails, cancelDetails, slug]));
   const item = catalog.find(value => value.slug === slug);
@@ -149,13 +156,13 @@ export default function SeriesDetails() {
   }
   return <SafeAreaView style={ui.safe} edges={["top", "bottom"]}>
     <View style={[ui.row, { paddingHorizontal: 10, borderBottomWidth: 1, borderColor: color.line }]}><Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable><Text numberOfLines={1} style={[ui.text, { flex: 1, fontWeight: "700" }]}>{item.title}</Text><DownloadIndicator/></View>
-    <FlatList ref={listRef} onScrollToIndexFailed={info=>{
+    <FlatList ref={listRef} onContentSizeChange={() => { chapterContentReady.current = true; openChapterList(); }} onScrollBeginDrag={() => { chapterShortcut.current = false; }} onScrollToIndexFailed={info=>{
       if(visibleIds.current.indexOf(jumpRequest.current)!==info.index)return;
       if(jumpAttempts.current++>=3){setJumpMessage("Could not scroll to this chapter. Use Find a chapter to narrow the list.");return;}
       listRef.current?.scrollToOffset({offset:Math.max(0,info.averageItemLength*info.index),animated:false});
       jumpTimer.current=setTimeout(scrollToJump,150);
     }} data={visible} keyExtractor={id => id} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={detailsLoading.includes(slug)} onRefresh={() => void loadDetails(slug, true)} tintColor={color.lilac} colors={[color.purple]} />}
-      ListHeaderComponent={<>
+      ListHeaderComponent={<View>
         <View style={[ui.row, { marginTop: 24, alignItems: "flex-start" }]}><Cover item={item} style={{ width: 115, height: 165, borderRadius: 17 }} /><DownloadBadge slug={slug}/><View style={{ flex: 1 }}><Text style={[ui.title, { fontSize: 25 }]}>{item.title}</Text><Text style={[ui.muted, { marginTop: 12 }]}>{item.type} · {item.chapterCount} chapters</Text><Text style={{ color: color.lilac, marginTop: 12, fontWeight: "800" }}>{rating ? `★ ${rating} · ` : ""}{item.bookmarks ? `${item.bookmarks} ${providerInfo(sourceOf(item)).audienceNoun}` : ""}</Text></View></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingVertical: 10 }}>{item.genres?.map(tag => <View key={tag} style={[ui.chip, { minHeight: 30, paddingHorizontal: 10 }]}><Text style={{ color: color.muted, fontSize: 11 }}>{tag}</Text></View>)}</ScrollView>
         <PublicationStatus item={item} /><View style={[ui.row, { gap: 0, marginTop: 6, borderBottomWidth: 1, borderColor: color.line }]}><SaveActions item={item} labels iconsOnly /><ReadingListAction item={item} iconsOnly /><ReleaseActions item={item} /></View>
@@ -163,7 +170,7 @@ export default function SeriesDetails() {
         {providerInfo(sourceOf(item)).verification && needsVerification(chapterError || notice) && <Pressable onPress={verifyDetails} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify and retry</Text></Pressable>}
         <ExpandableSummary key={`${slug}/${item.summary}`} text={item.summary || (detailsLoading.includes(slug) ? "Loading summary…" : "No summary available.")} />
         {firstSaved && <Pressable onPress={() => readNow.go(firstSaved)} accessibilityLabel={continueLabel} style={[ui.primary, { marginTop: 18 }]}><Text style={ui.primaryText}>{continueLabel}</Text></Pressable>}
-        <View style={[ui.row, { marginTop: 18, justifyContent: "space-between" }]}><Pressable accessibilityLabel="Jump to chapter number" accessibilityState={{expanded:jumpOpen}} onPress={()=>setJumpOpen(value=>!value)} style={[ui.row,{gap:7,paddingVertical:12}]}><Text style={ui.title}>Chapters</Text><Icon name="keypad-outline" size={17} tint={color.lilac}/></Pressable><Pressable accessibilityLabel="Chapter actions" onPress={() => showSheet("Chapter actions", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Mark all read / unread", onPress: () => mark(all) }, ...(savedRead.length ? [{ text: `Delete read chapters (${savedRead.length})`, style: "destructive" as const, onPress: () => { erase(savedRead); } }] : []), ...(item.hasLocalFiles ? [{ text: "Delete all saved files", style: "destructive" as const, onPress: () => { erase([], true); } }] : [])])} style={{ padding: 12 }}><Icon name="ellipsis-horizontal" /></Pressable></View>
+        <View onLayout={event => { chapterOffset.current = event.nativeEvent.layout.y; openChapterList(); }} style={[ui.row, { marginTop: 18, justifyContent: "space-between" }]}><Pressable accessibilityLabel="Jump to chapter number" accessibilityState={{expanded:jumpOpen}} onPress={()=>setJumpOpen(value=>!value)} style={[ui.row,{gap:7,paddingVertical:12}]}><Text style={ui.title}>Chapters</Text><Icon name="keypad-outline" size={17} tint={color.lilac}/></Pressable><Pressable accessibilityLabel="Chapter actions" onPress={() => showSheet("Chapter actions", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Mark all read / unread", onPress: () => mark(all) }, ...(savedRead.length ? [{ text: `Delete read chapters (${savedRead.length})`, style: "destructive" as const, onPress: () => { erase(savedRead); } }] : []), ...(item.hasLocalFiles ? [{ text: "Delete all saved files", style: "destructive" as const, onPress: () => { erase([], true); } }] : [])])} style={{ padding: 12 }}><Icon name="ellipsis-horizontal" /></Pressable></View>
         {jumpOpen && <View style={[ui.row,{gap:8,marginBottom:10}]}><TextInput accessibilityLabel="Chapter number" value={jumpValue} onChangeText={setJumpValue} keyboardType="decimal-pad" returnKeyType="go" onSubmitEditing={jump} placeholder="125 or 125.5" placeholderTextColor={color.muted} style={{flex:1,padding:14,color:color.text,backgroundColor:color.surface,borderRadius:12}}/><Pressable accessibilityLabel="Go to chapter" onPress={jump} style={ui.chip}><Icon name="arrow-forward" tint={color.lilac}/></Pressable></View>}
         {jumpMessage ? <Text accessibilityLiveRegion="polite" style={ui.muted}>{jumpMessage}</Text>:null}
         {locked.size>0 && <View style={[ui.row,{gap:6,paddingVertical:8}]}><Icon name="lock-closed-outline" size={13} tint={color.muted}/><Text style={[ui.muted,{fontSize:11}]}>{locked.size} restricted by the provider</Text></View>}
@@ -174,7 +181,7 @@ export default function SeriesDetails() {
         <TextInput accessibilityLabel="Search chapters" placeholder="Find a chapter…" placeholderTextColor={color.muted} value={query} onChangeText={setQuery} style={{ color: color.text, padding: 14, borderRadius: 12, backgroundColor: color.surface, marginTop: 14 }} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, marginVertical: 12 }}>{[["all", "All"], ["unread", "Unread"], ["saved", "Saved"]].map(([key, label]) => <Chip key={key} text={label} active={filter === key} onPress={() => setFilter(key)} />)}<Pressable accessibilityLabel={`Chapter order: ${newest ? "newest first" : "oldest first"}. Tap to reverse.`} onPress={() => setNewest(value => !value)} style={[ui.chip, ui.row]}><Icon name="swap-vertical-outline" size={16} tint={color.lilac} /><Text style={{ color: color.lilac, fontSize: 12, fontWeight: "700" }}>{newest ? "Newest" : "Oldest"}</Text></Pressable></View>
         <View style={[ui.row, { flexWrap: "wrap", paddingBottom: 12 }]}><Pressable disabled={deleting || !all.length || !fullList} onPress={() => setSelected(current => [...new Set([...current, ...all.filter(id=>!locked.has(id))])])} style={{ paddingVertical: 10 }}><Text style={{ color: color.lilac }}>Select all ({all.length})</Text></Pressable><Pressable accessibilityLabel={`Select all ${unread.length} unread chapters`} accessibilityHint="Includes saved chapters. Download saves only missing chapters." disabled={deleting || !fullList || !unread.length} onPress={() => { setSelected(unread); setFilter("unread"); setQuery(""); }} style={{ minHeight: 44, justifyContent: "center", opacity: deleting || !fullList || !unread.length ? 0.4 : 1 }}><Text style={{ color: color.lilac }}>Select all unread ({unread.length})</Text></Pressable></View>
-      </>}
+      </View>}
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes. Restricted episodes require WEBTOON." : "No chapters loaded. Pull to refresh.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {
         const isSaved = ownedSet.has(chapter), isRead = Boolean(ledger[chapter]), checked = chosenSet.has(chapter);

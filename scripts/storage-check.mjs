@@ -251,6 +251,7 @@ try {
   const novelRaw = {slug:'example',title:'Example novel',description:'Short ranking preview',chapter_count:2};
   const fakeFetch = `
 export const requests=[]; export let imagePending=false;
+export let coverRevision=1;export function changeCover(){coverRevision=2;}
 export let verificationMode='open';export function setVerificationMode(mode){verificationMode=mode;}
 export let vortexLive=false;export function setVortexLive(value){vortexLive=value;}
 export let vortexPageMode='normal';export function setVortexPageMode(value){vortexPageMode=value;}
@@ -302,6 +303,8 @@ export async function fetch(url,options={}){
   if(['img-r1.2xstorage.com','storage.waitst.com'].includes(new URL(url).hostname) && options.headers.Referer!=='https://www.mangakakalot.gg/') throw Error('CDN requires the source root referrer');
   if(['storage.vortexscans.org','img-r1.2xstorage.com','storage.waitst.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(url==='https://asurascans.com/comics/repair')return {ok:true,text:async()=>'<meta property="og:title" content="Repair"><meta property="og:image" content="https://cdn/repair.webp"><div>9.7 Rating 1 Chapters</div><a href="/comics/repair/chapter/1">Chapter 1</a>'};
+  if(url==='https://asurascans.com/comics/cover-test')return {ok:true,text:async()=>'<meta property="og:image" content="https://asurascans.com/og/comics/cover-test.jpg"><img id="cover-viewer-img" data-full-src="https://cdn/portrait-'+coverRevision+'.webp"><div>1 Chapters</div><a href="/comics/cover-test/chapter/1">1</a>'};
+  if(url.startsWith('https://cdn/portrait-'))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,coverRevision])};
   if(url==='https://asurascans.com/comics/partial')return {ok:true,text:async()=>'<meta property="og:title" content="Partial"><meta property="og:image" content="https://cdn/cover.webp"><div>201 Chapters</div><a href="/comics/partial/chapter/199">199</a><a href="/comics/partial/chapter/200">200</a>'};
   if(url==='https://asurascans.com/comics/repair/chapter/1')return {ok:true,text:async()=>'<img data-page-index="0" src="https://cdn/a.webp"><img data-page-index="1" src="https://cdn/b.webp">'};
   if(['https://cdn/a.webp','https://cdn/b.webp'].includes(url))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
@@ -330,6 +333,16 @@ export async function fetch(url,options={}){
     storage.saveCatalog([{...cached,title:'Example',url:'https://asurascans.com/comics/example',summary:'',detailsCached:false,syncedAt:new Date().toISOString()}]);
     const {syncCatalog,downloadChapters,repairSavedPanel,browseCatalog,enrichCatalogIds,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
     const http = await import('expo/fetch'); const {requests} = http;
+    const legacyCover=new File(storage.COVERS,'cover-test.webp');legacyCover.write(new Uint8Array([137,80,78,71,13,10,26,10,9,9,9,9]));
+    const coverStory={...cached,slug:'cover-test',url:'https://asurascans.com/comics/cover-test',cover:'https://asurascans.com/og/comics/cover-test.jpg',localCover:legacyCover.uri};
+    const portrait=await refreshSeries(coverStory,async()=>{});
+    assert.equal(portrait.cover,'https://cdn/portrait-1.webp');
+    assert.notEqual(portrait.localCover,legacyCover.uri,'old slug-only sharing-card cache is replaced by a source-specific portrait');
+    assert.ok(new File(portrait.localCover).exists);
+    const firstPortrait=portrait.localCover;await http.changeCover();
+    const changedPortrait=await refreshSeries(portrait,async()=>{});
+    assert.notEqual(changedPortrait.localCover,firstPortrait,'a changed cover URL cannot reuse the previous image cache');
+    assert.equal(new File(changedPortrait.localCover).size,12);
     const partialStory={...cached,slug:'partial',url:'https://asurascans.com/comics/partial',detailsCached:false,chapterIds:undefined};
     await assert.rejects(()=>refreshSeries(partialStory,async()=>{}),/incomplete chapter list/,'partial source responses cannot be saved as complete lists');
     const partialOverview=await refreshSeries(partialStory,async()=>{},undefined,false);
@@ -530,14 +543,14 @@ export async function fetch(url,options={}){
     new File(storage.chapterDirectory('repair','1'),'001.webp').write('damaged');
     const beforeRepair=requests.length;
     await downloadChapters(repairStory,'1',()=>{},async()=>{});
-    assert.deepEqual(requests.slice(beforeRepair).filter(url=>url.startsWith('https://cdn/')),['https://cdn/a.webp'],'repair only downloads the damaged panel and keeps valid originals');
+    assert.deepEqual(requests.slice(beforeRepair).filter(url=>['https://cdn/a.webp','https://cdn/b.webp'].includes(url)),['https://cdn/a.webp'],'repair only downloads the damaged panel and keeps valid originals');
     const repairFile=new File(storage.chapterDirectory('repair','1'),'001.webp');repairFile.delete();
     assert.equal(storage.chapterFiles('repair','1').length,1);
     assert.equal(storage.chapterFiles('repair','1',true).length,2,'reader keeps a placeholder for each manifest panel');
     const untouched=new File(storage.chapterDirectory('repair','1'),'002.webp').md5;
     const beforePanelRepair=requests.length;
     await repairSavedPanel(repairStory,'1',0,async()=>{});
-    assert.deepEqual(requests.slice(beforePanelRepair).filter(url=>url.startsWith('https://cdn/')),['https://cdn/a.webp'],'panel repair transfers only the requested public panel');
+    assert.deepEqual(requests.slice(beforePanelRepair).filter(url=>['https://cdn/a.webp','https://cdn/b.webp'].includes(url)),['https://cdn/a.webp'],'panel repair transfers only the requested public panel');
     assert.equal(new File(storage.chapterDirectory('repair','1'),'002.webp').md5,untouched,'other panels are untouched');
     assert.equal(storage.chapterIntact('repair','1'),true);
     await assert.rejects(()=>repairSavedPanel(repairStory,'2',0,async()=>{}),/no longer publicly available/);

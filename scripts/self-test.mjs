@@ -88,6 +88,11 @@ assert.deepEqual(chapterList(["414", "413"], [], {}, "all", "395", true, { "414"
 const series = `<title>Example | Asura Scans</title><meta property="og:title" content="Example | Asura Scans"><meta property="og:image" content="https://cdn/cover.webp"><div>9.7 Rating 12 Chapters 2K Bookmarks Status ongoing Type manhwa</div><a href="/comics/example/chapter/2">Chapter 2</a><a href="/comics/example/chapter/1">Chapter 1</a>`;
 assert.deepEqual(parseChapters(series, "https://asurascans.com/comics/example").map(item => item.id), ["1", "2"]);
 assert.equal(parseSeries(series, "https://asurascans.com/comics/example").rating, "9.7");
+const socialCover='<meta property="og:image" content="https://asurascans.com/og/comics/example.jpg">';
+const portraitCover='<img src="https://cdn.asurascans.com/asura-images/covers/example-400.webp" id="mobile-cover-img"><img id="cover-viewer-img" data-full-src="https://cdn.asurascans.com/asura-images/covers/example.webp">';
+assert.equal(parseSeries(socialCover+portraitCover,'https://asurascans.com/comics/example').cover,'https://cdn.asurascans.com/asura-images/covers/example.webp','Asura thumbnails select the full portrait instead of the title sharing card');
+assert.equal(parseSeries(socialCover,'https://asurascans.com/comics/example').cover,'','a landscape title card is never accepted as a missing portrait');
+
 assert.equal(parseSeries(series + '<meta name="description" content="Short preview"><div id="description-text"><p>The complete &amp; detailed summary.</p><p>Second paragraph.</p></div>', "https://asurascans.com/comics/example").summary, "The complete & detailed summary. Second paragraph.");
 assert.deepEqual(selectChapters(parseChapters(series, "https://asurascans.com/comics/example"), "2-3").map(item => item.id), ["2"]);
 assert.deepEqual(parsePageImages(`<img src="https://cdn/001.webp" data-page-index="0">`, "https://asurascans.com"), ["https://cdn/001.webp"]);

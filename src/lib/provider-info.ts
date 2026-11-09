@@ -32,7 +32,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     periods: ["week", "month", "all"], localSorts: ["smart", "chapters"],
     chapterCache: "inline",
     rankOrder: "period",
-    refreshCover: "discovery",
+    refreshCover: "details",
   },
   {
     id: "webtoon", name: "WEBTOON", requestAgent: "desktop", chapterNoun: "episodes", audienceNoun: "subscribers",

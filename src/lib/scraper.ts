@@ -71,7 +71,11 @@ async function cacheCover(series: Series, guard: Guard, signal?: AbortSignal): P
   if (!series.cover) return undefined;
   const provider = storyProvider(series);
   initializeStorage();
-  const file = new File(COVERS, `${series.slug}${extension(series.cover)}`);
+  // The same story can change its cover URL. Legacy slug-only files may hold a
+  // sharing card, so never reuse them for a newly selected portrait.
+  let hash = 2166136261;
+  for (let index = 0; index < series.cover.length; index++) hash = Math.imul(hash ^ series.cover.charCodeAt(index), 16777619);
+  const file = new File(COVERS, `${series.slug}-${(hash >>> 0).toString(16)}${extension(series.cover)}`);
   if (file.exists) {
     const handle = file.open();
     let valid = false;

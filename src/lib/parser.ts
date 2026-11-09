@@ -203,6 +203,18 @@ export function parseChapters(source: string, baseUrl: string): Chapter[] {
   return [...chapters.values()].sort((a,b)=>chapterSort(a.id,b.id));
 }
 
+function asuraCover(source: string, baseUrl: string): string {
+  const images = source.match(/<img\b[^>]*>/gi) || [];
+  const full = images.find(tag => attribute(tag, "id") === "cover-viewer-img");
+  const mobile = images.find(tag => attribute(tag, "id") === "mobile-cover-img");
+  const portrait = images.find(tag => /\/asura-images\/covers\//.test(attribute(tag, "src")));
+  for (const value of [full && attribute(full, "data-full-src"), mobile && attribute(mobile, "src"), portrait && attribute(portrait, "src"), meta(source, "og:image")]) {
+    if (!value) continue;
+    try { const url = new URL(value, baseUrl); if (["http:", "https:"].includes(url.protocol) && !url.pathname.startsWith("/og/")) return url.toString(); } catch { /* try the next cover candidate */ }
+  }
+  return "";
+}
+
 export function parseSeries(source: string, url: string, chapters = parseChapters(source, url)): Series {
   const slug = new URL(url).pathname.split("/").filter(Boolean).at(-1) ?? "series";
   const text = plainText(source);
@@ -213,7 +225,7 @@ export function parseSeries(source: string, url: string, chapters = parseChapter
     title: (meta(source, "og:title") || source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || slug).split(" | ")[0].trim(),
     alternativeTitles: parseAlternativeTitles(source.match(/<[^>]+\bid=["']alt-titles["'][^>]*>([\s\S]*?)<\//i)?.[1]),
     summary: plainText(source.match(/<div\b[^>]*\bid=["']description-text["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || meta(source, "og:description") || meta(source, "description")),
-    cover: meta(source, "og:image"),
+    cover: asuraCover(source, url),
     rating: beforeLabel(text, "Rating"),
     bookmarks: beforeLabel(text, "Bookmarks"),
     status: afterLabel(text, "Status"),
