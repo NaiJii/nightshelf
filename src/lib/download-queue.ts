@@ -9,6 +9,7 @@ export type DownloadJob = {
   retryAt?: number; retryCount?: number;
   autoBookmark?: boolean;
   native?: boolean;
+  reader?: boolean;
   currentChapter?: string; chapterProgress?: number; completedChapters?: number; totalChapters?: number;
   pauseRequested?: boolean;
   resumeBlocked?: boolean;

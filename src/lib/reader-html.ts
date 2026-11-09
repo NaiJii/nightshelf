@@ -51,7 +51,7 @@ window.readerActive = false;
 window.readerChromeVisible = false;
 window.readerContinuous = false;
 let swipe, userScrolled = false;
-let tapTimer, tapPoint, touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
+let touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
 const scrubber = document.getElementById('reader-scrubber'), range = document.getElementById('scrub-range');
 const preview = document.getElementById('scrub-preview'), crop = document.getElementById('scrub-crop'), snippet = document.getElementById('scrub-text');
 const scrubLabel = document.getElementById('scrub-label'), scrubPosition = document.getElementById('scrub-position');
@@ -129,9 +129,10 @@ window.readerReloadPanel = (index, id = readerChapter) => {
   const image = panelImages(id)[index]; if (!image) return;
   const anchor = images.find(value => value.parentElement.getBoundingClientRect().bottom > 0)?.parentElement;
   const top = anchor?.getBoundingClientRect().top || 0;
+  const anchorChapter = readerChapter;
   image.onload = () => {
     image.hidden = false; image.nextElementSibling.hidden = true;
-    if (anchor) scrollTo(0,scrollY + anchor.getBoundingClientRect().top - top);
+    if (anchor && anchorChapter === readerChapter && anchor.isConnected !== false) scrollTo(0,scrollY + anchor.getBoundingClientRect().top - top);
     window.readerPanelRepairState(index,false,undefined,id); window.readerUpdateControls();
     window.ReactNativeWebView.postMessage(JSON.stringify({repaired:index,chapter:id}));
   };
@@ -139,16 +140,23 @@ window.readerReloadPanel = (index, id = readerChapter) => {
   image.src = image.src.split('?')[0] + '?repair=' + Date.now();
 };
 function hideControls() { window.readerChromeVisible = false; window.readerUpdateControls(); window.ReactNativeWebView.postMessage(JSON.stringify({controls:'hide'})); }
+window.readerSetActive = active => {
+  if (!active) report(true);
+  window.readerActive = active;
+  swipe = null; touch = null;
+  scrolling = false; chromeSettlesUntil = Date.now() + 600;
+  window.readerUpdateControls();
+  if (active) report();
+};
 addEventListener('touchstart', event => {
-  if (scrubEvent(event)) { touch = null; swipe = null; clearTimeout(tapTimer); tapTimer = undefined; return; }
+  if (scrubEvent(event)) { touch = null; swipe = null; return; }
   if (event.touches.length > 1) hideControls();
   const finger = event.touches[0];
   swipe = event.touches.length === 1 && (window.visualViewport?.scale || 1) <= 1.05
     ? {x:finger.clientX,y:finger.clientY,dx:0,dy:0,top:scrollY <= 2,bottom:scrollY + innerHeight >= document.documentElement.scrollHeight - 2} : null;
-  const secondTap = Boolean(tapTimer && finger && tapPoint && Math.hypot(finger.clientX - tapPoint.x, finger.clientY - tapPoint.y) < 32);
-  clearTimeout(tapTimer); tapTimer = undefined;
+
   touch = event.touches.length === 1
-    ? {x:finger.clientX, y:finger.clientY, at:Date.now(), double:secondTap} : null;
+    ? {x:finger.clientX, y:finger.clientY, at:Date.now()} : null;
 }, {passive:true});
 addEventListener('touchmove', event => {
   if (scrubEvent(event)) return;
@@ -158,7 +166,7 @@ addEventListener('touchmove', event => {
   }
   if (touch && (event.touches.length !== 1 || Math.hypot(event.touches[0].clientX - touch.x, event.touches[0].clientY - touch.y) > 10)) { touch = null; chromeSettlesUntil = 0; hideControls(); }
 }, {passive:true});
-addEventListener('touchcancel', () => { swipe = null; touch = null; clearTimeout(tapTimer); tapTimer = undefined; });
+addEventListener('touchcancel', () => { swipe = null; touch = null; });
 addEventListener('touchend', event => {
   lastTouchEnd = Date.now();
   if (scrubEvent(event)) return;
@@ -168,21 +176,11 @@ addEventListener('touchend', event => {
   }
   swipe = null;
   if (touch && !event.touches.length && Date.now() - touch.at < 350) {
-    if (touch.double && window.readerActive) {
-      hideControls();
-      const scale = window.visualViewport?.scale || 1;
-      window.ReactNativeWebView.postMessage(JSON.stringify({zoom:scale > 1.05 ? 1 / scale : 2}));
-    } else {
-      tapPoint = {x:touch.x, y:touch.y};
-      tapTimer = setTimeout(() => {
-      tapTimer = undefined;
-      if (window.readerActive) {
-        chromeSettlesUntil = Date.now() + 400;
-        window.readerChromeVisible = !window.readerChromeVisible;
-        window.readerUpdateControls();
-        window.ReactNativeWebView.postMessage(JSON.stringify({controls:window.readerChromeVisible ? 'show' : 'hide'}));
-      }
-      }, 300);
+    if (window.readerActive) {
+      chromeSettlesUntil = Date.now() + 400;
+      window.readerChromeVisible = !window.readerChromeVisible;
+      window.readerUpdateControls();
+      window.ReactNativeWebView.postMessage(JSON.stringify({controls:window.readerChromeVisible ? 'show' : 'hide'}));
     }
   }
   touch = null;
@@ -201,35 +199,36 @@ function finalPanelVisible(rect, viewport) {
   return rect.bottom > viewport.top && rect.bottom <= viewport.bottom + 1 && rect.right > viewport.left && rect.left < viewport.right;
 }
 function checkCompletion() {
-  if (finished || !restored || !window.readerActive || window.readerChromeVisible || document.hidden) return false;
+  if (finished || !restored || !window.readerActive || document.hidden) return false;
   const last = images.at(-1) || (chapterRoot || document).querySelector('.novel p:last-child');
   const viewport = window.visualViewport;
   const top = viewport ? viewport.offsetTop : 0, left = viewport ? viewport.offsetLeft : 0;
+  const visibleBottom = top + (viewport ? viewport.height : innerHeight) - (window.readerChromeVisible ? (window.readerScrubberBottom || 96) + scrubber.offsetHeight : 0);
   // Opening a short chapter or remaining on its first page is not a completed read.
   const firstPage = images.length > 1 && images[0].getBoundingClientRect().bottom > top;
-  if (scrollY + top - chapterBounds().start <= 1 || firstPage || !last || !finalPanelVisible(last.getBoundingClientRect(), {top, left, bottom:top + (viewport ? viewport.height : innerHeight), right:left + (viewport ? viewport.width : innerWidth)}) || !images.every(image => image.complete && image.naturalWidth > 0)) return false;
+  if (scrollY + top - chapterBounds().start <= 1 || firstPage || !last || !finalPanelVisible(last.getBoundingClientRect(), {top, left, bottom:visibleBottom, right:left + (viewport ? viewport.width : innerWidth)}) || !images.every(image => image.complete && image.naturalWidth > 0)) return false;
   finished = true; completedChapters.add(readerChapter);
   window.ReactNativeWebView.postMessage(JSON.stringify({complete:true, fraction:1,chapter:readerChapter}));
   return true;
 }
-function report() {
+function report(snapshot = false) {
   window.readerUpdateControls();
-  if (!restored || !window.readerActive || document.hidden) return;
-  if (checkCompletion()) return;
+  if (!restored || (!snapshot && (!window.readerActive || document.hidden))) return;
+  if (!snapshot && checkCompletion()) return;
   const viewport = window.visualViewport;
   const top = viewport ? viewport.offsetTop : 0;
   const bounds = chapterBounds();
   const max = Math.max(1, bounds.end - bounds.start - innerHeight);
   const visiblePage = images.findIndex(image => image.getBoundingClientRect().bottom > top);
   const page = visiblePage < 0 ? Math.max(0, images.length - 1) : visiblePage;
-  const atStart = images.length > 1 ? page === 0 : scrollY + top - bounds.start <= 1;
-  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(1, (scrollY + top - bounds.start) / max)), page: page + 1,chapter:readerChapter}));
+  const atStart = scrollY + top - bounds.start <= 1;
+  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(1, (scrollY + top - bounds.start) / max)), page: page + 1,chapter:readerChapter,snapshot,complete:snapshot && finished ? true : undefined}));
 }
-addEventListener('load', () => { scrollTo(0, ${safeFraction} * Math.max(0, document.documentElement.scrollHeight - innerHeight)); restored = true; report(); });
+addEventListener('load', () => { const bounds = chapterBounds(); scrollTo(0, bounds.start + ${safeFraction} * Math.max(0, bounds.end - bounds.start - innerHeight)); restored = true; report(); });
 function onScroll() {
   window.readerUpdateControls();
   // Momentum is not finger movement. Preserve intentional taps, including the viewport resize when chrome appears.
-  if (!scrubbing && !touch && !tapTimer && Date.now() >= chromeSettlesUntil && !scrolling) hideControls();
+  if (!scrubbing && !touch && Date.now() >= chromeSettlesUntil && !scrolling) hideControls();
   checkCompletion();
   window.readerTrackChapter?.();
   scrolling = true;
@@ -250,6 +249,7 @@ const chapterHost = document.getElementById('reader-chapters');
 const attaching = new Map(), prefetchRequested = new Set();
 let edgeRequested = '';
 let lastStreamY = scrollY;
+let restoreTarget;
 window.readerNeighbors = [];
 let endingConfig;
 function sectionFor(id) { return [...chapterHost.children].find(node => node.dataset.chapter === id); }
@@ -289,6 +289,15 @@ function activateChapter(node) {
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({activeChapter:readerChapter}));
 }
+window.readerRestorePosition = (id, fraction) => {
+  const node = chapterHost && sectionFor(id);
+  if (!node) { restoreTarget = {id, fraction}; return; }
+  restoreTarget = undefined;
+  activateChapter(node);
+  const bounds = chapterBounds();
+  scrollTo(0, bounds.start + scrubFraction(fraction) * Math.max(0, bounds.end - bounds.start - innerHeight));
+  report();
+};
 window.readerTrackChapter = () => {
   if (!chapterHost || !restored || !window.readerActive || document.hidden || !window.readerContinuous || scrubbing || (window.visualViewport?.scale || 1) > 1.05) return;
   const y = window.visualViewport?.offsetTop || 0;
@@ -328,9 +337,10 @@ window.readerAttachChapter = (id, content) => {
   Promise.all(pending).then(() => {
     attaching.delete(id);
     // Downloads can finish after changing chapter or turning continuous mode off.
-    if (!window.readerContinuous || !window.readerNeighbors.includes(id) || sectionFor(id)) return;
+    if (!window.readerContinuous || (!window.readerNeighbors.includes(id) && restoreTarget?.id !== id) || sectionFor(id)) return;
     keepReaderAnchor(() => window.readerNeighbors[0] === id ? chapterHost.prepend(node) : chapterHost.append(node));
     lastStreamY = scrollY; renderEnding();
+    if (restoreTarget?.id === id) window.readerRestorePosition(id, restoreTarget.fraction);
     window.ReactNativeWebView.postMessage(JSON.stringify({attachedChapter:id}));
     window.readerUpdateControls();
   });

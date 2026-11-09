@@ -7,7 +7,6 @@ import { WebView } from "react-native-webview";
 import { chapterDirectory, chapterFiles, chapterIntact, localChapters, novelChapter, readingHistory, savePosition } from "../../../lib/storage";
 import { chapterList, chapterListCached, chapterProgress, releaseLabel } from "../../../lib/parser";
 import { readerChapterHtml, readerHtml } from "../../../lib/reader-html";
-import { readerControls } from "../../../lib/reader-controls";
 import { color, Icon, ui } from "../../../components/ui";
 import { useShelf } from "../../../lib/app-state";
 import { useActionSheet } from "../../../components/action-sheet";
@@ -18,7 +17,8 @@ function ReaderChrome({ hidden, edge, children }: { hidden: boolean; edge: "top"
   const [value] = useState(() => new Animated.Value(hidden ? 0 : 1));
   useEffect(() => {
     const animation = Animated.timing(value, { toValue: hidden ? 0 : 1, duration: 180, useNativeDriver: true });
-    animation.start(); return () => animation.stop();
+    const listener = AppState.addEventListener("change", state => { if (state === "active") { animation.stop(); value.setValue(hidden ? 0 : 1); } });
+    animation.start(); return () => { animation.stop(); listener.remove(); };
   }, [hidden, value]);
   return <Animated.View pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"} style={{position:"absolute",left:0,right:0,[edge]:0,opacity:value,transform:[{translateY:value.interpolate({inputRange:[0,1],outputRange:[edge === "top" ? -18 : 18,0]})}]}}>{children}</Animated.View>;
 }
@@ -47,12 +47,23 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   const [html] = useState(() => readerHtml(files, position, novel, preferences.novelFontSize, preferences.novelTheme, initialChapter));
   const baseUrl = `${chapterDirectory(slug, initialChapter).uri.replace(/\/$/, "")}/`;
   const web = useRef<WebView>(null);
+  const loading = useRef(true);
   const scrubberBottom = useRef(96);
   const lastProgressWrite = useRef(0);
   const pendingProgress = useRef<{ chapter: string; fraction: number } | null>(null);
-  useEffect(() => () => {
+  const flushProgress = useCallback(() => {
     const pending = pendingProgress.current;
     if (pending && !manualUnread.current.has(pending.chapter)) savePosition(slug, pending.chapter, pending.fraction);
+    pendingProgress.current = null;
+  }, [slug]);
+  useEffect(() => flushProgress, [flushProgress]);
+  const recordProgress = useCallback((id: string, fraction: number, complete: boolean) => {
+    if (!Number.isFinite(fraction) || manualUnread.current.has(id)) return;
+    const value = Math.max(0, Math.min(1, fraction)), now = Date.now();
+    pendingProgress.current = {chapter:id,fraction:value};
+    if (complete || fraction === 0 || now - lastProgressWrite.current >= 1500) {
+      savePosition(slug, id, value); lastProgressWrite.current = now;
+    }
   }, [slug]);
   const repair = useRef<AbortController | null>(null);
   const controlsError = useReaderConveniences(web, Boolean(files.length || novel));
@@ -63,7 +74,7 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   const index = chapters.indexOf(chapter);
   const previous = chapters[index - 1];
   const next = chapters[index + 1];
-  const pendingOpen = useRef<{ chapter: string; end: boolean } | null>(null);
+  const pendingOpen = useRef<{ chapter: string; end: boolean; fraction?: number } | null>(null);
   const neighbors = useRef({ previous, next });
   useEffect(() => { neighbors.current = { previous, next }; }, [previous, next]);
   const attach = useCallback((id: string) => {
@@ -112,9 +123,13 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   useFocusEffect(useCallback(() => {
     focused.current = true;
     web.current?.injectJavaScript(`window.readerActive=${AppState.currentState === "active"};window.readerUpdateControls?.();true;`);
-    const listener = AppState.addEventListener("change", state => { if(state!=="active")repair.current?.abort(); web.current?.injectJavaScript(`window.readerActive=${state === "active"};window.readerUpdateControls?.();true;`); });
-    return () => { repair.current?.abort(); focused.current = false; web.current?.injectJavaScript("window.readerActive=false;window.readerUpdateControls?.();true;"); listener.remove(); };
-  }, []));
+    const listener = AppState.addEventListener("change", state => {
+      if (state !== "active") { repair.current?.abort(); flushProgress(); }
+      else setHidden(false);
+      web.current?.injectJavaScript(`window.readerSetActive?.(${state === "active"});true;`);
+    });
+    return () => { repair.current?.abort(); flushProgress(); focused.current = false; web.current?.injectJavaScript("window.readerSetActive?.(false);true;"); listener.remove(); };
+  }, [flushProgress, setHidden]));
 
   useEffect(() => {
     if (chapterFiles(slug, initialChapter).length || novelChapter(slug, initialChapter)) savePosition(slug, initialChapter, position);
@@ -123,18 +138,28 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   useEffect(() => { web.current?.injectJavaScript(`window.readerChromeVisible=${!hidden};window.readerUpdateControls?.();true;`); }, [hidden]);
 
   const chaptersSaved = (id: string) => (item?.localChapters || []).includes(id);
-  return <View nativeID={`nightshelf-reader:${baseUrl}`} collapsable={false} style={ui.safe}>
+  return <View style={ui.safe}>
     {files.length > 0 || novel ? <WebView ref={web} source={{ html, baseUrl }} style={{ flex: 1, backgroundColor: "#08080b" }} originWhitelist={["*"]}
       allowFileAccess allowFileAccessFromFileURLs allowUniversalAccessFromFileURLs={false}
       javaScriptEnabled domStorageEnabled={false} setBuiltInZoomControls setDisplayZoomControls={false} scalesPageToFit
       textZoom={100} overScrollMode="never" setSupportMultipleWindows={false} mixedContentMode="never"
       onShouldStartLoadWithRequest={request => request.url === baseUrl || request.url === "about:blank" || request.url.startsWith("data:text/html")}
       startInLoadingState renderLoading={() => <ActivityIndicator color={color.lilac} style={{ position: "absolute", top: "45%", alignSelf: "center" }} />}
-      onLoadEnd={() => { syncNeighbors(); web.current?.injectJavaScript(`window.readerActive=${focused.current && AppState.currentState === "active"};window.readerChromeVisible=${!hidden};window.readerContinuous=${preferences.readerContinuous};window.readerScrubberBottom=${scrubberBottom.current};window.readerUpdateControls?.();${endingScript}window.readerSetAppearance?.(${preferences.novelFontSize},${JSON.stringify(preferences.novelTheme)});true;`); }}
+      onLoadStart={() => { loading.current = true; }}
+      onLoadEnd={() => {
+        const id = currentChapter.current;
+        const fraction = pendingProgress.current?.chapter === id ? pendingProgress.current.fraction : chapterProgress(readingHistory()[slug], id);
+        loading.current = false;
+        syncNeighbors();
+        if (id !== initialChapter) pendingOpen.current = {chapter:id,end:false,fraction};
+        web.current?.injectJavaScript(`window.readerActive=${focused.current && AppState.currentState === "active"};window.readerChromeVisible=${!hidden};window.readerContinuous=${preferences.readerContinuous};window.readerScrubberBottom=${scrubberBottom.current};window.readerUpdateControls?.();${endingScript}window.readerSetAppearance?.(${preferences.novelFontSize},${JSON.stringify(preferences.novelTheme)});window.readerRestorePosition?.(${JSON.stringify(id)},${fraction});true;`);
+        if (id !== initialChapter) attach(id);
+      }}
       onError={() => setError("Could not open the saved chapter. Try reopening it.")}
       onMessage={event => {
         try {
           const data = JSON.parse(event.nativeEvent.data);
+          if (loading.current && (Number.isFinite(data.fraction) || data.activeChapter)) return;
           if (data.ending && focused.current && AppState.currentState === "active") {
             if (data.ending === "refresh") void loadDetails(slug, true);
             if (data.ending === "bookmark") toggleStory(slug, "bookmarked");
@@ -147,28 +172,20 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
           }
           if (typeof data.activeChapter === "string" && chapters.includes(data.activeChapter) && focused.current && AppState.currentState === "active") {
             const id = data.activeChapter;
+            flushProgress();
             currentChapter.current = id; visited.current.add(id); pendingOpen.current = null;
             setChapter(id); setPage(1); setIntact(chapterIntact(slug, id)); setError("");
             return;
           }
           if (typeof data.attachedChapter === "string") {
             const pending = pendingOpen.current;
-            if (pending && pending.chapter === data.attachedChapter && focused.current) web.current?.injectJavaScript(`window.readerOpenChapter?.(${JSON.stringify(pending.chapter)},${pending.end});true;`);
+            if (pending && pending.chapter === data.attachedChapter && focused.current) web.current?.injectJavaScript(pending.fraction === undefined ? `window.readerOpenChapter?.(${JSON.stringify(pending.chapter)},${pending.end});true;` : `window.readerRestorePosition?.(${JSON.stringify(pending.chapter)},${pending.fraction});true;`);
             return;
           }
           // An adjacent section can finish loading or report progress before React rerenders.
           const sourceChapter = typeof data.chapter === "string" && data.chapter ? data.chapter : currentChapter.current;
           const sourceFiles = sourceChapter === chapter ? files : chapterFiles(slug, sourceChapter, true);
           const sourceIntact = sourceChapter === chapter ? intact : chapterIntact(slug, sourceChapter);
-          if (Number.isFinite(data.zoom) && data.zoom >= 1 / 6 && data.zoom <= 2) {
-            if (!readerControls) { setError("Zoom requires the updated Android app."); return; }
-            if (focused.current && AppState.currentState === "active" && readerControls) {
-              void readerControls.zoomReader(baseUrl, data.zoom).then(ok => {
-                if (!ok && focused.current) setError("Could not zoom this chapter. Tap to reload and retry.");
-              }).catch(() => { if (focused.current) setError("Double-tap zoom needs the latest Android build."); });
-            }
-            return;
-          }
           if (data.controls === "show" || data.controls === "hide") {
             if (focused.current && AppState.currentState === "active") { setHidden(data.controls === "hide"); if (data.controls === "hide") setOptionsOpen(false); }
             return;
@@ -188,6 +205,12 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
           if (Number.isInteger(data.repaired)) { if(focused.current && sourceChapter === currentChapter.current)setIntact(chapterIntact(slug,sourceChapter)); return; }
           if (data.error && Number.isInteger(data.page)) { if (sourceChapter === currentChapter.current) setIntact(false); web.current?.injectJavaScript(`window.readerPanelRepairState?.(${data.page},false,"",${JSON.stringify(sourceChapter)});true;`); return; }
           if (data.error) { setError("A saved image could not be opened. Re-download this chapter to repair it."); return; }
+          if (data.snapshot === true && focused.current && visited.current.has(sourceChapter) && Number.isFinite(data.fraction) && !manualUnread.current.has(sourceChapter)) {
+            if (data.complete === true && chapterIntact(slug, sourceChapter)) completeChapter(slug, sourceChapter);
+            savePosition(slug, sourceChapter, Math.max(0, Math.min(1, data.fraction)));
+            pendingProgress.current = null;
+            return;
+          }
           if (!focused.current || AppState.currentState !== "active") return;
           if (data.boundary === "next" || data.boundary === "previous") {
             if (sourceChapter === chapter && sourceChapter === currentChapter.current && sourceIntact && !error) navigation.go(data.boundary === "next" ? next : previous, true, data.boundary === "previous");
@@ -199,8 +222,7 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
             });
           }
           if (data.complete === true && !manualUnread.current.has(sourceChapter) && (sourceIntact || chapterIntact(slug,sourceChapter)) && !error && focused.current && AppState.currentState === "active") completeChapter(slug, sourceChapter);
-          if (Number.isFinite(data.fraction) && !manualUnread.current.has(sourceChapter)) pendingProgress.current = {chapter:sourceChapter,fraction:Math.max(0,Math.min(1,data.fraction))};
-          if (Number.isFinite(data.fraction) && !manualUnread.current.has(sourceChapter) && (data.complete || data.fraction === 0 || event.timeStamp - lastProgressWrite.current >= 1500)) { savePosition(slug, sourceChapter, Math.max(0, Math.min(1, data.fraction))); lastProgressWrite.current = event.timeStamp; }
+          recordProgress(sourceChapter, data.fraction, data.complete === true);
           if (Number.isInteger(data.page) && sourceChapter === currentChapter.current) setPage(Math.max(1, Math.min(sourceFiles.length, data.page)));
         } catch { /* ignore malformed messages */ }
       }} /> : <Pressable accessibilityLabel="No saved pages found. Show reader controls" onPress={() => setHidden(false)} style={{ flex: 1, padding: 25 }}><Text style={ui.empty}>No saved pages found.</Text></Pressable>}

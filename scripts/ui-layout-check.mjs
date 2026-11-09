@@ -10,8 +10,9 @@ import * as releasePolicy from "../src/lib/release-policy.ts";
 import * as exploreSessions from "../src/lib/explore-session.ts";
 import * as readingUx from "../src/lib/reading-ux.ts";
 import * as requestControl from "../src/lib/request-control.ts";
+import * as appUpdatePolicy from "../src/lib/app-update-policy.ts";
 
-function component(file, extraModules = {}, globals = {}) {
+function component(file, extraModules = {}, globals = {}, expose = []) {
   const slots = [], effects = []; let cursor = 0;
   const element = (type, props) => ({ type, props });
   const modules = {
@@ -27,15 +28,47 @@ function component(file, extraModules = {}, globals = {}) {
     "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput", "ActivityIndicator", "Switch"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "./ui": { color: {}, ui: {}, Icon: "Icon" },
+    "./reader-transfers": {cancelReaderTransfer:()=>false,beginReaderTransfer:()=>({progress(){},finish(){}})},
     ...extraModules,
   };
   const exports = {};
-  const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8") + expose.map(name=>`\nexport { ${name} };`).join(''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, ...globals, require: name => { if (name.endsWith("/provider-info")) return providerInfo; if (name.endsWith("/provider-errors")) return providerErrors; if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; if (name.endsWith('/download-display')) return downloadDisplay;
 assert.ok(modules[name], name); return modules[name]; } });
-  return { effects, render(name, ...args) { cursor = 0; effects.length = 0; return exports[name](...args); } };
+  return { exports, effects, render(name, ...args) { cursor = 0; effects.length = 0; return exports[name](...args); } };
 }
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
+{
+  let requests = 0;
+  let connection = {type:'wifi',isConnected:true,isInternetReachable:true,details:{}};
+  const preferences = {autoAppUpdates:true};
+  const makeUpdates = () => component('../src/components/app-updates-provider.tsx', {
+    'react-native': {AppState:{currentState:'active'}},
+    '@react-native-community/netinfo': {fetch:async()=>connection},
+    'expo-file-system': {File:class {textSync(){return JSON.stringify({checkedAt:Date.now()});} write(){}},Directory:class {},Paths:{}},
+    '../lib/app-state': {useShelf:()=>({preferences})},
+    '../lib/storage': {ROOT:{create(){}}},
+    '../lib/network': {networkGuard:()=>async()=>{}},
+    '../lib/app-updates': {installedApp:()=>({version:'2.0.9',architecture:'arm64'})},
+    '../lib/app-update-policy': appUpdatePolicy,
+  }, {fetch:async()=>{requests++;return {ok:true,json:async()=>[]};}});
+  const updates = makeUpdates();
+  const state = () => updates.render('AppUpdatesProvider',{children:null}).props.value;
+  await state().check();
+  assert.equal(requests,1,'fresh startup checks even when the disk cache was checked today');
+  await state().check();
+  assert.equal(requests,1,'repeated foreground/network events do not duplicate a successful startup check');
+  const offlineUpdates = makeUpdates();
+  connection = {...connection,isConnected:false};
+  await offlineUpdates.render('AppUpdatesProvider',{}).props.value.check();
+  assert.equal(requests,1,'offline startup stays quiet');
+  connection = {...connection,isConnected:true};
+  await offlineUpdates.render('AppUpdatesProvider',{}).props.value.check();
+  assert.equal(requests,2,'reconnection can complete the pending startup check');
+  preferences.autoAppUpdates = false;
+  await makeUpdates().render('AppUpdatesProvider',{}).props.value.check();
+  assert.equal(requests,2,'automatic update preference remains respected');
+}
 const touch=component('../src/components/pressable.tsx');
 const touchHandler=()=>{};
 const touchButton=touch.render('Pressable',{onPress:touchHandler,accessibilityLabel:'Bookmark',disabled:false,style:{minHeight:48}});
@@ -61,6 +94,7 @@ const exploreModules = {
   '../../lib/parser': {filterDiscovery:items=>items,sortExplore:items=>items},
   '../../lib/explore-session': exploreSessions,
   '../../lib/scraper': {FIRST_PAGE:{page:1}},
+  '../../lib/reading-ux': readingUx,
   '../../components/ui': {ui:{},color:{},Icon:'Icon',Chip:'Chip',PageHeading:'PageHeading'},
   '../../components/series-card': {SeriesCard:'SeriesCard'},
   '../../components/use-source-retry': {useSourceRetry:retry=>{retryExplore=retry;return ()=>{};}},
@@ -152,7 +186,8 @@ assert.equal(renderSummary().filter(node => node.type === "Text" && node.props.c
 measure(3);
 assert.ok(!renderSummary().some(node => node.type === "Pressable"), "remeasuring at a wider width or smaller font removes the unnecessary control");
 
-const sheets = component("../src/components/action-sheet.tsx");
+let sheetPath = "/series/example";
+const sheets = component("../src/components/action-sheet.tsx", {"expo-router":{usePathname:()=>sheetPath}});
 const renderSheet = () => sheets.render("ActionSheetProvider", { children: null });
 const show = renderSheet().props.value;
 let chosen = 0;
@@ -167,6 +202,11 @@ assert.ok(nodes(renderSheet()).some(node => node.props?.children === "Confirmati
 nodes(renderSheet()).find(node => node.type === "Modal").props.onRequestClose();
 assert.equal(nodes(renderSheet()).find(node => node.type === "Modal").props.visible, false);
 assert.equal(chosen, 1, "Android Back dismisses confirmation without performing its action");
+show('Old screen',undefined,[{text:'Stale action',onPress:()=>chosen++}]);
+const staleAction=nodes(renderSheet()).find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Stale action'));
+sheetPath='/library';renderSheet();sheets.effects.forEach(effect=>effect.callback());
+assert.equal(nodes(renderSheet()).find(node=>node.type==='Modal').props.visible,false,'navigation dismisses the previous screen menu');
+staleAction.props.onPress();assert.equal(chosen,1,'a queued press on an old menu cannot execute its action');
 
 const story = { url: 'https://asurascans.com/comics/example', slug: 'example', title: 'Example', summary: 'Summary.', type: 'Comic', rating: '', chapterCount: 2, chapterIds: ['1','2'], localChapters: ['1'], detailsCached: true };
 const requested = [];
@@ -251,6 +291,7 @@ assert.equal(JSON.stringify(requested.at(-1)),JSON.stringify(['example',true]));
 let route='/series/example', settings={source:'vortex',mobileData:'ask',autoSync:false,interval:10}, rejectDetails, rejectSync, detailsSignal;
 const nativeControls={backgroundTransfers:null};
 const automaticQueued=[], localDeletions=[];
+let catalogHydrations=0, nativePoll;
 let resolveNetwork;
 const provider = component('../src/lib/app-state.tsx', {
   'expo-router': {usePathname:()=>route},
@@ -258,7 +299,7 @@ const provider = component('../src/lib/app-state.tsx', {
   '@react-native-community/netinfo': {__esModule:true,default:{fetch:()=>new Promise(resolve=>{resolveNetwork=resolve;})}},
   './parser': parser,
   './release-policy': releasePolicy,
-  './storage': {catalogMetadata:()=>[story],loadCatalogAsync:async()=>[story],loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
+  './storage': {catalogMetadata:()=>[story],loadCatalogAsync:async()=>{catalogHydrations++;return [story];},loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
   './scraper': {refreshSeries:(_item,_guard,signal)=>{detailsSignal=signal;return new Promise((_,reject)=>{rejectDetails=reject;});},syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
   './network': {networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy': {connectionLabel:()=>({label:'Offline'})},
@@ -267,7 +308,7 @@ const provider = component('../src/lib/app-state.tsx', {
   './request-control': requestControl,
   './background-downloads': nativeControls,
   './library-tools': {},
-});
+}, {setInterval:callback=>{nativePoll=callback;return 0;},clearInterval(){}});
 const app=()=>provider.render('AppProvider',{}).props.value;
 const navigate=path=>{route=path;app();provider.effects[0].callback();};
 navigate('/series/example');
@@ -314,6 +355,12 @@ const deletionPending=app().removeDownloads(story,['1']);
 resolveNetwork({type:'wifi',isConnected:true});
 await deletionPending;
 assert.equal(localDeletions.length,1);
+app().downloadQueue.jobs.push({series:story,selection:'2',chapters:['2'],status:'downloading'});
+assert.equal(await app().removeDownloads(story,['1']),true,'an unrelated chapter can be deleted while the same series downloads');
+assert.equal(await app().removeDownloads(story,['2']),false,'a chapter in the download plan cannot be deleted underneath its writer');
+assert.equal(await app().removeDownloads(story,[],true),false,'whole-series deletion still protects active writers');
+assert.equal(await app().removeDownloads({...story,slug:'other'},['1']),true,'another series download never blocks deletion');
+app().downloadQueue.jobs.length=0;
 assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
 app();provider.effects.find(effect=>effect.deps?.length===5).callback();resolveNetwork({type:'wifi',isConnected:true});
 await new Promise(resolve=>setTimeout(resolve,0));
@@ -342,13 +389,13 @@ feedStory.props.onPress();assert.equal(releaseRoutes.at(-1).params.filter,'unrea
 console.log('Auto-download icon, release alert proposal, grouped feed and unread navigation checks passed');
 
 const readerSheets=[], readerRoutes=[], readerFetches=[];
-const readerSaved=new Set(['1']);let readerFocus;
-const readerShelf={preferences:{readerContinuous:true,readerPrefetch:true},fetchReaderChapter:(slug,chapter,automatic,signal,progress)=>new Promise((resolve,reject)=>{
+const readerSaved=new Set(['1']);let readerFocus, navigationAppEvent;
+const readerShelf={connection:{label:'Wi-Fi'},preferences:{readerContinuous:true,readerPrefetch:true},fetchReaderChapter:(slug,chapter,automatic,signal,progress)=>new Promise((resolve,reject)=>{
   readerFetches.push({slug,chapter,automatic,signal,progress,reject,resolve:()=>{readerSaved.add(chapter);resolve();}});
   signal.addEventListener('abort',()=>reject(Object.assign(new Error('Cancelled'),{name:'AbortError'})),{once:true});
 })};
 const readerNavigation=component('../src/components/use-reader-navigation.ts',{
-  'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
+  'react-native':{AppState:{currentState:'active',addEventListener:(_name,callback)=>{navigationAppEvent=callback;return {remove(){}};}}},
   'expo-router':{router:{replace:route=>readerRoutes.push(route),push:route=>readerRoutes.push({...route,pushed:true})},useFocusEffect:callback=>{readerFocus=callback;}},
   '../lib/app-state':{useShelf:()=>readerShelf},
   '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter)},
@@ -382,6 +429,29 @@ assert.equal(readerRoutes.length,routesBefore,'continuous navigation can be disa
 readerShelf.preferences.readerContinuous=true;readerSaved.delete('2');nav=readerNav();nav.go('2');readerSheets.at(-1)[2].find(action=>action.text==='Download and read').onPress();await new Promise(resolve=>setTimeout(resolve,0));
 leaveReader();assert.ok(readerFetches.at(-1).signal.aborted,'leaving the reader aborts its writer');await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(readerRoutes.length,routesBefore,'an aborted download never navigates after leaving');
+const originalReaderFetch=readerShelf.fetchReaderChapter;
+const delayedReaderRequests=[];
+readerShelf.fetchReaderChapter=(_slug,id,_automatic,signal)=>new Promise(resolve=>delayedReaderRequests.push({signal,resolve:()=>{if(!signal.aborted)readerSaved.add(id);resolve();}}));
+nav=readerNavigation.render('useReaderNavigation','example','Example','8',undefined,true);
+const blurSlowReader=readerFocus();
+nav.go('8',true);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerNav().busy,true);
+blurSlowReader();readerNav();readerFocus();
+assert.equal(readerNav().busy,false,'returning after cancellation cannot leave a stuck reader spinner');
+const beforeSlowRoutes=readerRoutes.length;
+nav=readerNavigation.render('useReaderNavigation','example','Example','8',undefined,true);
+nav.go('8',true);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(delayedReaderRequests.length,1,'replacement reader request waits for the cancelled writer to drain');
+delayedReaderRequests[0].resolve();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(delayedReaderRequests.length,2,'an aborted same-chapter promise is replaced instead of reused');
+assert.equal(readerRoutes.length,beforeSlowRoutes,'an old request cannot navigate after refocusing the screen');
+delayedReaderRequests[1].resolve();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.length,beforeSlowRoutes+1,'the new request can open the chapter normally');
+readerShelf.read={example:{'8':'read'}};
+nav=readerNavigation.render('useReaderNavigation','example','Example','8',undefined,true);
+nav.go('8');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.at(-1).params.entry,'start','Read again starts at the beginning of a completed chapter');
+readerShelf.fetchReaderChapter=originalReaderFetch;readerSaved.delete("8");delete readerShelf.read;
 console.log('Reader download consent, prefetch deduplication, continuous settings and cancellation checks passed');
 
 let readerNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}}, closeReaderWriter;
@@ -397,7 +467,7 @@ const readerProvider=component('../src/lib/app-state.tsx',{
   './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});requestControl.throwIfAborted(args[4]);intactReaderChapters.add(args[1]);}},
   './network':{networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
-  './releases':{},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];isBusy(){return false;}async holdForReader(){readerPriority.push('hold');return ()=>readerPriority.push('release');}}},
+  './releases':{requestReleasePermission:async()=>true},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];isBusy(){return false;}async holdForReader(){readerPriority.push('hold');return ()=>readerPriority.push('release');}}},
   './request-control':requestControl,'./background-downloads':{transferStates:()=>({})},
   './library-tools':{freeBytes:()=>1024**3,libraryBytesAsync:async()=>0},
 });
@@ -410,6 +480,8 @@ assert.equal(directReaderCalls.length,1,'the app enforces a single reader writer
 assert.equal(directReaderCalls[0][10],false,'reader transfer cannot replace Android queue plans');
 assert.equal(readerApp().downloadBusy('example'),true);
 assert.equal(await readerApp().removeDownloads(readerStory,[],true),false,'deletion is blocked while a reader writer is active');
+assert.equal(await readerApp().removeDownloads(readerStory,['1']),true,'reader prefetch only protects the chapter it is writing');
+readerDeletions.length=0;
 readerApp().leaveChapter('example','1');
 assert.equal(readerDeletions.length,1,'delete-after-reading remains available while a different chapter is prefetched');
 closeReaderWriter();await Promise.all([directDownload,duplicateDownload]);
@@ -699,3 +771,148 @@ assert.ok(compactNodes.some(node=>node.props?.children==='Image request failed (
 compactNodes.find(node=>node.props?.accessibilityLabel==='Retry Example').props.onPress();
 assert.deepEqual(queueActions.at(-1),['resume','example']);
 console.log('Compact download controls preserve labels, actions, error details and stop confirmation');
+const readerWrites=[], readerCompletions=[], readerScripts=[], readerFocusEffects=[], chromeVisibility=[];
+const readerLifecycle={currentState:'active',addEventListener:(_name,callback)=>{readerLifecycle.callback=callback;return {remove(){}};}};
+let readerHistory={example:{chapter:'1',fraction:0.4,chapters:{'1':{fraction:0.4},'2':{fraction:0.7}}}};
+const chapterView=component('../src/app/reader/[slug]/[chapter].tsx',{
+  'react-native':{View:'View',Text:'Text',ScrollView:'ScrollView',ActivityIndicator:'ActivityIndicator',Animated:{},AppState:readerLifecycle},
+  'react-native-webview':{WebView:'WebView'},
+  'expo-router':{router:{},Stack:{Screen:'Screen'},useFocusEffect:callback=>readerFocusEffects.push(callback)},
+  '../../../lib/storage':{chapterDirectory:()=>({uri:'file:///reader'}),chapterFiles:()=>['file:///1.webp','file:///2.webp'],novelChapter:()=>null,localChapters:()=>['1','2'],chapterIntact:()=>true,readingHistory:()=>readerHistory,savePosition:(...args)=>readerWrites.push(args)},
+  '../../../lib/parser':parser,
+  '../../../lib/reader-html':{readerHtml:()=>'<html/>',readerChapterHtml:()=>'<section/>'},
+  '../../../lib/reader-controls':{readerControls:null},
+  '../../../components/ui':{ui:{},color:{},Icon:'Icon'},
+  '../../../lib/app-state':{useShelf:()=>({preferences:{readerContinuous:true},read:{},catalog:[{...story,chapterIds:['1','2','3']}],saved:{},detailsLoading:[],detailsErrors:{},loadDetails:()=>{},cancelDetails:()=>{},leaveChapter:()=>{},completeChapter:(...args)=>readerCompletions.push(args)})},
+  '../../../components/action-sheet':{useActionSheet:()=>()=>{}},
+  '../../../components/use-reader-navigation':{useReaderNavigation:()=>({prefetch(){}})},
+  '../../../components/reader-options':{useReaderConveniences:()=>'',ReaderOptions:'ReaderOptions'},
+}, {}, ['ChapterReader']);
+const readerTree=chapterView.render('ChapterReader',{slug:'example',chapter:'1',hidden:true,setHidden:value=>chromeVisibility.push(value),optionsOpen:false,setOptionsOpen(){}});
+const readerWeb=nodes(readerTree).find(node=>node.type==='WebView');
+readerWeb.props.ref.current={injectJavaScript:script=>readerScripts.push(script)};
+readerFocusEffects.forEach(callback=>callback());
+const message=data=>readerWeb.props.onMessage({nativeEvent:{data:JSON.stringify(data)}});
+readerWeb.props.onLoadEnd();
+message({chapter:'1',fraction:0.5});
+assert.deepEqual(readerWrites.at(-1),['example','1',0.5],'progress writes work without a native event timestamp');
+message({chapter:'1',fraction:0.6});
+readerLifecycle.currentState='background';readerLifecycle.callback('background');
+assert.deepEqual(readerWrites.at(-1),['example','1',0.6],'backgrounding flushes the latest debounced progress');
+message({chapter:'1',fraction:1,complete:true,snapshot:true});
+assert.deepEqual(readerCompletions.at(-1),['example','1'],'a completion immediately before backgrounding is retained by its snapshot');
+readerLifecycle.currentState='active';readerLifecycle.callback('active');
+assert.equal(chromeVisibility.at(-1),false,'returning to the app restores visible reader controls');
+message({chapter:'1',fraction:0.65});message({activeChapter:'2'});
+assert.deepEqual(readerWrites.at(-1),['example','1',0.65],'a continuous chapter transition flushes the outgoing chapter first');
+readerWeb.props.onLoadStart();
+const beforeReload=readerWrites.length;
+message({chapter:'1',fraction:0});
+assert.equal(readerWrites.length,beforeReload,'reloading HTML cannot overwrite stored progress with its initial zero');
+readerWeb.props.onLoadEnd();
+assert.ok(readerScripts.some(script=>script.includes('readerRestorePosition?.("2",0.7)')),'WebView reload restores the active continuous chapter and its saved position');
+console.log('Reader lifecycle, timestamp-free progress, background completion and WebView reload recovery passed');
+nativeControls.backgroundTransfers={};
+const pollQueue=app().downloadQueue;
+const pollingJob={series:story,native:true,status:'downloading',progress:0.1,completedChapters:0};
+pollQueue.jobs=[pollingJob];pollQueue.pump=()=>{};
+pollQueue.reconcileNative=()=>{pollingJob.progress=0.2;};
+const beforeHydration=catalogHydrations;
+app();const stopNativePoll=provider.effects.find(effect=>effect.deps?.length===2&&effect.deps[0]===pollQueue).callback();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(catalogHydrations,beforeHydration,'percentage-only updates never rescan the entire library');
+pollQueue.reconcileNative=()=>{pollingJob.completedChapters=1;};
+nativePoll();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(catalogHydrations,beforeHydration+1,'finishing a chapter refreshes its saved-file state');
+stopNativePoll();pollQueue.jobs=[];
+console.log('Native progress polling avoids library scans until chapter or transfer state changes');
+let closingClock=0;
+const closingState={active:true,hasPlan:true,state:'running'};
+const closingNative={states:()=>JSON.stringify({job:closingState}),pause:async()=>{}};
+const nativeClosing=component('../src/lib/background-downloads.ts',{
+  expo:{NativeModule:class{},requireOptionalNativeModule:()=>closingNative},
+  './network':{NetworkPaused:class extends Error{}},'./request-control':requestControl,
+},{Date:{now:()=>closingClock+=30001}});
+await assert.rejects(nativeClosing.render('stopTransfer','job'),/files were kept/i,'an unresponsive Android writer cannot leave cancellation spinning forever');
+closingNative.pause=async()=>{closingState.active=false;};
+await nativeClosing.render('stopTransfer','job');
+
+let storageFocus;
+const storageSheets=[], storageDeletes=[], summaries=[];
+let scannedFiles=0;
+const storageStory={...story,localChapters:['1','2','3'],hasLocalFiles:true};
+let storageJobs=[{series:storageStory,chapters:['2'],selection:'2',status:'downloading'}];
+const storageView=component('../src/app/storage.tsx',{
+  'expo-router':{router:{},useFocusEffect:callback=>{storageFocus=callback;}},
+  '../components/action-sheet':{useActionSheet:()=>(...args)=>storageSheets.push(args)},
+  '../components/ui':{Page:'Page',ui:{},color:{},Icon:'Icon'},
+  '../lib/app-state':{useDownloads:()=>storageJobs,useShelf:()=>({read:{example:{'1':'read','2':'read','3':'read'}},catalog:[storageStory],deleting:false,downloadBusy:()=>Boolean(storageJobs.length),startDownload(){},removeDownloads:async(...args)=>{storageDeletes.push(args);return true;}})},
+  '../lib/library-tools':{formatBytes:value=>String(value),storageSummaryAsync:signal=>new Promise(resolve=>summaries.push({signal,resolve})),verifyChapterFiles:()=>{scannedFiles++;return {checked:1,damaged:1};}},
+});
+const storageNodes=()=>nodes(storageView.render('default',{}));
+storageNodes();const blurStorage=storageFocus();
+summaries[0].resolve({free:100,covers:0,stories:[{item:storageStory,bytes:20}]});await new Promise(resolve=>setTimeout(resolve,0));
+const deleteReadControl=storageNodes().find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Delete read'));
+assert.equal(deleteReadControl.props.disabled,false,'Storage keeps unrelated read-chapter deletion available during transfers');
+deleteReadControl.props.onPress();storageSheets.at(-1)[2].find(action=>action.text==='Delete').onPress();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(storageDeletes[0][1],['1','3'],'Storage cleanup preserves only the chapters in the pending plan');
+storageJobs=[];
+const scanButton=storageNodes().find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Check & repair'));
+scanButton.props.onPress();blurStorage();await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(scannedFiles,0,'leaving Storage cancels its scan before touching more chapters');
+assert.equal(storageSheets.length,1,'cancelled scans cannot open late repair menus');
+storageNodes();storageFocus();
+storageNodes().find(node=>node.type==='Pressable'&&nodes(node).some(child=>child.props?.children==='Check & repair')).props.onPress();
+storageNodes().find(node=>node.props?.accessibilityLabel==='Cancel file check').props.onPress();
+await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(scannedFiles,0,'explicit Cancel stops a pending integrity check');
+assert.ok(storageNodes().some(node=>node.props?.children==='Check cancelled.'));
+console.log('Bounded native cancellation, scoped Storage deletion and cancellable screen-owned integrity scans passed');
+const failedNative={series:story,native:false,status:'error',chapters:['1'],selection:'1',progress:0};
+pollQueue.jobs=[failedNative];nativeControls.transferStates=()=>({example:{active:true,hasPlan:true,state:'running'}});
+assert.equal(await app().removeDownloads(story,['1']),false,'an error label cannot bypass the native writer deletion guard');
+assert.equal(await app().removeDownloads(story,['3']),true,'native safety guards still allow chapters outside its transfer plan');
+pollQueue.jobs=[];nativeControls.transferStates=()=>({});
+const transferNotices=[];let stoppedReaderTransfers=0;
+const transfersModule=component('../src/lib/reader-transfers.ts',{
+  './background-downloads':{backgroundTransfers:{readerProgress:async(...args)=>transferNotices.push(args)}},
+});
+const chapterTransfer=transfersModule.render('beginReaderTransfer',story,'2',()=>stoppedReaderTransfers++);
+const transferStore=transfersModule.exports.readerTransfers;
+assert.equal(transferStore.getSnapshot()[0].reader,true,'reader downloads join shared indicators without entering the persisted bulk queue');
+const statusBeforeProgress=transferStore.getStatusSnapshot();
+chapterTransfer.progress('Chapter 2 · 1/2 pages',0.5);
+assert.equal(transferStore.getSnapshot()[0].progress,0.5);
+assert.equal(transferStore.getStatusSnapshot(),statusBeforeProgress,'panel progress does not rerender status-only library subscribers');
+assert.equal(transfersModule.render('cancelReaderTransfer','example'),true);
+assert.equal(stoppedReaderTransfers,1);
+assert.equal(transferStore.getSnapshot()[0].status,'cancelling');
+chapterTransfer.finish();chapterTransfer.progress('Late callback',0.9);
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(transferStore.getSnapshot().length,0);
+assert.equal(transferNotices.at(-1)[4],true,'notification updates finish with dismissal, never a resurrected late progress notification');
+
+readerSaved.delete('mobile-chapter');readerShelf.connection={label:'Mobile data',warning:true};
+nav=readerNavigation.render('useReaderNavigation','example','Example',undefined,undefined,true);readerFocus();
+const confirmationsBeforeMobile=readerSheets.length;
+nav.go('mobile-chapter');await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerSheets.length,confirmationsBeforeMobile,'cellular reading uses one connection confirmation instead of stacking a generic download confirmation');
+const mobileRequest=readerFetches.at(-1);
+mobileRequest.progress('Saving panels',0.5);
+assert.equal(readerNavigation.render('useReaderNavigation','example','Example',undefined,undefined,true).progress,0.5,'reader buttons expose actual numeric download progress');
+mobileRequest.resolve();await new Promise(resolve=>setTimeout(resolve,0));
+readerShelf.connection={label:'Wi-Fi'};
+
+let notificationPermission={granted:false,status:'denied',canAskAgain:true}, permissionPrompts=0;
+const permissionModule=component('../src/lib/releases.ts',{
+  'expo-notifications':{setNotificationHandler(){},setNotificationChannelAsync:async()=>{},AndroidImportance:{DEFAULT:3},getPermissionsAsync:async()=>notificationPermission,requestPermissionsAsync:async()=>{permissionPrompts++;return notificationPermission;}},
+  'expo-background-task':{},'expo-task-manager':{defineTask(){}},'@react-native-community/netinfo':{},
+  'react-native':{},'./parser':{},'./scraper':{},'./storage':{},'./release-policy':{},'./background-downloads':{},'./library-tools':{},
+});
+await permissionModule.render('requestReleasePermission',false);await permissionModule.render('requestReleasePermission',false);
+assert.equal(permissionPrompts,0,'downloads do not repeatedly request a denied Android notification permission');
+notificationPermission={granted:false,status:'undetermined',canAskAgain:true};
+await Promise.all([permissionModule.render('requestReleasePermission',false),permissionModule.render('requestReleasePermission',false)]);
+assert.equal(permissionPrompts,1,'concurrent first downloads share one Android permission request');
+console.log('Single cellular confirmation, shared reader progress, cancellation, notification cleanup and permission deduplication passed');

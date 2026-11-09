@@ -32,7 +32,7 @@ export default function SeriesDetails() {
   const showSheet = useActionSheet();
   const showDownloads = useDownloadDrawer();
   const { slug, filter: initialFilter } = useLocalSearchParams<{ slug: string; filter?: string }>();
-  const { catalog, startDownload, loadDetails, cancelDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, downloadBusy, connection } = useShelf();
+  const { catalog, startDownload, loadDetails, cancelDetails, detailsLoading, detailsErrors, notice, dismissNotice, read, setReadStatus, removeDownloads, deleting, connection } = useShelf();
   const downloads = useDownloads();
   const [filter, setFilter] = useState(initialFilter === "downloaded" ? "saved" : initialFilter === "unread" ? "unread" : "all");
   const [query, setQuery] = useState("");
@@ -79,7 +79,7 @@ export default function SeriesDetails() {
   const savedSelection = chosen.filter(id => ownedSet.has(id));
   const chosenSet = new Set(chosen);
   const job = downloads.find(value => value.series.slug === slug);
-  const blocked = deleting || downloadBusy(slug) || Boolean(job && ["queued", "downloading", "waiting", "cancelling"].includes(job.status));
+  const blocked = deleting;
   const ascendingSaved = chapterList([], owned, {}, "all", "", false);
   const continuation = nextUnread(ascendingSaved, history[slug], ledger);
   const firstSaved = resumeTarget(item, history[slug], ledger) || nextUnread(chapterList(item.chapterIds, owned, {}, "all", "", false), undefined, ledger) || continuation || ascendingSaved[0];
@@ -115,7 +115,7 @@ export default function SeriesDetails() {
       { text: "Cancel", style: "cancel" },
     ]);
   }
-  function open(chapter: string) { if (explain(chapter)) return; router.push({ pathname: "/reader/[slug]/[chapter]", params: { slug, chapter, title: item?.title } }); }
+  function open(chapter: string) { if (explain(chapter)) return; router.push({ pathname: "/reader/[slug]/[chapter]", params: { slug, chapter, title: item?.title, entry:ledger[chapter] ? "start" : undefined } }); }
   function toggle(chapter: string) { if (explain(chapter)) return; setSelected(current => current.includes(chapter) ? current.filter(id => id !== chapter) : [...current, chapter]); }
   function scrollToJump() { const index=visibleIds.current.indexOf(jumpRequest.current); if(index>=0)listRef.current?.scrollToIndex({index,animated:true,viewPosition:0.2}); }
   function jump() {
@@ -163,7 +163,7 @@ export default function SeriesDetails() {
         {providerInfo(sourceOf(item)).verification && needsVerification(chapterError || notice) && <Pressable onPress={verifyDetails} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify and retry</Text></Pressable>}
         <ExpandableSummary key={`${slug}/${item.summary}`} text={item.summary || (detailsLoading.includes(slug) ? "Loading summary…" : "No summary available.")} />
         {firstSaved && <Pressable onPress={() => readNow.go(firstSaved)} accessibilityLabel={continueLabel} style={[ui.primary, { marginTop: 18 }]}><Text style={ui.primaryText}>{continueLabel}</Text></Pressable>}
-        <View style={[ui.row, { marginTop: 18, justifyContent: "space-between" }]}><Pressable accessibilityLabel="Jump to chapter number" accessibilityState={{expanded:jumpOpen}} onPress={()=>setJumpOpen(value=>!value)} style={[ui.row,{gap:7,paddingVertical:12}]}><Text style={ui.title}>Chapters</Text><Icon name="keypad-outline" size={17} tint={color.lilac}/></Pressable><Pressable accessibilityLabel="Chapter actions" onPress={() => showSheet("Chapter actions", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Mark all read / unread", onPress: () => mark(all) }, ...(savedRead.length ? [{ text: `Delete read chapters (${savedRead.length})`, style: "destructive" as const, onPress: () => { if (blocked) showSheet("Download in progress", "Pause or cancel this story’s download first."); else erase(savedRead); } }] : []), ...(item.hasLocalFiles ? [{ text: "Delete all saved files", style: "destructive" as const, onPress: () => { if (blocked) showSheet("Download in progress", "Pause or cancel this story’s download first."); else erase([], true); } }] : [])])} style={{ padding: 12 }}><Icon name="ellipsis-horizontal" /></Pressable></View>
+        <View style={[ui.row, { marginTop: 18, justifyContent: "space-between" }]}><Pressable accessibilityLabel="Jump to chapter number" accessibilityState={{expanded:jumpOpen}} onPress={()=>setJumpOpen(value=>!value)} style={[ui.row,{gap:7,paddingVertical:12}]}><Text style={ui.title}>Chapters</Text><Icon name="keypad-outline" size={17} tint={color.lilac}/></Pressable><Pressable accessibilityLabel="Chapter actions" onPress={() => showSheet("Chapter actions", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Mark all read / unread", onPress: () => mark(all) }, ...(savedRead.length ? [{ text: `Delete read chapters (${savedRead.length})`, style: "destructive" as const, onPress: () => { erase(savedRead); } }] : []), ...(item.hasLocalFiles ? [{ text: "Delete all saved files", style: "destructive" as const, onPress: () => { erase([], true); } }] : [])])} style={{ padding: 12 }}><Icon name="ellipsis-horizontal" /></Pressable></View>
         {jumpOpen && <View style={[ui.row,{gap:8,marginBottom:10}]}><TextInput accessibilityLabel="Chapter number" value={jumpValue} onChangeText={setJumpValue} keyboardType="decimal-pad" returnKeyType="go" onSubmitEditing={jump} placeholder="125 or 125.5" placeholderTextColor={color.muted} style={{flex:1,padding:14,color:color.text,backgroundColor:color.surface,borderRadius:12}}/><Pressable accessibilityLabel="Go to chapter" onPress={jump} style={ui.chip}><Icon name="arrow-forward" tint={color.lilac}/></Pressable></View>}
         {jumpMessage ? <Text accessibilityLiveRegion="polite" style={ui.muted}>{jumpMessage}</Text>:null}
         {locked.size>0 && <View style={[ui.row,{gap:6,paddingVertical:8}]}><Icon name="lock-closed-outline" size={13} tint={color.muted}/><Text style={[ui.muted,{fontSize:11}]}>{locked.size} restricted by the provider</Text></View>}
@@ -194,7 +194,6 @@ export default function SeriesDetails() {
       <View style={[ui.row, { justifyContent: "space-between" }]}><Text accessibilityLiveRegion="polite" style={ui.text}>{chosen.length} selected</Text><Pressable disabled={deleting} onPress={() => setSelected([])} style={{ padding: 10 }}><Text style={{ color: color.lilac }}>Clear</Text></Pressable></View>
       {missing.length > 0 && <Text style={[ui.muted, { fontSize: 11, marginBottom: 8 }]}>About {formatBytes(estimate.bytes)} · {formatBytes(freeBytes())} free</Text>}
       <View style={[ui.row, { flexWrap: "wrap", gap: 8 }]}>{missing.length > 0 && <Pressable disabled={deleting} onPress={download} style={[ui.primary, { flexGrow: 1 }]}><Text style={ui.primaryText}>Download ({missing.length})</Text></Pressable>}<Pressable disabled={deleting} onPress={() => mark(chosen)} style={{ padding: 12 }}><Text style={{ color: color.lilac }}>Read status</Text></Pressable>{savedSelection.length > 0 && <Pressable disabled={blocked} accessibilityState={{ disabled: blocked }} onPress={() => erase(savedSelection)} style={{ padding: 12, opacity: blocked ? 0.4 : 1 }}>{deleting ? <ActivityIndicator color={color.lilac} /> : <Text style={{ color: "#f08080" }}>Delete ({savedSelection.length})</Text>}</Pressable>}</View>
-      {blocked && savedSelection.length > 0 && !deleting && <Text style={[ui.muted, { fontSize: 11 }]}>Pause the download before deleting saved chapters.</Text>}
     </View>}
   </SafeAreaView>;
 }

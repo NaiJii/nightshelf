@@ -74,6 +74,28 @@ function session() {
 }
 
 const stream = session();
+const resumed = session();
+resumed.scroll(1100);
+resumed.window.readerSetActive(false);
+const snapshot = resumed.messages.at(-1);
+assert.equal(snapshot.snapshot,true,'backgrounding snapshots the current scroll before disabling the reader');
+assert.ok(snapshot.fraction > 0.8,'background snapshots do not wait for the scroll debounce');
+resumed.window.readerSetActive(true);
+resumed.events.touchstart({touches:[{clientX:100,clientY:200}]});
+resumed.events.touchend({touches:[]});
+resumed.settle();
+assert.equal(resumed.messages.filter(message=>message.controls).at(-1).controls,'show','a tap works after background/resume');
+resumed.window.readerAttachChapter('2','saved'); await resumed.flush();
+resumed.window.readerRestorePosition('3',0.5);
+assert.equal(resumed.y(),2040+620,'reload restoration uses the current chapter bounds even with a preceding chapter attached');
+resumed.window.readerRestorePosition('2',0.5);
+assert.equal(resumed.y(),620,'a reloaded continuous session restores its actual active chapter');
+const reloadTarget = session();
+reloadTarget.window.readerSetNeighbors(['4','6'],true);
+reloadTarget.window.readerRestorePosition('5',0.75);
+reloadTarget.window.readerAttachChapter('5','saved');await reloadTarget.flush();
+assert.equal(reloadTarget.root().dataset.chapter,'5','reload can attach the active chapter even though it is not its own neighbor');
+assert.equal(reloadTarget.y(),2040+930,'a chapter attached after reload receives its saved position');
 stream.scroll(600);
 stream.window.readerAttachChapter('4','saved'); await stream.flush();
 assert.deepEqual(stream.ids(), ['3','4']);
@@ -93,7 +115,7 @@ stream.scroll(4180);
 assert.equal(stream.messages.filter(message => message.activeChapter).at(-1).activeChapter, '4', 'ordinary scrolling enters the next chapter with no edge gesture');
 assert.equal(stream.toast.textContent, 'Chapter 4');
 assert.equal(stream.toast.animation.options.duration, 1600, 'a brief transition label fades without blocking scrolling');
-assert.equal(stream.messages.filter(message => Number.isFinite(message.fraction)).at(-1).fraction, 0, 'the first panel of the next chapter has zero progress');
+assert.ok(stream.messages.filter(message => Number.isFinite(message.fraction)).at(-1).fraction < 0.1, 'entering the next chapter saves only the small distance actually scrolled into it');
 const seeksDuringMomentum = stream.seeks.length;
 stream.window.readerSetNeighbors(['3','5'], true);
 assert.equal(stream.seeks.length, seeksDuringMomentum, 'rolling cleanup does not cancel a continuing fling');

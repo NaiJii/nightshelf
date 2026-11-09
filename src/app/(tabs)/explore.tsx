@@ -7,6 +7,7 @@ import { useShelf } from "../../lib/app-state";
 import { filterDiscovery, sortExplore } from "../../lib/parser";
 import { exploreQuery, rememberExploreQuery, exploreSession, rememberExplore } from "../../lib/explore-session";
 import { FIRST_PAGE } from "../../lib/scraper";
+import { matchesStoryQuery } from "../../lib/reading-ux";
 import { effectiveProviderSort, providerInfo, providerSorts } from "../../lib/provider-info";
 import { needsVerification } from "../../lib/provider-errors";
 import type { BrowseOptions } from "../../lib/scraper";
@@ -100,7 +101,7 @@ export function ExploreResults({ provider }: { provider: string }) {
   // A filtered page may add no rows, so FlatList won't emit another end-reached event.
   useEffect(() => { if (!loading && ids !== null) prefetch(); }, [loading, ids, prefetch]);
   const allowed = ids === null ? null : new Set(ids);
-  const filtered = filterDiscovery(catalog, preferences, saved).filter(item => (!allowed || allowed.has(item.slug)) && (!debounced || item.title.toLowerCase().includes(debounced.toLowerCase())));
+  const filtered = filterDiscovery(catalog, preferences, saved).filter(item => (!allowed || allowed.has(item.slug)) && (allowed || matchesStoryQuery(item, debounced)));
   const sourceOrder = new Map((ids || []).map((id, index) => [id, index]));
   const visible = alternate && preferences.sort !== "title"
     ? filtered.sort((a, b) => (sourceOrder.get(a.slug) ?? a.sourceRank ?? 9999) - (sourceOrder.get(b.slug) ?? b.sourceRank ?? 9999))

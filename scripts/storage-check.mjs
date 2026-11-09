@@ -695,6 +695,20 @@ export async function fetch(url,options={}){
     Alert.alert=(title,text,buttons)=>{net.setNetwork({type:'wifi',isConnected:true});buttons.find(button=>button.text==='No').onPress();};
     await networkGuard('Connection changed during the dialog')();
 
+    net.setNetwork({type:'cellular',isConnected:true});
+    let explicitPrompts=0;
+    Alert.alert=(title,text,buttons)=>{explicitPrompts++;buttons.find(button=>button.text==='Yes').onPress();};
+    const chapterAccess=networkGuard('Download chapter 1 on mobile data?');
+    await chapterAccess();await chapterAccess();
+    assert.equal(explicitPrompts,1,'one accepted download does not ask again for every panel');
+    await networkGuard('Download chapter 2 on mobile data?')();
+    assert.equal(explicitPrompts,2,'another explicit chapter request is not silently blocked by a cooldown');
+    Alert.alert=(title,text,buttons)=>{explicitPrompts++;buttons.find(button=>button.text==='No').onPress();};
+    await assert.rejects(()=>networkGuard('Decline mobile data')(),/Wi-Fi/);
+    Alert.alert=(title,text,buttons)=>{explicitPrompts++;buttons.find(button=>button.text==='Yes').onPress();};
+    await networkGuard('Retry immediately after declining')();
+    assert.equal(explicitPrompts,4,'an intentional retry can ask for mobile data immediately after No');
+
     let automaticPrompts=0;Alert.alert=()=>{automaticPrompts++;};
     net.setNetwork({type:'cellular',isConnected:true});
     storage.savePreferences({...storage.loadPreferences(),mobileData:'ask'});

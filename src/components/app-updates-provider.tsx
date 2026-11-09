@@ -23,9 +23,9 @@ function useUpdatesState() {
       try { const folder = new Directory(Paths.cache, "app-updates"); if (folder.exists) folder.delete(); } catch { /* Android may already have evicted the APK cache. */ }
     }
   }, [installed, initial]);
-  const busy = useRef(false), nextAttempt = useRef(0);
+  const busy = useRef(false), nextAttempt = useRef(0), checkedThisSession = useRef(false);
   const check = useCallback(async (manual = false) => {
-    if (!installed || busy.current || (!manual && (preferences.autoAppUpdates === false || Date.now() < nextAttempt.current || (checkedAt <= Date.now() && Date.now() - checkedAt < 24 * 3600_000)))) return;
+    if (!installed || busy.current || (!manual && (preferences.autoAppUpdates === false || Date.now() < nextAttempt.current || (checkedThisSession.current && checkedAt <= Date.now() && Date.now() - checkedAt < 24 * 3600_000)))) return;
     busy.current = true;
     try {
       if (manual) await networkGuard("Check for a NightShelf update?")();
@@ -42,6 +42,7 @@ function useUpdatesState() {
         if (!response.ok) throw new Error(response.status === 403 || response.status === 429 ? "GitHub is limiting update checks. Try again later." : `Update check failed (${response.status}).`);
         const latest = selectAppUpdate(await response.json(), installed);
         const at = Date.now();
+        checkedThisSession.current = true;
         setUpdate(latest); setCheckedAt(at);
         ROOT.create({ intermediates: true, idempotent: true });
         new File(ROOT, "app-update.json").write(JSON.stringify({ checkedAt: at, update: latest }));

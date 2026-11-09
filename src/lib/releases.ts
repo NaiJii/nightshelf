@@ -15,10 +15,14 @@ const TASK = "nightshelf-bookmarked-releases";
 const CHANNEL = "bookmarked-releases";
 Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldPlaySound: false, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
 
-export async function requestReleasePermission(): Promise<boolean> {
+let permissionRequest: Promise<boolean> | undefined;
+export async function requestReleasePermission(promptAgain = true): Promise<boolean> {
   await Notifications.setNotificationChannelAsync(CHANNEL, { name: "Bookmarked releases", importance: Notifications.AndroidImportance.DEFAULT });
   const current = await Notifications.getPermissionsAsync();
-  return current.granted || (await Notifications.requestPermissionsAsync()).granted;
+  if (current.granted) return true;
+  if (current.canAskAgain === false || (!promptAgain && current.status !== "undetermined")) return false;
+  permissionRequest ??= Notifications.requestPermissionsAsync().then(result => result.granted).finally(() => { permissionRequest = undefined; });
+  return permissionRequest;
 }
 
 let notificationWork = Promise.resolve();

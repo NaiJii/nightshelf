@@ -1,28 +1,33 @@
 import { Pressable } from "./pressable";
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { usePathname } from "expo-router";
 import { Modal, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { color, Icon, ui } from "./ui";
 
 type Action = { text: string; style?: "default" | "cancel" | "destructive"; selected?: boolean; onPress?: () => void };
-type Sheet = { title: string; message?: string; actions: Action[] };
+type Sheet = { title: string; message?: string; actions: Action[]; path: string };
 type ShowSheet = (title: string, message?: string, actions?: Action[]) => void;
 const SheetContext = createContext<ShowSheet | null>(null);
 
 export function ActionSheetProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const current = useRef<Sheet | null>(null);
   const showSheet = useCallback<ShowSheet>((title, message, actions) => {
-    const next = { title, message, actions: actions?.length ? actions : [{ text: "OK" }] };
+    const next = { title, message, actions: actions?.length ? actions : [{ text: "OK" }], path: pathname };
     current.current = next; setSheet(next);
-  }, []);
+  }, [pathname]);
+  useEffect(() => {
+    if (current.current && current.current.path !== pathname) { current.current = null; setSheet(null); }
+  }, [pathname]);
   function close() { current.current = null; setSheet(null); }
   function choose(action: Action) {
-    if (!sheet || current.current !== sheet) return;
+    if (!sheet || sheet.path !== pathname || current.current !== sheet) return;
     close(); action.onPress?.();
   }
   return <SheetContext.Provider value={showSheet}>{children}
-    <Modal visible={Boolean(sheet)} transparent animationType="fade" statusBarTranslucent onRequestClose={close}>
+    <Modal visible={Boolean(sheet && sheet.path === pathname)} transparent animationType="fade" statusBarTranslucent onRequestClose={close}>
       <View style={{ flex: 1, justifyContent: "flex-end" }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Dismiss menu" onPress={close} style={{ position: "absolute", inset: 0, backgroundColor: "#00000099" }} />
         <SafeAreaView accessibilityViewIsModal edges={["bottom"]} style={{ backgroundColor: color.surface, borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, borderColor: color.line, paddingHorizontal: 20, paddingTop: 8, maxHeight: "85%", width: "100%", maxWidth: 560, alignSelf: "center" }}>

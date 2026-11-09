@@ -14,11 +14,12 @@ declare class Transfers extends NativeModule {
   resume(id: string): Promise<void>;
   pause(id: string): Promise<void>;
   endPreparation(id: string): Promise<void>;
+  readerProgress?: (id: string, title: string, message: string, progress: number, finished: boolean) => Promise<void>;
   discard(id: string): Promise<void>;
 }
 export const backgroundTransfers = requireOptionalNativeModule<Transfers>("NightShelfBackgroundDownloads");
-export function queueSummary(jobs: { progress: number }[]): { total: number; completed: number; progress: number } {
-  try { const value = JSON.parse(backgroundTransfers?.queueSummary() || "{}"); if (value.total > 0) return value; } catch {}
+export function queueSummary(jobs: { progress: number; reader?: boolean }[]): { total: number; completed: number; progress: number } {
+  try { const value = JSON.parse(!jobs.some(job => job.reader) ? backgroundTransfers?.queueSummary() || "{}" : "{}"); if (value.total > 0) return value; } catch {}
   return { total: jobs.length, completed: 0, progress: jobs.length ? jobs.reduce((sum, job) => sum + Math.max(0, Math.min(1, job.progress || 0)), 0) / jobs.length : 0 };
 }
 export function transferStates(id?: string): Record<string, TransferState> { try { return JSON.parse(backgroundTransfers?.states(id || null) || "{}"); } catch { return {}; } }
@@ -26,8 +27,16 @@ export class DownloadPaused extends Error { name = "DownloadPaused"; }
 export async function stopTransfer(id: string): Promise<void> {
   const value = transferStates(id)[id];
   if (!backgroundTransfers || !value || (!value.active && !value.hasPlan && value.state !== "queued")) return;
-  await backgroundTransfers.pause(id);
-  while (transferStates(id)[id]?.active) await new Promise(resolve => setTimeout(resolve, 150));
+  const deadline = Date.now() + 30_000;
+  const failure = () => new Error("Android is still closing this download. Your files were kept. Try again shortly.");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([backgroundTransfers.pause(id), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(failure()), 30_000); })]);
+    while (transferStates(id)[id]?.active) {
+      if (Date.now() >= deadline) throw failure();
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+  } finally { clearTimeout(timer); }
 }
 export async function waitForTransfer(id: string, progress: (message: string, fraction: number) => void, saved: () => void, signal?: AbortSignal): Promise<void> {
   const stop = () => { void backgroundTransfers?.pause(id).catch(() => {}); };

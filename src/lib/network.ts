@@ -5,7 +5,6 @@ import { connectionAccess, connectionPauseMessage } from "./network-policy";
 
 export class NetworkPaused extends Error { name = "NetworkPaused"; }
 let pendingConsent: Promise<boolean> | undefined;
-let nextAutomaticPrompt = 0;
 
 export function networkGuard(reason: string, automatic = false, backgroundDownload = false) {
   let approved = false;
@@ -17,7 +16,7 @@ export function networkGuard(reason: string, automatic = false, backgroundDownlo
     if (access === "allow") return;
     if (access === "deny") throw new NetworkPaused(connectionPauseMessage(access));
     if (AppState.currentState !== "active") throw new NetworkPaused("Waiting for Wi-Fi or mobile-data approval in the app.");
-    if (automatic || Date.now() < nextAutomaticPrompt) throw new NetworkPaused(connectionPauseMessage(access));
+    if (automatic) throw new NetworkPaused(connectionPauseMessage(access));
     if (!pendingConsent) {
       pendingConsent = new Promise<boolean>(resolve => Alert.alert("Use mobile data?",
         `${reason} This connection is cellular, metered, or cannot be verified as Wi-Fi. Downloads can be large. Never keeps NightShelf Wi-Fi-only until you change Settings.`,
@@ -26,7 +25,7 @@ export function networkGuard(reason: string, automatic = false, backgroundDownlo
           { text: "No", style: "cancel", onPress: () => resolve(false) },
           { text: "Yes", onPress: () => resolve(true) },
         ], { cancelable: false },
-      )).finally(() => { pendingConsent = undefined; nextAutomaticPrompt = Date.now() + 10 * 60_000; });
+      )).finally(() => { pendingConsent = undefined; });
     }
     approved = await pendingConsent;
     // The connection may have changed while the consent dialog was open.

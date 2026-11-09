@@ -1,6 +1,6 @@
 import { queuedChapters } from "../lib/download-display";
 import { Pressable } from "./pressable";
-import { ComponentProps, ReactNode } from "react";
+import { ComponentProps, ReactNode, useState } from "react";
 import { ActivityIndicator, ColorValue, Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -12,8 +12,10 @@ import { useDownloads, useShelf } from "../lib/app-state";
 export const color = { bg: "#0b0b10", surface: "#17171f", raised: "#24232f", text: "#f7f4fb", muted: "#aaa6b3", purple: "#8b5cf6", lilac: "#c9a7ff", line: "#ffffff14" };
 export function Icon({ name, size = 22, tint = color.text }: { name: ComponentProps<typeof Ionicons>["name"]; size?: number; tint?: ColorValue }) { return <Ionicons name={name} size={size} color={tint} />; }
 export function Cover({ item, style }: { item: Series; style: object }) {
+  const revision = `${item.localCover || ""}:${item.metadataSyncedAt || item.syncedAt || ""}`;
+  const [failed, setFailed] = useState("");
   // Only cached covers are rendered: remote Image requests must not bypass the data-consent gate.
-  return item.localCover ? <Image source={{ uri: item.localCover }} style={style} resizeMode="cover" /> : <View style={[style, { backgroundColor: color.raised, alignItems: "center", justifyContent: "center" }]}><Icon name="book-outline" tint={color.muted} /></View>;
+  return item.localCover && failed !== revision ? <Image key={revision} source={{ uri: item.localCover }} style={style} resizeMode="cover" onError={() => setFailed(revision)} /> : <View style={[style, { backgroundColor: color.raised, alignItems: "center", justifyContent: "center" }]}><Icon name="book-outline" tint={color.muted} /></View>;
 }
 export function Page({ title, subtitle, children, action }: { title: string; subtitle: string; children: ReactNode; action?: ReactNode }) {
   const shelf = useShelf();

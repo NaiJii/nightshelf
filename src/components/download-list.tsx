@@ -19,8 +19,8 @@ export function DownloadList({ slug: scope, onOpenStory, showHeading = true }: {
   if (!downloads.length) return null;
   const overall = queueSummary(allDownloads);
   const percent = Math.floor((scope ? downloads[0].progress : overall.progress) * 100);
-  const paused = allDownloads.filter(job => job.status === "paused").length;
-  const waiting = allDownloads.filter(job => job.status === "waiting").length;
+  const paused = downloads.filter(job => job.status === "paused").length;
+  const waiting = downloads.filter(job => job.status === "waiting").length;
   const queued = allDownloads.filter(job => job.status === "queued");
   function cancel(slug: string) {
     showSheet("Stop this download?", "Keep the chapters already saved, or delete ALL saved chapters and partial files for this story, including earlier downloads. Bookmarks and read history stay.", [
@@ -43,9 +43,9 @@ export function DownloadList({ slug: scope, onOpenStory, showHeading = true }: {
           <Pressable accessibilityLabel={`Move ${job.series.title} earlier in queue`} disabled={queued[0].series.slug === slug} onPress={() => moveDownload(slug, -1)} style={{ padding: 12, minWidth:44,minHeight:44, opacity: queued[0].series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-up" size={18} tint={color.lilac} /></Pressable>
           <Pressable accessibilityLabel={`Move ${job.series.title} later in queue`} disabled={queued.at(-1)?.series.slug === slug} onPress={() => moveDownload(slug, 1)} style={{ padding: 12, minWidth:44,minHeight:44, opacity: queued.at(-1)?.series.slug === slug ? 0.3 : 1 }}><Icon name="arrow-down" size={18} tint={color.lilac} /></Pressable>
         </>}
-        {job.status === "downloading" || job.status === "queued" ? <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{ minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center" }}><Icon name="pause" size={19} tint={color.lilac} /></Pressable> : <Pressable accessibilityLabel={`${job.status === "error" ? "Retry" : "Resume"} ${job.series.title}`} onPress={() => resumeDownload(slug)} style={{ minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center" }}><Icon name={job.status === "error" ? "refresh" : "play"} size={19} tint={color.lilac} /></Pressable>}
+        {!job.reader && (job.status === "downloading" || job.status === "queued" ? <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{ minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center" }}><Icon name="pause" size={19} tint={color.lilac} /></Pressable> : <Pressable accessibilityLabel={`${job.status === "error" ? "Retry" : "Resume"} ${job.series.title}`} onPress={() => resumeDownload(slug)} style={{ minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center" }}><Icon name={job.status === "error" ? "refresh" : "play"} size={19} tint={color.lilac} /></Pressable>)}
         {job.status === "waiting" && <Pressable accessibilityLabel={`Pause ${job.series.title}`} onPress={() => pauseDownload(slug)} style={{minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center"}}><Icon name="pause" size={19} tint={color.lilac}/></Pressable>}
-        <Pressable accessibilityLabel={`Stop ${job.series.title}`} onPress={() => cancel(slug)} style={{minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center"}}><Icon name="close" size={20} tint={color.muted}/></Pressable>
+        <Pressable accessibilityLabel={`Stop ${job.series.title}`} onPress={() => job.reader ? void cancelDownload(slug) : cancel(slug)} style={{minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center"}}><Icon name="close" size={20} tint={color.muted}/></Pressable>
       </>}</View>
     </View>;
   })}</View>;

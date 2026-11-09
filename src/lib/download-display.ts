@@ -6,6 +6,14 @@ export function queuedChapters(job: DownloadJob): string[] {
   try { return selectChapters((job.series.chapterIds || []).map(id => ({id,url:""})), job.selection).map(chapter => chapter.id); }
   catch { return []; }
 }
+export function downloadConflicts(job: DownloadJob, ids: string[], all = false): boolean {
+  if ((job.status === "error" || job.status === "paused") && !job.native) return false;
+  if (all || job.status === "cancelling") return true;
+  const chapters = queuedChapters(job);
+  // An unresolved plan may still select any chapter. Never delete underneath it.
+  if (!chapters.length) return true;
+  return ids.some(id => chapters.includes(id));
+}
 export function downloadDetail(job: DownloadJob): string {
   const message = (job.message.startsWith(job.series.title + " · ") ? job.message.slice(job.series.title.length + 3) : job.message).replace(/^Downloading\s*·?\s*/i, "");
   if (!job.currentChapter) return message;
