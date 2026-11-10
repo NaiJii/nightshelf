@@ -95,6 +95,12 @@ export const asura: Provider<Cursor> = {
     const images = parsePageImages(await context.text(chapter.url, item.url), chapter.url);
     return { kind: "images", assets: images.map(url => ({ url, referer: chapter.url, agent: MOBILE_AGENT })) };
   },
+  async verify(url, context) {
+    const html = await context.text(url, undefined, 12_000);
+    if (!parseDiscovery(html).length && !/<(?:div\b[^>]*\bid=["']description-text["']|img\b[^>]*\bdata-page-index=)/i.test(html)) {
+      throw new Error("Asura is still showing its browser check. Complete it, then retry access.");
+    }
+  },
   async rankings(kind, period, context) {
     const url = kind === "comic" ? `${API}/trending/${period}?limit=10` : `${API}/novel-series?limit=10&sort=popular&period=${period}`;
     const result = await context.json(url) as { data?: unknown };

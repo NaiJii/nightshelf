@@ -74,7 +74,7 @@ export function ExploreResults({ provider }: { provider: string }) {
       }
     } finally { if (version === generation.current) { busy.current = false; setLoading(false); setRefreshing(false); } }
   }, [browse, options, saveSession, rememberSearch, provider]);
-  const verify = useSourceRetry(() => { void loadMore(true); });
+  const verify = useSourceRetry(() => { void loadMore(true); }, preferences.source);
   const prefetch = useCallback(() => {
     const { height, content, offset } = viewport.current;
     if (!failed.current && !loadedIds.current.some(id => !catalogIds.has(id)) && height > 0 && content > 0 && content - offset - height <= height) void loadMore();

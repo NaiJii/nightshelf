@@ -4,7 +4,24 @@ import { chapterListCached } from "./parser";
 import type { SavedStory, SourceId } from "./parser";
 import { sourceIdForUrl } from "./provider-info";
 import { yieldToForeground } from "./request-control";
-import { catalogMetadata, chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, loadCatalogAsync, ROOT, savedStories, releaseSnapshots, releaseUpdates } from "./storage";
+import { readDeletionDue } from "./read-retention";
+import { catalogMetadata, chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, loadCatalogAsync, ROOT, savedStories, releaseSnapshots, releaseUpdates, loadPreferences, readChapters, localChapters, deleteChapters } from "./storage";
+
+export async function cleanupReadDownloads(blocked: (slug: string) => boolean): Promise<number> {
+  if (!loadPreferences().deleteAfterReading) return 0;
+  let removed = 0;
+  for (const slug of Object.keys(readChapters())) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (!loadPreferences().deleteAfterReading) break;
+    if (blocked(slug)) continue;
+    try {
+      const ledger = readChapters()[slug] || {};
+      const expired = localChapters(slug).filter(id => readDeletionDue(ledger[id]));
+      if (expired.length) { deleteChapters(slug, expired); removed += expired.length; }
+    } catch { /* Keep files on failure and retry at the next cleanup. */ }
+  }
+  return removed;
+}
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unknown";

@@ -36,7 +36,10 @@ assert.equal(effectiveProviderSort(providerInfo('webtoon'),'trending','canvas'),
 assert.equal(effectiveProviderSort(providerInfo('webtoon'),'trending','originals'),'trending');
 assert.equal(providerSorts(providerInfo('webtoon'),'canvas').some(([key])=>key==='trending'),false);
 assert.equal(effectiveProviderSort(providerInfo('asura'),'rating'),'rating');
-assert.equal(PROVIDERS.filter(info=>info.verification).map(info=>info.id).join(','),'mangakakalot');
+assert.equal(PROVIDERS.filter(info=>info.verification).map(info=>info.id).join(','),'asura,mangakakalot');
+await getProvider('asura').verify('https://asurascans.com/comics/example',{text:async()=>'<div id="description-text">Public series</div>'});
+await getProvider('asura').verify('https://asurascans.com/comics/example/chapter/1',{text:async()=>'<img data-page-index="0" src="https://cdn/page.webp">'});
+await assert.rejects(()=>getProvider('asura').verify('https://asurascans.com/',{text:async()=>'<title>Just a moment...</title>'}),/browser check/,'a challenge page never qualifies as a verified public source');
 assert.equal(needsVerification(new ProviderError('verification','mangakakalot','Localized message')),true);
 assert.equal(needsVerification(new ProviderError('parser','vortex','verification appears in this text')),false);
 assert.equal(needsVerification('MangaKakalot needs browser verification'),true,'old persisted queue messages remain usable');

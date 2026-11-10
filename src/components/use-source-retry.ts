@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { router, useFocusEffect } from "expo-router";
 import { useShelf } from "../lib/app-state";
+import type { SourceId } from "../lib/provider-info";
 
 // Keep the original operation on its screen. Retry once only after a successful
 // verification and return; backing out or leaving the screen never replays it.
-export function useSourceRetry(retry: () => void) {
+export function useSourceRetry(retry: () => void, source?: SourceId | (() => SourceId)) {
   const { sourceSessionRevision } = useShelf();
   const operation = useRef(retry);
   const pending = useRef<number | null>(null);
@@ -17,6 +18,7 @@ export function useSourceRetry(retry: () => void) {
   return () => {
     if (pending.current !== null) return;
     pending.current = sourceSessionRevision;
-    router.push("/verify-source");
+    const provider = typeof source === "function" ? source() : source;
+    router.push(provider ? {pathname:"/verify-source",params:{source:provider}} : "/verify-source");
   };
 }

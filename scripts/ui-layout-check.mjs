@@ -9,6 +9,7 @@ import * as providerErrors from "../src/lib/provider-errors.ts";
 import * as releasePolicy from "../src/lib/release-policy.ts";
 import * as exploreSessions from "../src/lib/explore-session.ts";
 import * as readingUx from "../src/lib/reading-ux.ts";
+import * as readRetention from "../src/lib/read-retention.ts";
 import * as requestControl from "../src/lib/request-control.ts";
 import * as appUpdatePolicy from "../src/lib/app-update-policy.ts";
 
@@ -33,7 +34,7 @@ function component(file, extraModules = {}, globals = {}, expose = []) {
   };
   const exports = {};
   const script = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8") + expose.map(name=>`\nexport { ${name} };`).join(''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, ...globals, require: name => { if (name.endsWith("/provider-info")) return providerInfo; if (name.endsWith("/provider-errors")) return providerErrors; if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; if (name.endsWith('/download-display')) return downloadDisplay;
+  vm.runInNewContext(script, { exports, AbortController, Error, setTimeout, clearTimeout, ...globals, require: name => { if (name.endsWith("/read-retention")) return readRetention; if (name.endsWith("/provider-info")) return providerInfo; if (name.endsWith("/provider-errors")) return providerErrors; if (name.endsWith("/pressable") || name === "./pressable") return {Pressable:"Pressable"}; if (name.endsWith('/download-display')) return downloadDisplay;
 assert.ok(modules[name], name); return modules[name]; } });
   return { exports, effects, render(name, ...args) { cursor = 0; effects.length = 0; return exports[name](...args); } };
 }
@@ -350,7 +351,7 @@ assert.equal(app().notice,'Could not pause Android transfer','native pause failu
 app().resumeDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(app().notice,'Could not stop Android transfer','native resume failures become visible instead of unhandled rejections');
 nativeControls.transferStates=()=>({});
-app();provider.effects.find(effect=>effect.deps?.length===5).callback();
+app();provider.effects.find(effect=>effect.deps?.length===6).callback();
 const deletionPending=app().removeDownloads(story,['1']);
 resolveNetwork({type:'wifi',isConnected:true});
 await deletionPending;
@@ -362,7 +363,7 @@ assert.equal(await app().removeDownloads(story,[],true),false,'whole-series dele
 assert.equal(await app().removeDownloads({...story,slug:'other'},['1']),true,'another series download never blocks deletion');
 app().downloadQueue.jobs.length=0;
 assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
-app();provider.effects.find(effect=>effect.deps?.length===5).callback();resolveNetwork({type:'wifi',isConnected:true});
+app();provider.effects.find(effect=>effect.deps?.length===6).callback();resolveNetwork({type:'wifi',isConnected:true});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(automaticQueued.length,1,'automatic transfers work again once deletion finishes');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');
@@ -399,6 +400,7 @@ const readerNavigation=component('../src/components/use-reader-navigation.ts',{
   'expo-router':{router:{replace:route=>readerRoutes.push(route),push:route=>readerRoutes.push({...route,pushed:true})},useFocusEffect:callback=>{readerFocus=callback;}},
   '../lib/app-state':{useShelf:()=>readerShelf},
   '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter)},
+  '../lib/parser':parser,
   './action-sheet':{useActionSheet:()=>(...args)=>readerSheets.push(args)},
   './use-source-retry':{useSourceRetry:()=>()=>{}},
 });
@@ -463,7 +465,7 @@ const readerProvider=component('../src/lib/app-state.tsx',{
   'react-native':{AppState:{currentState:'active'}},
   '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>readerNetwork}},
   './parser':parser,'./release-policy':releasePolicy,
-  './storage':{catalogMetadata:()=>[readerStory],loadCatalogAsync:async()=>[readerStory],loadPreferences:()=>({source:'asura',deleteAfterReading:true,autoDownloadLimitMB:2048}),savedStories:()=>({}),readChapters:()=>({example:{'1':'read'}}),releaseUpdates:()=>({}),loadDownloads:()=>[],localChapters:()=>['1'],chapterIntact:(_,chapter)=>intactReaderChapters.has(chapter),deleteChapters:(...args)=>readerDeletions.push(args)},
+  './storage':{catalogMetadata:()=>[readerStory],loadCatalogAsync:async()=>[readerStory],loadPreferences:()=>({source:'asura',deleteAfterReading:true,autoDownloadLimitMB:2048}),savedStories:()=>({}),readChapters:()=>({example:{'1':new Date(Date.now()-25*3600_000).toISOString()}}),releaseUpdates:()=>({}),loadDownloads:()=>[],localChapters:()=>['1'],chapterIntact:(_,chapter)=>intactReaderChapters.has(chapter),deleteChapters:(...args)=>readerDeletions.push(args)},
   './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});requestControl.throwIfAborted(args[4]);intactReaderChapters.add(args[1]);}},
   './network':{networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
@@ -933,3 +935,69 @@ homeChapterButton.props.onPress();assert.equal(homeReads.length,0);
 assert.equal(homeChapterRoutes.at(-1).params.chapters,'1','the shortcut requests the chapter-list anchor');
 resumeHomeButton.props.onPress();assert.deepEqual(homeReads,['1']);
 console.log('Home Resume label and separate right-aligned chapter-list navigation passed');
+let alertPermission=async()=>true;
+let alertPrefs={source:'asura',releaseNotifications:false,mobileData:'ask'};
+const alertFlags={example:{bookmarked:true,autoDownload:true,notifyReleases:false}};
+const alertState=component('../src/lib/app-state.tsx',{
+  'expo-router':{usePathname:()=>'/series/example'},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})},Alert:{alert(){throw Error('unexpected permission alert');}}},
+  '@react-native-community/netinfo':{},'./parser':parser,'./release-policy':releasePolicy,
+  './storage':{catalogMetadata:()=>[story],loadPreferences:()=>alertPrefs,savePreferences:value=>{alertPrefs=value;},savedStories:()=>alertFlags,readChapters:()=>({}),releaseUpdates:()=>({}),loadDownloads:()=>[]},
+  './scraper':{},'./network':{},'./network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
+  './releases':{releasePermissionGranted:async()=>false,requestReleasePermission:()=>alertPermission(),configureReleaseChecks:async()=>{throw Error('Android scheduler unavailable');}},
+  './download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];}},
+  './request-control':requestControl,'./background-downloads':{},
+  './library-tools':{updateStoryOptions:(slug,change)=>{alertFlags[slug]={...alertFlags[slug],...change};}},
+});
+const notificationState=()=>alertState.render('AppProvider',{}).props.value;
+await notificationState().setStoryNotifications('example',true);
+assert.equal(notificationState().preferences.releaseNotifications,true);
+assert.equal(notificationState().saved.example.notifyReleases,true,'a background scheduler failure cannot discard the requested series notification flag');
+assert.match(notificationState().notice,/Background checks are unavailable/);
+releaseShelf.preferences=notificationState().preferences;releaseShelf.saved=notificationState().saved;
+const litBell=nodes(releaseActions.render('ReleaseActions',{item:story})).find(node=>node.props?.accessibilityLabel==='New chapter notifications');
+assert.equal(litBell.props.accessibilityState.checked,true,'the bell reflects the stored series alert state after scheduler failure');
+await notificationState().setStoryNotifications('example',false);
+assert.equal(notificationState().saved.example.autoDownload,true,'disabling the bell does not disable auto-download');
+assert.equal(notificationState().saved.example.notifyReleases,false);
+console.log('Series bell state remains correct after notification permission succeeds but background scheduling fails');
+const scopedVerify=verifiedRetry.render('useSourceRetry',()=>{},'asura');verifiedRetry.effects.forEach(effect=>effect.callback());retryFocus();scopedVerify();
+assert.equal(verificationRoutes.at(-1).params.source,'asura','a source-specific retry cannot open a different provider verification page');
+let acceptAlertPermission;
+alertPermission=()=>new Promise(resolve=>{acceptAlertPermission=resolve;});
+const staleEnable=notificationState().setStoryNotifications('example',true);
+await notificationState().setStoryNotifications('example',false);acceptAlertPermission(true);await staleEnable;
+assert.equal(notificationState().saved.example.notifyReleases,false,'late permission approval cannot undo a newer bell-off choice');
+const staleBookmarkEnable=notificationState().setStoryNotifications('example',true);
+notificationState().setStoryOptions('example',{bookmarked:false});acceptAlertPermission(true);await staleBookmarkEnable;
+assert.equal(notificationState().saved.example.bookmarked,false,'late permission approval cannot re-bookmark a story the user removed');
+notificationState();const stopPermissionRefresh=alertState.effects.at(-1).callback();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(notificationState().preferences.releaseNotifications,false,'revoked Android permission is reflected instead of leaving notification controls misleadingly enabled');stopPermissionRefresh();
+console.log('Late notification approval preserves newer bell/bookmark choices and revoked OS permission is reflected');
+let verificationFocus, verificationNetwork, finishVerificationProbe, verificationSignal, verifiedSessions=0, verificationBacks=0;
+const verifyPage=component('../src/app/verify-source.tsx',{
+ 'react-native':{ActivityIndicator:'ActivityIndicator',Text:'Text',View:'View',AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
+ 'react-native-webview':{WebView:'WebView'},
+ 'expo-router':{router:{back:()=>verificationBacks++},useLocalSearchParams:()=>({source:'asura'}),useFocusEffect:callback=>{verificationFocus=callback;}},
+ '@react-native-community/netinfo':{addEventListener:callback=>{verificationNetwork=callback;return ()=>{};}},
+ '../lib/parser':parser,'../lib/app-state':{useDownloads:()=>[],useShelf:()=>({sourceSessionChanged:()=>verifiedSessions++,resumeDownload(){}})},
+ '../lib/network':{networkGuard:()=>async()=>{}},
+ '../lib/source-session':{sourceVerificationUrl:()=>story.url,isVerificationHost:url=>new URL(url).hostname==='asurascans.com'},
+ '../lib/verification-policy':{verificationObserver:()=>'',verificationNavigationAllowed:()=>true,verificationNetworkKey:state=>state.type},
+ '../lib/scraper':{verifySourceSession:(_url,_guard,signal)=>{verificationSignal=signal;return new Promise(resolve=>{finishVerificationProbe=resolve;});}},
+ '../components/ui':{ui:{},color:{},Icon:'Icon'},
+});
+const verificationNodes=()=>nodes(verifyPage.render('default',{}));
+verificationNodes();let closeVerification=verificationFocus();const stopVerificationNetwork=verifyPage.effects[0].callback();
+verificationNetwork({type:'wifi',isConnected:true});await new Promise(resolve=>setTimeout(resolve,0));
+let browserVerification=verificationNodes().find(node=>node.type==='WebView');
+browserVerification.props.onMessage({nativeEvent:{data:JSON.stringify({type:'source-ready',url:story.url})}});
+verificationNodes();verifyPage.effects.at(-1).callback();assert.ok(verificationSignal);
+closeVerification();assert.equal(verificationSignal.aborted,true,'leaving verification aborts the access probe');
+finishVerificationProbe();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(verificationBacks,0,'a late access result cannot navigate another screen backwards');
+assert.equal(verifiedSessions,0,'an abandoned probe cannot claim successful verification');
+verificationNodes();closeVerification=verificationFocus();browserVerification=verificationNodes().find(node=>node.type==='WebView');
+browserVerification.props.onError({nativeEvent:{description:'Connection failed'}});
+assert.ok(!verificationNodes().some(node=>node.type==='ActivityIndicator'),'a failed verification page never leaves an endless loading indicator');
+closeVerification();stopVerificationNetwork();
+console.log('Verification focus ownership, late-result rejection and terminal loading feedback passed');

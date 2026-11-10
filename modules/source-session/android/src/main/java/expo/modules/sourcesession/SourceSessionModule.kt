@@ -15,7 +15,7 @@ class SourceSessionModule : Module() {
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("verificationCookies") { url: String ->
       val uri = Uri.parse(url)
-      if (uri.scheme != "https" || uri.port !in setOf(-1, 443) || uri.host !in setOf("www.mangakakalot.gg", "mangakakalot.gg")) {
+      if (uri.scheme != "https" || uri.port !in setOf(-1, 443) || uri.host !in setOf("asurascans.com", "www.mangakakalot.gg", "mangakakalot.gg")) {
         throw IllegalArgumentException("Unsupported verification host")
       }
       // Only challenge cookies return to the scraper; account/session cookies stay in WebView.

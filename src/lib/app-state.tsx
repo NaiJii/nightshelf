@@ -9,13 +9,14 @@ import { chapterIntact, deleteChapters, catalogMetadata, loadCatalogAsync, loadP
 import { networkGuard, NetworkPaused } from "./network";
 import { automaticReleaseIds } from "./release-policy";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "./network-policy";
-import { configureReleaseChecks, notifyReleases, requestReleasePermission } from "./releases";
+import { configureReleaseChecks, notifyReleases, requestReleasePermission, releasePermissionGranted } from "./releases";
 import { DownloadQueue, restoredDownloads } from "./download-queue";
 import { downloadConflicts } from "./download-display";
 import { beginReaderTransfer, cancelReaderTransfer, readerTransfers } from "./reader-transfers";
 import { throwIfAborted, withAbort, withLinkedAbort, withForeground } from "./request-control";
 import { backgroundTransfers, DownloadPaused, transferStates, stopTransfer } from "./background-downloads";
-import { freeBytes, libraryBytesAsync, updateStoryOptions, updateStoriesOptions } from "./library-tools";
+import { freeBytes, libraryBytesAsync, updateStoryOptions, updateStoriesOptions, cleanupReadDownloads } from "./library-tools";
+import { readDeletionDue } from "./read-retention";
 import type { SavedStory } from "./parser";
 
 function useAppState() {
@@ -71,6 +72,7 @@ function useAppState() {
   }, []);
   useEffect(() => () => { for (const controller of detailLocks.current.values()) controller.abort(); }, []);
   const notificationLock = useRef(false);
+  const notificationIntents = useRef(new Map<string, number>()), permissionRevision = useRef(0);
   const syncLock = useRef(false);
   const providerRequests = useRef(new AbortController());
   const deleteLock = useRef(false);
@@ -172,7 +174,7 @@ function useAppState() {
   const leaveChapter = useCallback((slug: string, chapter: string) => {
     const pending = readerFetches.current.get(slug);
     if (pending?.chapter === chapter) return;
-    if (!loadPreferences().deleteAfterReading || !readChapters()[slug]?.[chapter] || !localChapters(slug).includes(chapter) || queue.jobs.some(job => job.series.slug === slug && downloadConflicts(job, [chapter]))) return;
+    if (!loadPreferences().deleteAfterReading || !readDeletionDue(readChapters()[slug]?.[chapter]) || !localChapters(slug).includes(chapter) || queue.jobs.some(job => job.series.slug === slug)) return;
     try { deleteChapters(slug, [chapter]); void refreshCatalog(); }
     catch { setNotice("The read chapter could not be deleted. You can remove it in Manage downloads."); }
   }, [queue, refreshCatalog]);
@@ -283,6 +285,7 @@ function useAppState() {
   }, [queue, refreshCatalog, queuedDownloadBusy]);
 
   const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
+    if (field === "bookmarked") notificationIntents.current.set(slug, (notificationIntents.current.get(slug) || 0) + 1);
     updateStoryOptions(slug, { [field]: !savedStories()[slug]?.[field] });
     setSaved(savedStories()); if (field === "bookmarked") setUpdates(releaseUpdates());
   }, []);
@@ -311,26 +314,31 @@ function useAppState() {
     updatePreferences({searchHistory: {...history, [provider]: term ? [term, ...(history[provider] || []).filter(value => value.toLowerCase() !== term.toLowerCase())].slice(0,8) : []}});
   }, [updatePreferences]);
 
-  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => { updateStoryOptions(slug, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
-  const setStoriesOptions = useCallback((slugs: string[], change: Partial<SavedStory>) => { updateStoriesOptions(slugs, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
+  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => { if (change.bookmarked === false || change.notifyReleases === false) notificationIntents.current.set(slug,(notificationIntents.current.get(slug)||0)+1); updateStoryOptions(slug, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
+  const setStoriesOptions = useCallback((slugs: string[], change: Partial<SavedStory>) => { if (change.bookmarked === false || change.notifyReleases === false) for (const slug of slugs) notificationIntents.current.set(slug,(notificationIntents.current.get(slug)||0)+1); updateStoriesOptions(slugs, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
   const reloadLocal = useCallback(() => { void refreshCatalog(); setRead(readChapters()); setSaved(savedStories()); setPreferences(loadPreferences()); }, [refreshCatalog]);
 
-  useEffect(() => { void autoDownload().catch(showFailure); void configureReleaseChecks().catch(showFailure); }, [autoDownload, saved, showFailure, preferences.releaseCheckInterval, preferences.releaseNotifications]);
+  useEffect(() => { void autoDownload().catch(showFailure); void configureReleaseChecks().catch(showFailure); }, [autoDownload, saved, showFailure, preferences.releaseCheckInterval, preferences.releaseNotifications, preferences.deleteAfterReading]);
 
   const setReleaseNotifications = useCallback(async (enabled: boolean) => {
     if (notificationLock.current) return false;
+    const origin = noticeScope.current;
+    permissionRevision.current++;
     notificationLock.current = true; setNotificationBusy(true);
     try {
       if (enabled && !await requestReleasePermission()) { updatePreferences({ releaseNotifications: false }); Alert.alert("Notifications are disabled", "Allow NightShelf notifications in Android Settings to receive release alerts."); return false; }
       updatePreferences({ releaseNotifications: enabled });
-      await configureReleaseChecks();
+      await configureReleaseChecks().catch(() => { if (origin === noticeScope.current) setNotice(enabled ? "Release alerts are enabled. Background checks are unavailable; releases will be checked while the app is open." : "Release alerts are off. Android’s background schedule could not be updated."); });
       return true;
-    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return false; }
-    finally { notificationLock.current = false; setNotificationBusy(false); }
+    } catch (error) { if (origin === noticeScope.current) setNotice(error instanceof Error ? error.message : String(error)); return false; }
+    finally { permissionRevision.current++; notificationLock.current = false; setNotificationBusy(false); }
   }, [updatePreferences]);
 
   const setStoryNotifications = useCallback(async (slug: string, enabled: boolean) => {
+    const version = (notificationIntents.current.get(slug) || 0) + 1;
+    notificationIntents.current.set(slug,version);
     if (enabled && !await setReleaseNotifications(true)) return;
+    if (notificationIntents.current.get(slug) !== version) return;
     setStoryOptions(slug, { notifyReleases: enabled });
   }, [setReleaseNotifications, setStoryOptions]);
 
@@ -349,7 +357,7 @@ function useAppState() {
       const fresh = await syncCatalog(() => {}, networkGuard("Refresh story summaries, ratings and chapter lists?", automatic), !automatic, message => warnings.push(message), signal);
       throwIfAborted(signal);
       await refreshCatalog();
-      await notifyReleases(fresh);
+      await notifyReleases(fresh).catch(error => warnings.push(error instanceof Error ? error.message : String(error)));
       await autoDownload();
       if (origin === noticeScope.current) setNotice(warnings.join(" "));
     } catch (error) {
@@ -417,6 +425,36 @@ function useAppState() {
     });
     return () => { clearTimeout(recovery); clearInterval(timer); app.remove(); unsubscribe(); };
   }, [sync, queue, showFailure, cancelDownload, refreshCatalog]);
+
+  const cleanupPath = useRef(pathname), cleanupRunning = useRef(false);
+  useEffect(() => { cleanupPath.current = pathname; }, [pathname]);
+  const cleanupExpired = useCallback(async () => {
+    if (cleanupRunning.current || AppState.currentState !== "active" || !loadPreferences().deleteAfterReading) return;
+    cleanupRunning.current = true;
+    try {
+      const removed = await cleanupReadDownloads(slug => AppState.currentState !== "active" || deleteLock.current || cleanupPath.current.startsWith(`/reader/${slug}/`) || readerFetches.current.has(slug) || queue.jobs.some(job => job.series.slug === slug) || Boolean(transferStates(slug)[slug]?.active || transferStates(slug)[slug]?.hasPlan));
+      if (removed) void refreshCatalog();
+    } finally { cleanupRunning.current = false; }
+  }, [queue, refreshCatalog]);
+  useEffect(() => {
+    void cleanupExpired();
+    const timer = setInterval(() => { void cleanupExpired(); }, 5 * 60_000);
+    const listener = AppState.addEventListener("change", state => { if (state === "active") void cleanupExpired(); });
+    return () => { clearInterval(timer); listener.remove(); };
+  }, [cleanupExpired, preferences.deleteAfterReading]);
+  useEffect(() => {
+    let mounted = true;
+    const check = async () => {
+      const version = ++permissionRevision.current;
+      try {
+        const allowed = await releasePermissionGranted();
+        if (mounted && version === permissionRevision.current && !notificationLock.current && !allowed && loadPreferences().releaseNotifications) updatePreferences({releaseNotifications:false});
+      } catch { /* A failed permission query must not change the user's settings. */ }
+    };
+    void check();
+    const listener = AppState.addEventListener("change", state => { if (state === "active") void check(); });
+    return () => { mounted = false; listener.remove(); };
+  }, [updatePreferences]);
 
   return { rememberSearch, fetchReaderChapter, catalogReady, connection, setStoryNotifications, setStoryOptions, setStoriesOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, cancelDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloadQueue: queue, downloadBusy, moveDownload, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
 }

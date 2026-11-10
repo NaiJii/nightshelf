@@ -150,6 +150,33 @@ try {
   assert.ok(outside.exists && cover.exists, "deletion stays inside the story's download folder");
   console.log("Storage deletion check passed");
   const tools = await import('../src/lib/library-tools.ts');
+  const retention = await import('../src/lib/read-retention.ts');
+  const retentionNow=Date.now(), oldRead=new Date(retentionNow-25*3600_000).toISOString();
+  assert.equal(retention.readDeletionDue(new Date(retentionNow-24*3600_000+1).toISOString(),retentionNow),false);
+  assert.equal(retention.readDeletionDue(new Date(retentionNow-24*3600_000).toISOString(),retentionNow),true);
+  for(const value of [undefined,'bad','1',new Date(retentionNow+3600_000).toISOString()])assert.equal(retention.readDeletionDue(value,retentionNow),false);
+  const retentionPrefs=storage.loadPreferences(), retentionRead=storage.readChapters(), retentionHistory=storage.readingHistory();
+  for(const slug of ['retention-test','retention-protected'])for(const id of ['1','2','3','4','5']){
+    const folder=storage.chapterDirectory(slug,id);folder.create();new File(folder,'.complete').write('complete');
+  }
+  new File(storage.ROOT,'read.json').write(JSON.stringify({...retentionRead,'retention-test':{'1':oldRead,'2':new Date(retentionNow-23*3600_000).toISOString(),'3':'invalid','4':new Date(retentionNow+3600_000).toISOString()},'retention-protected':{'1':oldRead}}));
+  storage.savePosition('retention-test','1',1);
+  storage.savePreferences({...retentionPrefs,deleteAfterReading:false});
+  assert.equal(await tools.cleanupReadDownloads(()=>false),0,'cleanup remains opt-in');
+  storage.savePreferences({...retentionPrefs,deleteAfterReading:true});
+  assert.equal(await tools.cleanupReadDownloads(slug=>slug==='retention-protected'),1,'only expired read chapters outside protected readers/downloads are removed');
+  assert.deepEqual(storage.localChapters('retention-test'),['2','3','4','5'],'fresh, invalid-date, future-date and unread chapters remain saved');
+  assert.ok(storage.chapterDirectory('retention-protected','1').exists);
+  assert.equal(storage.readChapters()['retention-test']['1'],oldRead,'24-hour cleanup retains read history');
+  assert.equal(storage.readingHistory()['retention-test'].fraction,1);
+  new File(storage.ROOT,'read.json').write(JSON.stringify({...storage.readChapters(),'retention-test':{'2':oldRead}}));
+  const unreadCleanup=tools.cleanupReadDownloads(slug=>slug==='retention-protected');
+  storage.setChaptersRead('retention-test',['2'],false);await unreadCleanup;
+  assert.ok(storage.chapterDirectory('retention-test','2').exists,'marking unread before cleanup cancels pending deletion');
+  for(const slug of ['retention-test','retention-protected'])storage.deleteChapters(slug,[],true);
+  new File(storage.ROOT,'read.json').write(JSON.stringify(retentionRead));new File(storage.ROOT,'history.json').write(JSON.stringify(retentionHistory));storage.savePreferences(retentionPrefs);
+  console.log('24-hour read retention, protected downloads/readers, unread cancellation and history preservation passed');
+
   const partialSize=storage.chapterDirectory('size-test','1');partialSize.create();
   new File(partialSize,'001.webp.part').write('stale partial');
   assert.equal(await tools.libraryBytesAsync(undefined,true),tools.libraryBytes(true));
@@ -251,6 +278,7 @@ try {
   const novelRaw = {slug:'example',title:'Example novel',description:'Short ranking preview',chapter_count:2};
   const fakeFetch = `
 export const requests=[]; export let imagePending=false;
+export let asuraChallenge=false;export function setAsuraChallenge(value){asuraChallenge=value;}
 export let coverRevision=1;export function changeCover(){coverRevision=2;}
 export let verificationMode='open';export function setVerificationMode(mode){verificationMode=mode;}
 export let vortexLive=false;export function setVortexLive(value){vortexLive=value;}
@@ -259,6 +287,7 @@ export let webtoonNew=false; export function releaseWebtoon(){webtoonNew=true;}
 export let kakalotPageFailure=false; export function failKakalotPage(value){kakalotPageFailure=value;}
 export async function fetch(url,options={}){
   requests.push(url); options.signal?.throwIfAborted();
+  if(asuraChallenge && new URL(url).hostname==='asurascans.com')return {ok:false,status:403};
   if(vortexLive && ['api.vortexscans.org','storage.vortexscans.org'].includes(new URL(url).hostname))return globalThis.fetch(url,options);
   if(new URL(url).hostname==='www.mangakakalot.gg' && options.headers['User-Agent']!=='native-test-agent') throw Error('Source requests must use the verification browser identity');
   if(['www.webtoons.com','vortexscans.org'].includes(new URL(url).hostname) && options.headers['User-Agent']!=='test') throw Error('WEBTOON must retain its separate desktop layout agent');
@@ -321,7 +350,7 @@ export async function fetch(url,options={}){
 }`;
   const nativeStub=`export let backgroundTransfers=null;export const plans=[];export function enable(){backgroundTransfers={enqueue:async text=>plans.push(JSON.parse(text))};}export async function waitForTransfer(){}`;
   const scraperHook = registerHooks({resolve(specifier,context,next){
-    if(specifier==='./source-session' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export const SOURCE_AGENT='test';export const verificationUserAgent=async()=>'native-test-agent';export const isVerificationHost=url=>new URL(url).hostname==='www.mangakakalot.gg';export const verificationCookies=async()=>'';export const requireSourceVerification=()=>new Error('Verify source');`,shortCircuit:true};
+    if(specifier==='./source-session' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export const SOURCE_AGENT='test';export const verificationUserAgent=async()=>'native-test-agent';export const isVerificationHost=url=>['www.mangakakalot.gg','asurascans.com'].includes(new URL(url).hostname);export const verificationCookies=async()=>'';export const requireSourceVerification=()=>new Error('Verify source');`,shortCircuit:true};
     if(specifier==='nightshelf-native-test'||(specifier==='./background-downloads' && context.parentURL?.endsWith('/scraper.ts')))return {url:`data:text/javascript,${encodeURIComponent(nativeStub)}`,shortCircuit:true};
     if(specifier==='@react-native-community/netinfo' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export default {fetch:async()=>({type:'wifi',isConnected:true,details:{}})}`,shortCircuit:true};
     if(specifier==='expo/fetch')return {url:`data:text/javascript,${encodeURIComponent(fakeFetch)}`,shortCircuit:true};
@@ -333,6 +362,11 @@ export async function fetch(url,options={}){
     storage.saveCatalog([{...cached,title:'Example',url:'https://asurascans.com/comics/example',summary:'',detailsCached:false,syncedAt:new Date().toISOString()}]);
     const {syncCatalog,downloadChapters,repairSavedPanel,browseCatalog,enrichCatalogIds,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
     const http = await import('expo/fetch'); const {requests} = http;
+    http.setAsuraChallenge(true);
+    await assert.rejects(()=>refreshSeries({...cached,url:'https://asurascans.com/comics/example'},async()=>{}),/Verify source/,'Asura public-page 403 failures expose verification instead of a generic dead-end error');
+    http.setAsuraChallenge(false);
+    await verifySourceSession('https://asurascans.com/comics/example',async()=>{});
+
     const legacyCover=new File(storage.COVERS,'cover-test.webp');legacyCover.write(new Uint8Array([137,80,78,71,13,10,26,10,9,9,9,9]));
     const coverStory={...cached,slug:'cover-test',url:'https://asurascans.com/comics/cover-test',cover:'https://asurascans.com/og/comics/cover-test.jpg',localCover:legacyCover.uri};
     const portrait=await refreshSeries(coverStory,async()=>{});
@@ -578,7 +612,7 @@ export async function fetch(url,options={}){
 
   } finally { scraperHook.deregister(); storage.toggleSaved('example','bookmarked'); }
   const mocks = {
-    "expo-notifications": `export const AndroidImportance={DEFAULT:3}; export const sent=[]; export let granted=true; export function deny(){granted=false;} export function setNotificationHandler(){}; export async function setNotificationChannelAsync(){}; export async function getPermissionsAsync(){return {granted};} export const requestPermissionsAsync=getPermissionsAsync; export async function getPresentedNotificationsAsync(){return [...new Map(sent.map(value=>[value.identifier,{request:value}])).values()];} export async function scheduleNotificationAsync(value){sent.push(value);}`,
+    "expo-notifications": `export const AndroidImportance={DEFAULT:3}; export const sent=[]; export let granted=true; export function deny(){granted=false;} export function allow(){granted=true;} export let failing=""; export function failFor(value){failing=value;} export let beforePresented=()=>{}; export function setBeforePresented(value){beforePresented=value;} export function setNotificationHandler(){}; export async function setNotificationChannelAsync(){}; export async function getPermissionsAsync(){return {granted};} export const requestPermissionsAsync=getPermissionsAsync; export async function getPresentedNotificationsAsync(){await beforePresented();return [...new Map(sent.map(value=>[value.identifier,{request:value}])).values()];} export async function scheduleNotificationAsync(value){if(value.identifier===failing)throw Error("Notification delivery failed");sent.push(value);}`,
     "expo-background-task": `export const BackgroundTaskResult={Success:1,Failed:2}; export const registrations=[];export let removals=0;export async function registerTaskAsync(name,options){registrations.push(options);} export async function unregisterTaskAsync(){removals++;}`,
     "expo-task-manager": `export let task; export function defineTask(name,callback){task=callback;} let options=null;export function registration(value){options=value;}export async function getTaskOptionsAsync(){return options;}export async function isTaskRegisteredAsync(){return options!==null;}`,
     "@react-native-community/netinfo": `export let network={type:'cellular',isConnected:true}; export function setNetwork(value){network=value;} export default {fetch:async()=>network};`,
@@ -690,6 +724,21 @@ export async function fetch(url,options={}){
     assert.equal(refresher.downloaded.length,1,'the first full pull cannot enqueue the existing chapter backlog');
     assert.deepEqual(storage.savedStories()['first-baseline'].autoDownloadBaseline,['1','2']);
     console.log('Automatic bookmarked Wi-Fi release handoff check passed');
+    notifications.allow();storage.savePreferences({...storage.loadPreferences(),releaseNotifications:true});
+    const alertBad={...story,slug:'alert-fail',chapterIds:['1','2'],chapterCount:2}, alertGood={...alertBad,slug:'alert-good'};
+    for(const item of [alertBad,alertGood]){tools.updateStoryOptions(item.slug,{bookmarked:true,notifyReleases:true});storage.saveReleaseSnapshot(item.slug,['1']);}
+    notifications.failFor('release-alert-fail');
+    await assert.rejects(()=>notifyReleases([alertBad,alertGood]),/Notification delivery failed/);
+    assert.equal(notifications.sent.at(-1).identifier,'release-alert-good','one failed notification does not block other bookmarked releases');
+    assert.deepEqual(storage.releaseSnapshots()['alert-fail'],['1'],'failed delivery keeps its snapshot available for retry');
+    notifications.failFor('');await notifyReleases([alertBad]);
+    assert.equal(notifications.sent.at(-1).identifier,'release-alert-fail');
+    const alertOff={...alertBad,slug:'alert-off'};tools.updateStoryOptions(alertOff.slug,{bookmarked:true,notifyReleases:true});storage.saveReleaseSnapshot(alertOff.slug,['1']);
+    const beforeDisabledAlert=notifications.sent.length;
+    notifications.setBeforePresented(()=>{tools.updateStoryOptions(alertOff.slug,{notifyReleases:false});notifications.setBeforePresented(()=>{});});
+    await notifyReleases([alertOff]);
+    assert.equal(notifications.sent.length,beforeDisabledAlert,'disabling a bell during alert preparation prevents a stale notification');
+
     AppState.currentState='active';
     net.setNetwork({type:'cellular',isConnected:true});
     const {networkGuard} = await import('../src/lib/network.ts');

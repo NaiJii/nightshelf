@@ -33,7 +33,7 @@ export function beginReaderTransfer(series: Series, chapter: string, cancel: () 
   notify(false);
   return {
     progress(message: string, fraction: number) {
-      if (finished) return;
+      if (finished || active.get(series.slug) !== entry || entry.job.status === "cancelling") return;
       entry.job.message = message; entry.job.progress = Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0; entry.job.chapterProgress = entry.job.progress;
       publish();
       if (Date.now() - lastNotice >= 1000 || fraction >= 1) { lastNotice = Date.now(); notify(false); }

@@ -60,7 +60,7 @@ export default function SeriesDetails() {
   useFocusEffect(useCallback(() => { void loadDetails(slug); return () => cancelDetails(slug); }, [loadDetails, cancelDetails, slug]));
   const item = catalog.find(value => value.slug === slug);
   const readNow = useReaderNavigation(slug, item?.title, undefined, undefined, true);
-  const verifyDetails = useSourceRetry(() => { void loadDetails(slug, true); });
+  const verifyDetails = useSourceRetry(() => { void loadDetails(slug, true); }, item ? sourceOf(item) : undefined);
   const owned = item?.localChapters || [];
   const ownedSet = new Set(owned);
   const savedRead = owned.filter(id => read[slug]?.[id]);

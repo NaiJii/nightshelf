@@ -1,9 +1,9 @@
 import { Pressable } from "../components/pressable";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Text, View } from "react-native";
 import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import NetInfo from "@react-native-community/netinfo";
 import { sourceOf } from "../lib/parser";
 import { PROVIDERS, providerInfo, sourceIdForUrl } from "../lib/provider-info";
@@ -19,7 +19,11 @@ export default function VerifySource() {
   const { retryDownload, source } = useLocalSearchParams<{ retryDownload?: string; source?: string }>();
   const jobs = useDownloads(true);
   const retryJob = jobs.find(job => job.series.slug === retryDownload && job.status === "error" && Boolean(providerInfo(sourceOf(job.series)).verification));
-  const [url] = useState(() => PROVIDERS.find(info => info.id === source)?.verification?.url || sourceVerificationUrl());
+  const [url] = useState(() => {
+    const pending = sourceVerificationUrl(), requested = source || (retryJob ? sourceOf(retryJob.series) : undefined);
+    if (!requested || sourceIdForUrl(pending) === requested) return pending;
+    return retryJob?.series.url || PROVIDERS.find(info => info.id === requested)?.verification?.url || pending;
+  });
   const [webSource] = useState(() => ({ uri: url }));
   const info = providerInfo(sourceIdForUrl(url));
   const label = info.name;
@@ -35,16 +39,31 @@ export default function VerifySource() {
   const webRef = useRef<WebView>(null);
   const probeRef = useRef<AbortController | null>(null);
   const attempted = useRef(false);
+  const focused = useRef(false);
+  useFocusEffect(useCallback(() => {
+    focused.current = true;
+    const pause = () => {
+      if (!probeRef.current) return;
+      probeRef.current.abort(); probeRef.current = null; attempted.current = false;
+      setChecking(false); setReady(false); setError("Access check paused. Reload or retry when ready.");
+    };
+    webRef.current?.injectJavaScript(observer);
+    const listener = AppState.addEventListener("change", state => {
+      if (state !== "active") pause(); else webRef.current?.injectJavaScript(observer);
+    });
+    return () => { focused.current = false; pause(); listener.remove(); };
+  }, [observer]));
   useEffect(() => {
     let active = true, lastKey = "", generation = 0;
     const unsubscribe = NetInfo.addEventListener(state => {
+      if (!focused.current || AppState.currentState !== "active") return;
       const key = verificationNetworkKey(state);
       if (key === lastKey) return;
       lastKey = key;
       const version = ++generation;
       probeRef.current?.abort(); probeRef.current = null; attempted.current = false; setChecking(false);
       setAllowed(false); setReady(false); setStalled(false); setLoading(true);
-      void guard().then(() => { if (active && version === generation) { setAllowed(true); setError(""); } }).catch(error => { if (active && version === generation) { setAllowed(false); setError(error instanceof Error ? error.message : "Connection unavailable."); } });
+      void guard().then(() => { if (active && focused.current && version === generation) { setAllowed(true); setError(""); } }).catch(error => { if (active && focused.current && version === generation) { setAllowed(false); setLoading(false); setStalled(true); setError(error instanceof Error ? error.message : "Connection unavailable."); } });
     });
     return () => { active = false; generation++; unsubscribe(); probeRef.current?.abort(); };
   }, [guard, retry]);
@@ -55,12 +74,12 @@ export default function VerifySource() {
     return () => clearTimeout(timer);
   }, [allowed, ready, retry]);
   const finish = useCallback(async () => {
-    if (checking || !ready || probeRef.current) return;
+    if (!focused.current || AppState.currentState !== "active" || checking || !ready || probeRef.current) return;
     const controller = new AbortController(); probeRef.current = controller;
     setChecking(true); setError("");
     try {
       await verifySourceSession(url, guard, controller.signal);
-      if (!controller.signal.aborted) { sourceSessionChanged(); if (retryJob) resumeDownload(retryJob.series.slug); router.back(); }
+      if (!controller.signal.aborted && focused.current && AppState.currentState === "active") { sourceSessionChanged(); if (retryJob) resumeDownload(retryJob.series.slug); router.back(); }
     } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Verification failed. Reload and retry."); }
     finally { if (probeRef.current === controller) probeRef.current = null; if (!controller.signal.aborted) setChecking(false); }
   }, [checking, ready, guard, sourceSessionChanged, url, resumeDownload, retryJob]);
@@ -80,10 +99,11 @@ export default function VerifySource() {
       onLoadStart={() => { probeRef.current?.abort(); probeRef.current = null; attempted.current = false; setChecking(false); setLoading(true); setReady(false); }}
       onLoadEnd={() => { setLoading(false); webRef.current?.injectJavaScript(observer); }}
       onMessage={event => {
-        try { const data = JSON.parse(event.nativeEvent.data); if (data.type === "source-ready" && isVerificationHost(data.url)) { setReady(true); setLoading(false); setStalled(false); if (!attempted.current) setError(""); } } catch { /* unrelated source scripts */ }
+        if (!focused.current || AppState.currentState !== "active") return;
+        try { const data = JSON.parse(event.nativeEvent.data); if (data.type === "source-ready" && isVerificationHost(data.url) && sourceIdForUrl(data.url) === info.id) { setReady(true); setLoading(false); setStalled(false); if (!attempted.current) setError(""); } } catch { /* unrelated source scripts */ }
       }}
-      onError={event => { setLoading(false); setError(event.nativeEvent.description); }}
+      onError={event => { if (!focused.current) return; probeRef.current?.abort(); probeRef.current = null; setChecking(false); setReady(false); setStalled(true); setLoading(false); setError(event.nativeEvent.description); }}
     /> : !error && <ActivityIndicator color={color.lilac} style={{ padding: 30 }} />}
-    <View style={{ padding: 16, borderTopWidth: 1, borderColor: color.line }}>{ready && error && !checking ? <Pressable onPress={() => void finish()} style={ui.primary}><Text style={ui.primaryText}>Retry access check</Text></Pressable> : <View accessibilityLiveRegion="polite" style={[ui.row, { justifyContent: "center", paddingVertical: 12 }]}>{!stalled && <ActivityIndicator color={color.lilac} size="small" />}<Text style={ui.muted}>{checking || ready ? "Testing source access…" : stalled ? "Verification not completed" : "Waiting for the source page"}</Text></View>}</View>
+    <View style={{ padding: 16, borderTopWidth: 1, borderColor: color.line }}>{ready && error && !checking ? <Pressable onPress={() => void finish()} style={ui.primary}><Text style={ui.primaryText}>Retry access check</Text></Pressable> : <View accessibilityLiveRegion="polite" style={[ui.row, { justifyContent: "center", paddingVertical: 12 }]}>{!stalled && !error && <ActivityIndicator color={color.lilac} size="small" />}<Text style={ui.muted}>{checking || ready ? "Testing source access…" : stalled || error ? "Verification not completed" : "Waiting for the source page"}</Text></View>}</View>
   </SafeAreaView>;
 }

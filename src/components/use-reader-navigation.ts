@@ -6,9 +6,10 @@ import { chapterIntact } from "../lib/storage";
 import { useSourceRetry } from "./use-source-retry";
 import { useActionSheet } from "./action-sheet";
 import { needsVerification } from "../lib/provider-errors";
+import { sourceOf } from "../lib/parser";
 
 export function useReaderNavigation(slug: string, title: string | undefined, next: string | undefined, transition?: string, push = false, onOpen?: (chapter: string, previous: boolean) => void, afterNext?: string) {
-  const { preferences, fetchReaderChapter, connection, read } = useShelf();
+  const { preferences, fetchReaderChapter, connection, read, catalog } = useShelf();
   const showSheet = useActionSheet();
   const [status, setStatus] = useState(transition ? `Chapter ${transition}` : "");
   const [busy, setBusy] = useState(false);
@@ -113,6 +114,7 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
     })().catch(() => { if (attempted.current === key) retryPrefetchAt.current = Date.now() + 30000; return undefined; });
   }
   async function cancel() { const pending = request.current; pending?.controller.abort(); await pending?.promise.catch(()=>{}); }
-  const verify = useSourceRetry(() => { if (verification) void open(verification.target, verification.automatic, verification.previous); });
+  const story = catalog?.find(item => item.slug === slug);
+  const verify = useSourceRetry(() => { if (verification) void open(verification.target, verification.automatic, verification.previous); }, story ? sourceOf(story) : undefined);
   return { go, prefetch, status, busy, progress, cancel, verify, needsVerification: Boolean(verification), clearStatus: () => setStatus("") };
 }
