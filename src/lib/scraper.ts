@@ -4,7 +4,7 @@ import { kindOf, sourceOf, selectChapters } from "./parser";
 import type { Chapter, ContentMode, Series, SourceId } from "./parser";
 import { getProvider, storyProvider } from "./providers/registry";
 import { MOBILE_AGENT } from "./providers/assets";
-import { ProviderError } from "./provider-errors";
+import { isBrowserChallenge, ProviderError } from "./provider-errors";
 import { providerInfo, sourceIdForUrl } from "./provider-info";
 import type { BrowseCursor, BrowseOptions, RequestContext } from "./providers/types";
 import { catalogMetadata, chapterDirectory, chapterIntact, COVERS, initializeStorage, loadCatalog, loadCatalogAsync, loadPreferences, savedStories, mergeCatalog, loadDownloads, saveDownloads, novelChapter } from "./storage";
@@ -38,8 +38,15 @@ async function request<T>(url: string, guard: Guard, read: (response: Awaited<Re
     const response = await withAbort(() => fetch(url, { signal: controller.signal, headers }), controller.signal);
     if (!response.ok) {
       const source = sourceForRequest(url);
-      if (source) recordSourceHealth(source, response.status === 403 && isVerificationHost(url) ? "verification" : "unavailable", response.status === 403 && isVerificationHost(url) ? "Browser verification required" : `Website returned HTTP ${response.status}`);
-      throw response.status === 403 && isVerificationHost(url) ? requireSourceVerification(url) : source ? new ProviderError("unavailable", source, `Request failed (${response.status})`) : new Error(`Request failed (${response.status})`);
+      // A denied request is not necessarily a browser challenge. In particular,
+      // verifying cannot repair a plain API or image permission failure.
+      const verification = isVerificationHost(url) && (response.headers?.get("cf-mitigated") === "challenge"
+        || ([403, 429, 503].includes(response.status) && isBrowserChallenge(await withAbort(() => response.text(), controller.signal))));
+      const address = new URL(url);
+      const target = assetAgent ? "image" : address.hostname.startsWith("api.") || address.pathname.startsWith("/api/") ? "API" : /\/chapter(?:\/|-)/.test(address.pathname) ? "chapter page" : "page";
+      const message = `Request failed (${response.status}) · ${target} (${address.hostname})`;
+      if (source) recordSourceHealth(source, verification ? "verification" : "unavailable", verification ? "Browser verification required" : message);
+      throw verification ? requireSourceVerification(url) : source ? new ProviderError("unavailable", source, message) : new Error(message);
     }
     const result = await withAbort(() => read(response), controller.signal);
     throwIfAborted(signal);
@@ -50,7 +57,7 @@ async function request<T>(url: string, guard: Guard, read: (response: Awaited<Re
 }
 async function getText(url: string, guard: Guard, referer?: string, signal?: AbortSignal, timeout = 30_000): Promise<string> {
   const text = await request(url, guard, response => response.text(), referer, signal, timeout);
-  if (isVerificationHost(url) && /<title\b[^>]*>\s*(?:Just a moment|Attention Required)/i.test(text)) { recordSourceHealth(sourceIdForUrl(url)!, "verification", "Browser verification required"); throw requireSourceVerification(url); }
+  if (isVerificationHost(url) && isBrowserChallenge(text)) { recordSourceHealth(sourceIdForUrl(url)!, "verification", "Browser verification required"); throw requireSourceVerification(url); }
   return text;
 }
 export async function verifySourceSession(url: string, guard: Guard, signal?: AbortSignal): Promise<void> {

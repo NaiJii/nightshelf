@@ -5,6 +5,7 @@ export const SOURCES = PROVIDERS;
 export type Series = {
   source?: SourceId;
   vortexId?: string;
+  asuraSlug?: string;
   language?: string;
   chapterUrls?: Record<string, string>;
   chapterTitles?: Record<string, string>;
@@ -298,11 +299,11 @@ export function parseApiSeries(raw: unknown, kind: "comic" | "novel"): Series | 
   try { url = new URL(path, "https://asurascans.com"); } catch { return null; }
   if (url.hostname !== "asurascans.com" || !/^\/(comics|novels)\/[^/]+$/.test(url.pathname)) return null;
   const slug = kind === "novel" ? `novel--${data.slug}` : url.pathname.split("/").at(-1)!;
-  const recent = Array.isArray(data.recent_chapters) ? data.recent_chapters : [];
+  const recent = Array.isArray(data.latest_chapters) ? data.latest_chapters : Array.isArray(data.recent_chapters) ? data.recent_chapters : [];
   const latest = data.latest_chapter_number ?? (recent.reduce((max, item) => Math.max(max, Number(item.number) || 0), 0) || data.chapter_count);
   return {
-    url: url.toString(), slug, kind, title: data.title, alternativeTitles: parseAlternativeTitles(data.alternative_titles ?? data.alternativeTitles), summary: plainText(String(data.description || "")),
-    cover: String(data.cover_url || data.cover || ""), rating: String(data.rating || ""), bookmarks: String(data.bookmarks || ""),
+    url: url.toString(), slug, asuraSlug: data.slug, kind, title: data.title, alternativeTitles: parseAlternativeTitles(data.alternative_titles ?? data.alternativeTitles ?? data.alt_titles), summary: plainText(String(data.description || "")),
+    cover: String(data.cover_url || data.cover || ""), rating: String(data.rating || ""), bookmarks: String(data.bookmarks ?? data.bookmark_count ?? ""),
     status: String(data.status || "unknown"), type: kind === "novel" ? "Novel" : String(data.type || "Comic"),
     chapterCount: Number(data.chapter_count) || 0, latestChapter: String(latest || ""),
     updatedAt: typeof data.last_chapter_at === "string" && Number.isFinite(Date.parse(data.last_chapter_at)) ? data.last_chapter_at : undefined,

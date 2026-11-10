@@ -1,5 +1,10 @@
 import type { SourceId } from "./provider-info";
 
+export function isBrowserChallenge(html: string): boolean {
+  return /<title\b[^>]*>\s*Just a moment(?:\.{3}|…)?\s*<\/title>/i.test(html)
+    || (/<title\b[^>]*>\s*Attention Required\b/i.test(html) && /(?:_cf_chl_opt|\/cdn-cgi\/challenge-platform\/|cf-chl-)/i.test(html));
+}
+
 export class ProviderError extends Error {
   readonly code: "verification" | "parser" | "unavailable";
   readonly source: SourceId;

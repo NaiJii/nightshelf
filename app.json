@@ -2,7 +2,7 @@
   "expo": {
     "name": "NightShelf",
     "slug": "nightshelf",
-    "version": "2.0.12",
+    "version": "2.0.13",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -12,7 +12,7 @@
     "scheme": "nightshelf",
     "android": {
       "package": "com.ji.nightshelf",
-      "versionCode": 29,
+      "versionCode": 30,
       "permissions": [
         "android.permission.INTERNET"
       ],

@@ -273,12 +273,12 @@ try {
 
 
   const fullSummary = "The complete summary saved from the story page, including its ending.";
-  const comicHtml = `<meta property="og:title" content="Example"><meta property="og:image" content="https://cdn/example.webp"><div id="description-text"><p>${fullSummary}</p></div><a href="/comics/example/chapter/1">1</a><a href="/comics/example/chapter/2">2</a>`;
   const comicRaw = {slug:'example',title:'Example',description:'Short ranking preview',cover:'https://cdn/example.webp',chapter_count:2};
   const novelRaw = {slug:'example',title:'Example novel',description:'Short ranking preview',chapter_count:2};
   const fakeFetch = `
 export const requests=[]; export let imagePending=false;
 export let asuraChallenge=false;export function setAsuraChallenge(value){asuraChallenge=value;}
+export let requestFailure;export function setRequestFailure(value){requestFailure=value;}
 export let coverRevision=1;export function changeCover(){coverRevision=2;}
 export let verificationMode='open';export function setVerificationMode(mode){verificationMode=mode;}
 export let vortexLive=false;export function setVortexLive(value){vortexLive=value;}
@@ -287,11 +287,29 @@ export let webtoonNew=false; export function releaseWebtoon(){webtoonNew=true;}
 export let kakalotPageFailure=false; export function failKakalotPage(value){kakalotPageFailure=value;}
 export async function fetch(url,options={}){
   requests.push(url); options.signal?.throwIfAborted();
-  if(asuraChallenge && new URL(url).hostname==='asurascans.com')return {ok:false,status:403};
+  if(requestFailure?.url===url)return new Response(requestFailure.body,{status:requestFailure.status,headers:requestFailure.headers});
+  if(asuraChallenge && new URL(url).hostname==='asurascans.com')return new Response('<title>Just a moment...</title>',{status:403});
   if(vortexLive && ['api.vortexscans.org','storage.vortexscans.org'].includes(new URL(url).hostname))return globalThis.fetch(url,options);
   if(new URL(url).hostname==='www.mangakakalot.gg' && options.headers['User-Agent']!=='native-test-agent') throw Error('Source requests must use the verification browser identity');
   if(['www.webtoons.com','vortexscans.org'].includes(new URL(url).hostname) && options.headers['User-Agent']!=='test') throw Error('WEBTOON must retain its separate desktop layout agent');
   const params=new URL(url).searchParams, offset=Number(params.get('offset')||0);
+
+  if(new URL(url).hostname==='api.asurascans.com') {
+    const match=new URL(url).pathname.match(new RegExp('^/api/series/([^/]+)(?:/chapters(?:/([0-9.]+))?)?$'));
+    if(match) {
+      const route=match[1], number=match[2];
+      const ids=route==='partial'?[199,200]:['repair','cover-test'].includes(route)?[1]:[1,2];
+      const cover=route==='cover-test'?'https://cdn/portrait-'+coverRevision+'.webp':'https://cdn/example.webp';
+      let data;
+      if(number!==undefined) {
+        const pages=route==='repair'?['https://cdn/a.webp','https://cdn/b.webp']:['https://cdn/image.webp'];
+        data={data:{is_locked:false,access_gate:'',chapter:{number:Number(number),series_slug:route,is_premium:false,page_count:pages.length,pages:pages.map(url=>({url}))}}};
+      } else if(new URL(url).pathname.endsWith('/chapters')) data={data:ids.map(number=>({number,is_premium:false,series_slug:route}))};
+      else data={series:{slug:route,title:route==='example'?'Example':route.startsWith('page-')?'Page '+route.slice(5):route.startsWith('ranking-')?'Rank '+route.slice(8):route,description:${JSON.stringify(fullSummary)},cover,chapter_count:route==='partial'?201:ids.length}};
+      return {ok:true,text:async()=>JSON.stringify(data)};
+    }
+  }
+
   const pages=Array.from({length:23},(_,i)=>({slug:'page-'+i,title:'Page '+i,description:'Page result',chapter_count:3}));
   const ranking=Array.from({length:45},(_,i)=>({slug:'ranking-'+i,title:'Rank '+i,chapter_count:3}));
   if(new URL(url).hostname==='www.webtoons.com') {
@@ -317,7 +335,7 @@ export async function fetch(url,options={}){
     return {ok:true,text:async()=>data};
   }
   if(new URL(url).hostname==='www.mangakakalot.gg') {
-    if(verificationMode==='blocked')return {ok:false,status:403};
+    if(verificationMode==='blocked')return new Response('Forbidden',{status:403});
     if(verificationMode==='challenge')return {ok:true,text:async()=>'<title>Just a moment...</title>'};
     const story='https://www.mangakakalot.gg/manga/example';
     const card='<div class="comic-list"><div class="list-comic-item-wrap"><a href="'+story+'"><img src="https://storage.waitst.com/cover.webp"></a><h3><a href="'+story+'">Example</a></h3></div></div>';
@@ -331,16 +349,11 @@ export async function fetch(url,options={}){
   }
   if(['img-r1.2xstorage.com','storage.waitst.com'].includes(new URL(url).hostname) && options.headers.Referer!=='https://www.mangakakalot.gg/') throw Error('CDN requires the source root referrer');
   if(['storage.vortexscans.org','img-r1.2xstorage.com','storage.waitst.com'].includes(new URL(url).hostname))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
-  if(url==='https://asurascans.com/comics/repair')return {ok:true,text:async()=>'<meta property="og:title" content="Repair"><meta property="og:image" content="https://cdn/repair.webp"><div>9.7 Rating 1 Chapters</div><a href="/comics/repair/chapter/1">Chapter 1</a>'};
-  if(url==='https://asurascans.com/comics/cover-test')return {ok:true,text:async()=>'<meta property="og:image" content="https://asurascans.com/og/comics/cover-test.jpg"><img id="cover-viewer-img" data-full-src="https://cdn/portrait-'+coverRevision+'.webp"><div>1 Chapters</div><a href="/comics/cover-test/chapter/1">1</a>'};
   if(url.startsWith('https://cdn/portrait-'))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,coverRevision])};
-  if(url==='https://asurascans.com/comics/partial')return {ok:true,text:async()=>'<meta property="og:title" content="Partial"><meta property="og:image" content="https://cdn/cover.webp"><div>201 Chapters</div><a href="/comics/partial/chapter/199">199</a><a href="/comics/partial/chapter/200">200</a>'};
-  if(url==='https://asurascans.com/comics/repair/chapter/1')return {ok:true,text:async()=>'<img data-page-index="0" src="https://cdn/a.webp"><img data-page-index="1" src="https://cdn/b.webp">'};
   if(['https://cdn/a.webp','https://cdn/b.webp'].includes(url))return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])};
   if(url==='https://cdn/image.webp')return {ok:true,headers:{get:()=> 'image/webp'},bytes:async()=>{imagePending=true;return new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));}};
-  const data = url.includes('/comics/example/chapter/') ? '<img data-page-index="0" src="https://cdn/image.webp">'
-    : url.includes('/comics/example') ? ${JSON.stringify(comicHtml)}
-    : url.includes('/trending/') ? {data:params.get('limit')==='100'?ranking:[${JSON.stringify(comicRaw)}]}
+  if(new URL(url).hostname==='asurascans.com')throw Error('Asura wrapper must use the public API, not HTML pages');
+  const data = url.includes('/trending/') ? {data:params.get('limit')==='100'?ranking:[${JSON.stringify(comicRaw)}]}
     : url.includes('/series?') ? {data:pages.slice(offset,offset+20),meta:{total:23,has_more:offset+20<23}}
     : url.includes('/novel-series?') ? {data:offset?[]:[${JSON.stringify(novelRaw)}],meta:{total:1}}
     : url.includes('/novel-series/example/chapter/') ? {is_locked:false,title:'Repaired chapter',content_html:'<p>Repaired novel text.</p>'}
@@ -350,7 +363,7 @@ export async function fetch(url,options={}){
 }`;
   const nativeStub=`export let backgroundTransfers=null;export const plans=[];export function enable(){backgroundTransfers={enqueue:async text=>plans.push(JSON.parse(text))};}export async function waitForTransfer(){}`;
   const scraperHook = registerHooks({resolve(specifier,context,next){
-    if(specifier==='./source-session' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export const SOURCE_AGENT='test';export const verificationUserAgent=async()=>'native-test-agent';export const isVerificationHost=url=>['www.mangakakalot.gg','asurascans.com'].includes(new URL(url).hostname);export const verificationCookies=async()=>'';export const requireSourceVerification=()=>new Error('Verify source');`,shortCircuit:true};
+    if(specifier==='./source-session' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export const SOURCE_AGENT='test';export const verificationUserAgent=async()=>'native-test-agent';export const isVerificationHost=url=>new URL(url).hostname==='www.mangakakalot.gg';export const verificationCookies=async()=>'';export const requireSourceVerification=()=>new Error('Verify source');`,shortCircuit:true};
     if(specifier==='nightshelf-native-test'||(specifier==='./background-downloads' && context.parentURL?.endsWith('/scraper.ts')))return {url:`data:text/javascript,${encodeURIComponent(nativeStub)}`,shortCircuit:true};
     if(specifier==='@react-native-community/netinfo' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export default {fetch:async()=>({type:'wifi',isConnected:true,details:{}})}`,shortCircuit:true};
     if(specifier==='expo/fetch')return {url:`data:text/javascript,${encodeURIComponent(fakeFetch)}`,shortCircuit:true};
@@ -363,9 +376,34 @@ export async function fetch(url,options={}){
     const {syncCatalog,downloadChapters,repairSavedPanel,browseCatalog,enrichCatalogIds,FIRST_PAGE,refreshSeries,verifySourceSession} = await import('../src/lib/scraper.ts');
     const http = await import('expo/fetch'); const {requests} = http;
     http.setAsuraChallenge(true);
-    await assert.rejects(()=>refreshSeries({...cached,url:'https://asurascans.com/comics/example'},async()=>{}),/Verify source/,'Asura public-page 403 failures expose verification instead of a generic dead-end error');
+    const apiStory='https://api.asurascans.com/api/series/example';
+    const asuraStart=requests.length;
+    await refreshSeries({...cached,url:'https://asurascans.com/comics/example'},async()=>{});
+    assert.ok(!requests.slice(asuraStart).some(url=>new URL(url).hostname==='asurascans.com'),'a challenged HTML site does not affect the public API download path');
     http.setAsuraChallenge(false);
-    await verifySourceSession('https://asurascans.com/comics/example',async()=>{});
+    http.setRequestFailure({url:apiStory,status:403,body:'Forbidden'});
+    await assert.rejects(()=>refreshSeries({...cached,url:'https://asurascans.com/comics/example'},async()=>{}),error=>error.code==='unavailable' && /Request failed \(403\).*API \(api.asurascans.com\)/.test(error.message),'API denial does not offer irrelevant browser verification');
+    assert.equal(tools.sourceHealth().asura.state,'unavailable');
+    const verificationStory='https://www.mangakakalot.gg/manga/example';
+    for(const body of ['Forbidden','<title>Attention Required</title><p>Access denied</p>']) {
+      http.setRequestFailure({url:verificationStory,status:403,body});
+      await assert.rejects(()=>verifySourceSession(verificationStory,async()=>{}),error=>error.code==='unavailable','a static block is not a browser challenge');
+    }
+    for(const failure of [
+      {status:403,body:'',headers:{'cf-mitigated':'challenge'}},
+      {status:503,body:'<title>Just a moment...</title>'},
+      {status:200,body:'<title>Just a moment...</title>'},
+    ]) {
+      http.setRequestFailure({url:verificationStory,...failure});const before=requests.length;
+      await assert.rejects(()=>verifySourceSession(verificationStory,async()=>{}),/Verify source/);
+      assert.equal(requests.length,before+1,'challenge handling does not loop');
+    }
+    http.setRequestFailure({url:'https://api.asurascans.com/api/series/repair/chapters/1',status:403,body:'Forbidden'});
+    await assert.rejects(()=>downloadChapters({...cached,slug:'repair',url:'https://asurascans.com/comics/repair'},'1',()=>{},async()=>{}),error=>error.code==='unavailable' && /API \(api.asurascans.com\)/.test(error.message));
+    http.setRequestFailure({url:'https://cdn/a.webp',status:403,body:'Forbidden'});
+    await assert.rejects(()=>downloadChapters({...cached,slug:'repair',url:'https://asurascans.com/comics/repair'},'1',()=>{},async()=>{}),/Request failed \(403\).*image \(cdn\)/);
+    http.setRequestFailure(undefined);
+    await assert.rejects(()=>verifySourceSession('https://asurascans.com/comics/example',async()=>{}),/Unsupported source verification/);
 
     const legacyCover=new File(storage.COVERS,'cover-test.webp');legacyCover.write(new Uint8Array([137,80,78,71,13,10,26,10,9,9,9,9]));
     const coverStory={...cached,slug:'cover-test',url:'https://asurascans.com/comics/cover-test',cover:'https://asurascans.com/og/comics/cover-test.jpg',localCover:legacyCover.uri};
@@ -554,7 +592,7 @@ export async function fetch(url,options={}){
     await verifySourceSession(verificationUrl,async()=>{});
     for(const mode of ['blocked','challenge']) {
       http.setVerificationMode(mode);const before=requests.length;
-      await assert.rejects(()=>verifySourceSession(verificationUrl,async()=>{}),/Verify source/);
+      await assert.rejects(()=>verifySourceSession(verificationUrl,async()=>{}),mode==='blocked'?/Request failed \(403\)/:/Verify source/);
       assert.equal(requests.length,before+1,'failed session verification makes one attempt instead of retrying forever');
     }
     http.setVerificationMode('open');await verifySourceSession(verificationUrl,async()=>{});
@@ -566,10 +604,10 @@ export async function fetch(url,options={}){
     http.setVerificationMode('blocked'); const failedSourceStart=requests.length, syncWarnings=[];
     const partiallySynced=await syncCatalog(()=>{},async()=>{},true,message=>syncWarnings.push(message));
     assert.ok(partiallySynced.some(item=>item.slug==='example'&&item.detailsCached));
-    assert.ok(requests.slice(failedSourceStart).some(url=>new URL(url).hostname==='asurascans.com'),'one challenged directory cannot block healthy bookmarks on another source');
-    assert.ok(syncWarnings.some(message=>/Verify source/.test(message)),'partial success still reports the failed source');
+    assert.ok(requests.slice(failedSourceStart).some(url=>new URL(url).hostname==='api.asurascans.com'),'one refused directory cannot block healthy bookmarks on another source');
+    assert.ok(syncWarnings.some(message=>/Request failed \(403\)/.test(message)),'partial success still reports the failed source');
     storage.saveCatalog([]);
-    await assert.rejects(()=>syncCatalog(()=>{},async()=>{},true),/Verify source/,'when nothing can refresh, preserve the actionable verification error');
+    await assert.rejects(()=>syncCatalog(()=>{},async()=>{},true),/Request failed \(403\)/,'when nothing can refresh, preserve the actual refusal');
     http.setVerificationMode('open');storage.savePreferences(syncPreferences);storage.saveCatalog(syncCatalogBefore);tools.updateStoryOptions('example',{bookmarked:bookmarkBefore});
     console.log('Cross-source partial sync and actionable verification error regression checks passed');
     const repairStory={...storage.SEED[0],slug:'repair',url:'https://asurascans.com/comics/repair',cover:''};

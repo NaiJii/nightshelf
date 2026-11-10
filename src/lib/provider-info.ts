@@ -25,9 +25,8 @@ export type ProviderInfo = {
 
 export const PROVIDERS: readonly ProviderInfo[] = [
   {
-    id: "asura", name: "Asura", requestAgent: "webview", chapterNoun: "chapters", audienceNoun: "saves",
+    id: "asura", name: "Asura", requestAgent: "mobile", chapterNoun: "chapters", audienceNoun: "saves",
     hosts: ["asurascans.com"], requestHosts: ["api.asurascans.com"],
-    verification: { url: "https://asurascans.com/", readySelector: 'a[href*="/comics/"], #description-text, img[data-page-index]' },
     formats: ["comic", "novel"],
     sorts: [["smart", "For you"], ["trending", "Popular"], ["rating", "Top rated"], ["updated", "Latest updates"], ["chapters", "Long reads"], ["title", "A–Z"]],
     periods: ["week", "month", "all"], localSorts: ["smart", "chapters"],

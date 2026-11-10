@@ -1,16 +1,30 @@
-import { chapterSort, kindOf, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, sourceOf } from "../parser";
+import { chapterSort, kindOf, parseApiSeries, parseNovelChapters, parseNovelText, sourceOf } from "../parser";
 import type { Period, Series } from "../parser";
-import type { Provider, RequestContext } from "./types";
+import type { Provider } from "./types";
 import { cursorNumber, cursorObject } from "./types";
 import { PageCache } from "./cache";
 import { MOBILE_AGENT } from "./assets";
-import { throwIfAborted } from "../request-control";
 
-const HOME = "https://asurascans.com/";
 const API = "https://api.asurascans.com/api";
 type Cursor = { comic: number; novel: number; comicDone: boolean; novelDone: boolean };
 const rankingCache = new PageCache<Period, unknown[]>();
-const siteSlug = (item: Series) => new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!;
+function siteSlug(item: Series): string {
+  if (item.asuraSlug) return item.asuraSlug;
+  const route = new URL(item.url).pathname.split("/").filter(Boolean).at(-1)!;
+  return kindOf(item) === "comic" ? route.replace(/-[a-f\d]{8}$/i, "") : route;
+}
+
+type ComicChapter = { number: number | string; series_slug?: string; title?: string; is_premium?: boolean; is_locked?: boolean; early_access_until?: string; access_gate?: string; pages?: { url?: unknown }[]; page_count?: number };
+function comicChapter(raw: unknown, slug: string): ComicChapter {
+  if (!raw || typeof raw !== "object") throw new Error("Asura returned invalid chapter details.");
+  const chapter = raw as ComicChapter;
+  if (!/^\d+(?:\.\d+)?$/.test(String(chapter.number)) || (chapter.series_slug && chapter.series_slug !== slug)) throw new Error("Asura returned chapters for a different story. Refresh the story and retry.");
+  return chapter;
+}
+function restricted(chapter: ComicChapter): boolean {
+  return chapter.is_premium !== false || chapter.is_locked === true || Boolean(chapter.access_gate)
+    || Boolean(chapter.early_access_until && (!Number.isFinite(Date.parse(chapter.early_access_until)) || Date.parse(chapter.early_access_until) > Date.now()));
+}
 
 export function mergeAsuraListing(fresh: Series, previous?: Series): Series {
   return {
@@ -77,50 +91,50 @@ export const asura: Provider<Cursor> = {
       const chapters = parseNovelChapters(result.chapters, item.url);
       fresh = { ...parsed, chapterIds: chapters.filter(chapter => !chapter.locked).map(chapter => chapter.id), chapterUrls: Object.fromEntries(chapters.filter(chapter => !chapter.locked).map(chapter => [chapter.id, chapter.url])), lockedChapterIds: chapters.filter(chapter => chapter.locked).map(chapter => chapter.id), chapterCount: chapters.length || parsed.chapterCount, latestChapter: chapters.at(-1)?.id || parsed.latestChapter };
     } else {
-      const html = await context.text(item.url);
-      const chapters = parseChapters(html, item.url);
-      fresh = parseSeries(html, item.url, chapters);
-      fresh.chapterUrls = Object.fromEntries(chapters.filter(chapter => !chapter.locked).map(chapter => [chapter.id, chapter.url]));
-      if (!fresh.chapterCount || !fresh.cover) throw new Error("Story details are unavailable.");
+      const result = await context.json(`${API}/series/${encodeURIComponent(siteSlug(item))}`) as { series?: unknown };
+      const parsed = parseApiSeries(result?.series, "comic");
+      if (!parsed) throw new Error("Story details are unavailable.");
+      fresh = parsed;
     }
     return { ...item, ...fresh, genres: fresh.genres?.length ? fresh.genres : item.genres || fresh.genres, summary: fresh.summary || item.summary, slug: item.slug, popularRanks: item.popularRanks, rank: item.rank, localCover: item.localCover, metadataSyncedAt: new Date().toISOString() };
   },
-  async chapters(item) {
-    if (kindOf(item) !== "novel" && (item.chapterIds?.length || 0) + (item.lockedChapterIds?.length || 0) < item.chapterCount) throw new Error("The website returned an incomplete chapter list. Pull down to retry; older chapters have not all loaded yet.");
+  async chapters(item, context) {
+    if (kindOf(item) !== "novel") {
+      const slug = siteSlug(item);
+      const result = await context.json(`${API}/series/${encodeURIComponent(slug)}/chapters`) as { data?: unknown };
+      if (!Array.isArray(result?.data)) throw new Error("Asura chapter list is unavailable.");
+      const chapters = result.data.map(raw => comicChapter(raw, slug));
+      const ids = chapters.map(chapter => String(chapter.number));
+      if (new Set(ids).size !== ids.length || ids.length < item.chapterCount) throw new Error("Asura returned an incomplete chapter list. Pull down to retry.");
+      const publicChapters = chapters.filter(chapter => !restricted(chapter));
+      const chapterIds = publicChapters.map(chapter => String(chapter.number)).sort(chapterSort);
+      return { ...item, chapterIds, chapterUrls: Object.fromEntries(publicChapters.map(chapter => [String(chapter.number), `${item.url}/chapter/${chapter.number}`])), chapterTitles: Object.fromEntries(chapters.map(chapter => [String(chapter.number), `Chapter ${chapter.number}${chapter.title ? ` · ${chapter.title}` : ""}`])), lockedChapterIds: chapters.filter(restricted).map(chapter => String(chapter.number)).sort(chapterSort), chapterCount: chapters.length, latestChapter: [...ids].sort(chapterSort).at(-1) || "", chapterListComplete: true, detailsCached: true, syncedAt: new Date().toISOString() };
+    }
     const chapterIds = [...(item.chapterIds || [])].sort(chapterSort);
     return { ...item, chapterIds, detailsCached: true, syncedAt: new Date().toISOString() };
   },
   async content(item, chapter, context) {
     if (kindOf(item) === "novel") return { kind: "novel", text: parseNovelText(await context.json(`${API}/novel-series/${encodeURIComponent(siteSlug(item))}/chapter/${chapter.id}`)) };
-    const images = parsePageImages(await context.text(chapter.url, item.url), chapter.url);
-    return { kind: "images", assets: images.map(url => ({ url, referer: chapter.url, agent: MOBILE_AGENT })) };
-  },
-  async verify(url, context) {
-    const html = await context.text(url, undefined, 12_000);
-    if (!parseDiscovery(html).length && !/<(?:div\b[^>]*\bid=["']description-text["']|img\b[^>]*\bdata-page-index=)/i.test(html)) {
-      throw new Error("Asura is still showing its browser check. Complete it, then retry access.");
-    }
+    if (!/^\d+(?:\.\d+)?$/.test(chapter.id)) throw new Error("Invalid chapter number.");
+    const slug = siteSlug(item);
+    const result = await context.json(`${API}/series/${encodeURIComponent(slug)}/chapters/${chapter.id}`) as { data?: { is_locked?: boolean; access_gate?: string; chapter?: ComicChapter } };
+    const data = result?.data;
+    if (data?.is_locked !== false || data.access_gate) throw new Error("This chapter is locked or requires website access.");
+    const detail = comicChapter(data.chapter, slug);
+    if (String(detail.number) !== chapter.id || restricted(detail)) throw new Error("This public chapter is unavailable.");
+    if (!Array.isArray(detail.pages) || !detail.pages.length || detail.page_count !== detail.pages.length) throw new Error("Asura returned an incomplete panel list. Retry the chapter.");
+    const urls = detail.pages.map(page => {
+      if (typeof page?.url !== "string") throw new Error("Asura returned an invalid panel address.");
+      const url = new URL(page.url);
+      if (url.protocol !== "https:" || url.username || url.password || url.port) throw new Error("Asura returned an invalid panel address.");
+      return url.toString();
+    });
+    return { kind: "images", assets: urls.map(url => ({ url, referer: chapter.url, agent: MOBILE_AGENT })) };
   },
   async rankings(kind, period, context) {
     const url = kind === "comic" ? `${API}/trending/${period}?limit=10` : `${API}/novel-series?limit=10&sort=popular&period=${period}`;
     const result = await context.json(url) as { data?: unknown };
     if (!Array.isArray(result.data) || !result.data.length) throw new Error("Rankings unavailable.");
     return result.data.map(raw => parseApiSeries(raw, kind)).filter((item): item is Series => Boolean(item));
-  },
-  async discover(context: RequestContext) {
-    const urls: string[] = [];
-    for (const url of [HOME, `${HOME}novels`]) {
-      try { urls.push(...parseDiscovery(await context.text(url))); }
-      catch (error) {
-        throwIfAborted(context.signal);
-        if (error instanceof Error && error.name === "NetworkPaused") throw error;
-        // An optional homepage failure must not discard the other discovery page.
-      }
-    }
-    return urls.map(url => {
-      const route = new URL(url).pathname.split("/").filter(Boolean).at(-1)!;
-      const novel = new URL(url).pathname.startsWith("/novels/");
-      return { url, slug: novel ? `novel--${route}` : route, title: route, summary: "", cover: "", rating: "", bookmarks: "", status: "", type: novel ? "Novel" : "Comic", chapterCount: 0, latestChapter: "", kind: novel ? "novel" as const : "comic" as const };
-    });
   },
 };

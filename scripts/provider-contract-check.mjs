@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { PROVIDERS, effectiveProviderSort, providerInfo, providerSorts, sourceIdForUrl } from '../src/lib/provider-info.ts';
-import { ProviderError, needsVerification } from '../src/lib/provider-errors.ts';
+import { isBrowserChallenge, ProviderError, needsVerification } from '../src/lib/provider-errors.ts';
 import { getProvider, storyProvider } from '../src/lib/providers/registry.ts';
 import { chapterListCached, sourceOf } from '../src/lib/parser.ts';
 
@@ -36,13 +36,14 @@ assert.equal(effectiveProviderSort(providerInfo('webtoon'),'trending','canvas'),
 assert.equal(effectiveProviderSort(providerInfo('webtoon'),'trending','originals'),'trending');
 assert.equal(providerSorts(providerInfo('webtoon'),'canvas').some(([key])=>key==='trending'),false);
 assert.equal(effectiveProviderSort(providerInfo('asura'),'rating'),'rating');
-assert.equal(PROVIDERS.filter(info=>info.verification).map(info=>info.id).join(','),'asura,mangakakalot');
-await getProvider('asura').verify('https://asurascans.com/comics/example',{text:async()=>'<div id="description-text">Public series</div>'});
-await getProvider('asura').verify('https://asurascans.com/comics/example/chapter/1',{text:async()=>'<img data-page-index="0" src="https://cdn/page.webp">'});
-await assert.rejects(()=>getProvider('asura').verify('https://asurascans.com/',{text:async()=>'<title>Just a moment...</title>'}),/browser check/,'a challenge page never qualifies as a verified public source');
+assert.equal(PROVIDERS.filter(info=>info.verification).map(info=>info.id).join(','),'mangakakalot');
+assert.equal(getProvider('asura').verify,undefined,'Asura uses the anonymous public API without a browser verification flow');
 assert.equal(needsVerification(new ProviderError('verification','mangakakalot','Localized message')),true);
 assert.equal(needsVerification(new ProviderError('parser','vortex','verification appears in this text')),false);
 assert.equal(needsVerification('MangaKakalot needs browser verification'),true,'old persisted queue messages remain usable');
+assert.equal(isBrowserChallenge('<title>Just a moment...</title>'),true);
+assert.equal(isBrowserChallenge('<title>Attention Required! | Cloudflare</title><script src="/cdn-cgi/challenge-platform/test"></script>'),true);
+for (const body of ['Forbidden','{"error":"access denied"}','<title>Attention Required</title><p>You are blocked</p>','<title>Example</title><script src="/cdn-cgi/challenge-platform/test"></script>']) assert.equal(isBrowserChallenge(body),false,'plain refusals and passive scripts must not trigger verification');
 
 const base={title:'Example',summary:'',cover:'',rating:'',bookmarks:'',status:'',type:'Comic',chapterCount:2,latestChapter:'2'};
 const contexts=[];
@@ -51,18 +52,39 @@ function context(responses) {
   const read=async url=>{calls.push(url);assert.ok(url in responses,`Unexpected adapter request ${url}`);return responses[url];};
   const ctx={text:read,json:read};contexts.push(calls);return ctx;
 }
-const asura=getProvider('asura'), asuraUrl='https://asurascans.com/comics/example';
+const asura=getProvider('asura'), asuraUrl='https://asurascans.com/comics/example-f212c582';
+const api='https://api.asurascans.com/api/series/example';
 const asuraContext=context({
-  [asuraUrl]:'<meta property="og:title" content="Example"><meta property="og:image" content="https://cdn.example/cover.webp"><p>3 Chapters</p><a href="/comics/renamed/chapter/0">0</a><a href="/comics/example/chapter/1">1</a><a href="/comics/example/chapter/2" data-locked="true">2</a>',
-  ['https://asurascans.com/comics/renamed/chapter/0']:'<img data-page-index="0" src="https://cdn.example/page.webp">',
+  [api]:{series:{slug:'example',public_url:'/comics/example-f212c582',title:'Example',chapter_count:3,bookmark_count:123,alt_titles:['Alias'],description:'Complete summary',cover:'https://cdn.example/cover.webp'}},
+  [api+'/chapters']:{data:[{number:2,is_premium:true},{number:1,is_premium:false},{number:0,is_premium:false}]},
+  [api+'/chapters/0']:{data:{is_locked:false,access_gate:'',chapter:{number:0,series_slug:'example',is_premium:false,page_count:1,pages:[{url:'https://cdn.example/page.webp'}]}}},
 });
-const asuraItem=await asura.chapters(await asura.details({...base,url:asuraUrl,slug:'legacy-existing-slug'},asuraContext),asuraContext);
+const asuraDetails=await asura.details({...base,url:asuraUrl,slug:'legacy-existing-slug'},asuraContext);
+assert.equal(asuraDetails.chapterIds,undefined,'metadata does not fetch the chapter list');
+assert.equal(contexts[0].length,1);
+assert.equal(asuraDetails.bookmarks,'123');assert.deepEqual(asuraDetails.alternativeTitles,['Alias']);
+const asuraItem=await asura.chapters(asuraDetails,asuraContext);
 assert.equal(asuraItem.slug,'legacy-existing-slug');
+assert.equal(asuraItem.asuraSlug,'example','the API slug remains separate from the stable local story ID');
 assert.deepEqual(asuraItem.chapterIds,['0','1']);assert.deepEqual(asuraItem.lockedChapterIds,['2']);
 assert.ok(chapterListCached(asuraItem));
-assert.equal(asuraItem.chapterUrls['0'],'https://asurascans.com/comics/renamed/chapter/0','source-emitted chapter addresses survive renamed routes');
+assert.equal(asuraItem.chapterUrls['0'],asuraUrl+'/chapter/0');
 assert.equal((await asura.content(asuraItem,{id:'0',url:asuraItem.chapterUrls['0']},asuraContext)).assets[0].url,'https://cdn.example/page.webp');
-assert.equal(contexts[0].filter(url=>url===asuraUrl).length,1,'details already contain the complete Asura list; enumeration does not fetch it twice');
+assert.equal(contexts[0].length,3,'only details, chapter list, and public reader API are requested');
+for(const data of [
+ {is_locked:true,chapter:{number:0,is_premium:false,pages:[{url:'https://cdn.example/leaked.webp'}],page_count:1}},
+ {is_locked:false,access_gate:'premium',chapter:{number:0,is_premium:false}},
+ {is_locked:false,chapter:{number:0,is_premium:true}},
+ {chapter:{number:0,is_premium:false}},
+ {is_locked:false,chapter:{number:1,is_premium:false}},
+ {is_locked:false,chapter:{number:0,series_slug:'another-story',is_premium:false}},
+ {is_locked:false,chapter:{number:0,is_premium:false,page_count:2,pages:[{url:'https://cdn.example/page.webp'}]}},
+ {is_locked:false,chapter:{number:0,is_premium:false,page_count:1,pages:[{url:'http://cdn.example/page.webp'}]}},
+]) await assert.rejects(()=>asura.content(asuraItem,{id:'0',url:asuraItem.chapterUrls['0']},{json:async()=>({data}),text:async()=>{throw Error('Unexpected HTML request');}}));
+await assert.rejects(()=>asura.chapters({...asuraDetails,chapterCount:4},asuraContext),/incomplete chapter list/);
+await assert.rejects(()=>asura.chapters(asuraDetails,{json:async()=>({data:[{number:0,is_premium:false},{number:0,is_premium:false},{number:1,is_premium:false}]})}),/incomplete chapter list/);
+const gated=await asura.chapters({...asuraDetails,chapterCount:3},{json:async()=>({data:[{number:0},{number:1,is_premium:false,early_access_until:'2999-01-01T00:00:00Z'},{number:2,is_premium:false,is_locked:true}]})});
+assert.deepEqual(gated.chapterIds,[],'unknown, early-access and explicitly locked chapters are not downloadable');
 
 const vortex=getProvider('vortex'), vortexUrl='https://vortexscans.org/series/example';
 const vortexContext=context({
@@ -97,11 +119,7 @@ assert.deepEqual(webtoonItem.chapterIds,['1','2']);assert.deepEqual(webtoonItem.
 assert.ok(chapterListCached(webtoonItem));assert.equal(webtoonItem.slug,'webtoon-en-42');
 assert.equal(webtoonItem.summary,'Full summary');
 
-const discovered=await asura.discover({json:async()=>{},text:async url=>{
-  if(url==='https://asurascans.com/')throw Error('Unavailable homepage');
-  return '<a href="/novels/example">Example novel</a>';
-}});
-assert.equal(discovered[0].slug,'novel--example','one optional homepage failure does not block the other format');
+assert.equal(asura.discover,undefined,'API discovery must not request challenged HTML homepages');
 
 // An adapter cannot import the native/storage/UI services it is meant to isolate.
 for(const name of readdirSync(new URL('../src/lib/providers/',import.meta.url))) {

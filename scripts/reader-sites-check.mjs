@@ -103,7 +103,7 @@ try {
   assert.equal(sites.directoryHasMore('initialTotalCount:477,itemsPerPage:36','vortex','https://vortexscans.org/series/?page=14',9,false),false,'a short last page ends pagination using the source page size');
   const session = await import('../src/lib/source-session.ts');
   assert.equal(await session.verificationCookies('https://www.mangakakalot.gg/manga/example'),'cf_clearance=test');
-  assert.equal(await session.verificationCookies('https://asurascans.com/comics/example'),'cf_clearance=test','Asura can reuse its normally verified browser challenge cookie');
+  assert.equal(await session.verificationCookies('https://asurascans.com/comics/example'),'','Asura public API does not need browser cookies');
   await assert.rejects(session.verificationUserAgent(), /WebView not ready/);
   const firstAgent=session.verificationUserAgent();
   assert.equal(firstAgent,session.verificationUserAgent(),'concurrent requests share one native browser identity lookup');
