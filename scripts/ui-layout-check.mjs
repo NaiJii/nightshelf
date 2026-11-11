@@ -77,7 +77,7 @@ let stoppedPropagation=false;
 assert.equal(typeof touchButton.props.onPress,'function');
 touchButton.props.onPress({stopPropagation:()=>{stoppedPropagation=true;}});
 assert.equal(stoppedPropagation,true,'nested icon presses cannot activate the containing row');
-assert.equal(touchButton.props.pressRetentionOffset,8,'drifting off an icon cancels before reaching an unrelated control');
+assert.equal(touchButton.props.pressRetentionOffset,undefined,'native press retention tolerates normal finger drift without an artificially small cancellation rectangle');
 assert.equal(touchButton.props.accessibilityLabel,'Bookmark');
 assert.ok(touchButton.props.android_ripple,'Android touch feedback is native and does not await storage/network work');
 assert.equal(touchButton.props.style({pressed:true})[0].minHeight,48,'touch feedback preserves button sizing');
@@ -351,7 +351,7 @@ assert.equal(app().notice,'Could not pause Android transfer','native pause failu
 app().resumeDownload('example');await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(app().notice,'Could not stop Android transfer','native resume failures become visible instead of unhandled rejections');
 nativeControls.transferStates=()=>({});
-app();provider.effects.find(effect=>effect.deps?.length===6).callback();
+app();provider.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').callback();
 const deletionPending=app().removeDownloads(story,['1']);
 resolveNetwork({type:'wifi',isConnected:true});
 await deletionPending;
@@ -363,13 +363,16 @@ assert.equal(await app().removeDownloads(story,[],true),false,'whole-series dele
 assert.equal(await app().removeDownloads({...story,slug:'other'},['1']),true,'another series download never blocks deletion');
 app().downloadQueue.jobs.length=0;
 assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
-app();provider.effects.find(effect=>effect.deps?.length===6).callback();resolveNetwork({type:'wifi',isConnected:true});
+app();provider.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').callback();resolveNetwork({type:'wifi',isConnected:true});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(automaticQueued.length,1,'automatic transfers work again once deletion finishes');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');
 
 const releaseChanges=[], releaseSheets=[], releaseRoutes=[];
 const releaseShelf={catalog:[{...story,updatedAt:'2026-10-01'}, {...story,slug:'other',title:'Other',chapterIds:['3']}],saved:{example:{bookmarked:true},other:{bookmarked:true}},read:{example:{'2':'read'}},updates:{example:['1','2','2'],other:['3']},preferences:{releaseNotifications:false},setStoryOptions:(slug,change)=>{releaseChanges.push(change);releaseShelf.saved[slug]={...releaseShelf.saved[slug],...change};},setStoryNotifications:(...args)=>releaseChanges.push(args)};
+releaseShelf.pendingNotifications={};
+releaseShelf.toggleAutoDownload=slug=>{const story=releaseShelf.saved[slug]||{};const enabled=!(story.bookmarked&&story.autoDownload);releaseShelf.setStoryOptions(slug,{autoDownload:enabled,...(enabled?{bookmarked:true}:{})});return enabled;};
+releaseShelf.toggleStoryNotifications=slug=>releaseShelf.setStoryNotifications(slug,!(releaseShelf.pendingNotifications[slug]??Boolean(releaseShelf.saved[slug]?.bookmarked&&releaseShelf.preferences.releaseNotifications&&releaseShelf.saved[slug]?.notifyReleases!==false)));
 const releaseActions=component('../src/components/story-options.tsx',{
   '../lib/app-state':{useShelf:()=>releaseShelf},
   './action-sheet':{useActionSheet:()=>(...args)=>releaseSheets.push(args)},
@@ -989,44 +992,91 @@ homeChapterButton.props.onPress();assert.equal(homeReads.length,0);
 assert.equal(homeChapterRoutes.at(-1).params.chapters,'1','the shortcut requests the chapter-list anchor');
 resumeHomeButton.props.onPress();assert.deepEqual(homeReads,['1']);
 console.log('Home Resume label and separate right-aligned chapter-list navigation passed');
-let alertPermission=async()=>true;
+let alertPermission=async()=>true, permissionAllowed=false, notificationPermissionCalls=0, schedulerCalls=0, optionWriteFails=false;
 let alertPrefs={source:'asura',releaseNotifications:false,mobileData:'ask'};
-const alertFlags={example:{bookmarked:true,autoDownload:true,notifyReleases:false}};
+const alertFlags={example:{bookmarked:true,autoDownload:true,notifyReleases:false},other:{bookmarked:true,notifyReleases:false}};
+const permissionAlerts=[];
 const alertState=component('../src/lib/app-state.tsx',{
-  'expo-router':{usePathname:()=>'/series/example'},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})},Alert:{alert(){throw Error('unexpected permission alert');}}},
+  'expo-router':{usePathname:()=>'/series/example'},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})},Alert:{alert:(...args)=>permissionAlerts.push(args)}},
   '@react-native-community/netinfo':{},'./parser':parser,'./release-policy':releasePolicy,
   './storage':{catalogMetadata:()=>[story],loadPreferences:()=>alertPrefs,savePreferences:value=>{alertPrefs=value;},savedStories:()=>alertFlags,readChapters:()=>({}),releaseUpdates:()=>({}),loadDownloads:()=>[]},
-  './scraper':{},'./network':{},'./network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
-  './releases':{releasePermissionGranted:async()=>false,requestReleasePermission:()=>alertPermission(),configureReleaseChecks:async()=>{throw Error('Android scheduler unavailable');}},
+  './scraper':{},'./network':{NetworkPaused:class extends Error{}},'./network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
+  './releases':{releasePermissionGranted:async()=>permissionAllowed,requestReleasePermission:async()=>{notificationPermissionCalls++;return permissionAllowed=await alertPermission();},configureReleaseChecks:async()=>{schedulerCalls++;throw Error('Android scheduler unavailable');}},
   './download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];}},
   './request-control':requestControl,'./background-downloads':{},
-  './library-tools':{updateStoryOptions:(slug,change)=>{alertFlags[slug]={...alertFlags[slug],...change};}},
+  './library-tools':{updateStoryOptions:(slug,change)=>{
+    if(optionWriteFails)throw Error('Storage unavailable');
+    const next={...alertFlags[slug],...change};if(change.autoDownload||change.notifyReleases)next.bookmarked=true;if(!next.bookmarked){next.autoDownload=false;next.notifyReleases=false;}alertFlags[slug]=next;return {...alertFlags};
+  }},
 });
 const notificationState=()=>alertState.render('AppProvider',{}).props.value;
-await notificationState().setStoryNotifications('example',true);
-assert.equal(notificationState().preferences.releaseNotifications,true);
-assert.equal(notificationState().saved.example.notifyReleases,true,'a background scheduler failure cannot discard the requested series notification flag');
-assert.match(notificationState().notice,/Background checks are unavailable/);
-releaseShelf.preferences=notificationState().preferences;releaseShelf.saved=notificationState().saved;
-const litBell=nodes(releaseActions.render('ReleaseActions',{item:story})).find(node=>node.props?.accessibilityLabel==='New chapter notifications');
-assert.equal(litBell.props.accessibilityState.checked,true,'the bell reflects the stored series alert state after scheduler failure');
+const releaseButtonNodes=()=>{
+ const state=notificationState();Object.assign(releaseShelf,{preferences:state.preferences,saved:state.saved,pendingNotifications:state.pendingNotifications,toggleAutoDownload:state.toggleAutoDownload,toggleStoryNotifications:state.toggleStoryNotifications,setStoryNotifications:state.setStoryNotifications});
+ return nodes(releaseActions.render('ReleaseActions',{item:story}));
+};
+const firstAlertEnable=notificationState().setStoryNotifications('example',true);
+assert.equal(notificationState().pendingNotifications.example,true,'the bell reflects the requested change before Android responds');
+let actionButtons=releaseButtonNodes();
+assert.equal(actionButtons.find(node=>node.props?.accessibilityLabel==='New chapter notifications').props.accessibilityState.checked,true);
+assert.ok(!actionButtons.some(node=>node.type==='ActivityIndicator'),'a notification toggle is not replaced by a loading spinner');
+const autoButton=actionButtons.find(node=>node.props?.accessibilityLabel==='Auto-download new chapters');
+assert.notEqual(autoButton.props.disabled,true,'pending notification permission does not disable auto-download');
+autoButton.props.onPress();assert.equal(notificationState().saved.example.autoDownload,false);
+autoButton.props.onPress();assert.equal(notificationState().saved.example.autoDownload,true,'rapid taps use current state even before a component rerenders');
+await firstAlertEnable;
+assert.equal(notificationState().saved.example.notifyReleases,true);
+assert.equal(schedulerCalls,0,'the bell handler never waits for Android background scheduling');
+notificationState();alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[0]==='boolean').callback();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(schedulerCalls,1);assert.match(notificationState().notice,/Background checks are unavailable/);
 await notificationState().setStoryNotifications('example',false);
-assert.equal(notificationState().saved.example.autoDownload,true,'disabling the bell does not disable auto-download');
-assert.equal(notificationState().saved.example.notifyReleases,false);
-console.log('Series bell state remains correct after notification permission succeeds but background scheduling fails');
-const scopedVerify=verifiedRetry.render('useSourceRetry',()=>{},'asura');verifiedRetry.effects.forEach(effect=>effect.callback());retryFocus();scopedVerify();
-assert.equal(verificationRoutes.at(-1).params.source,'asura','a source-specific retry cannot open a different provider verification page');
+const beforeFastEnable=notificationPermissionCalls;
+const fastEnable=notificationState().setStoryNotifications('example',true);
+assert.equal(notificationState().saved.example.notifyReleases,true,'already-authorized notifications change in the same handler without awaiting native work');
+await fastEnable;assert.equal(notificationPermissionCalls,beforeFastEnable,'already-authorized per-story toggles do not recheck permission');
+const bellButton=releaseButtonNodes().find(node=>node.props?.accessibilityLabel==='New chapter notifications');
+await bellButton.props.onPress();assert.equal(notificationState().saved.example.notifyReleases,false);
+await bellButton.props.onPress();assert.equal(notificationState().saved.example.notifyReleases,true,'a reused bell handler follows the latest state');
+notificationState();const autoKey=alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').deps[1];
+const scheduleKey=alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[0]==='boolean').deps[0];
+notificationState().toggleStory('example','liked');notificationState().setStoryOptions('example',{list:'reading'});notificationState();
+assert.equal(alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').deps[1],autoKey,'likes and reading lists do not trigger automatic-download library scans');
+assert.equal(alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[0]==='boolean').deps[0],scheduleKey,'unrelated story options do not reconfigure the background task');
+const refreshNotificationPermission=async()=>{notificationState();const stop=alertState.effects.at(-1).callback();await new Promise(resolve=>setTimeout(resolve,0));stop();};
+permissionAllowed=false;await refreshNotificationPermission();assert.equal(notificationState().preferences.releaseNotifications,false,'revoked Android permission is reflected');
 let acceptAlertPermission;
 alertPermission=()=>new Promise(resolve=>{acceptAlertPermission=resolve;});
+notificationState().setStoryOptions('example',{notifyReleases:false});notificationState().setStoryOptions('other',{notifyReleases:false});
+const permissionBeforeConcurrent=notificationPermissionCalls;
+const firstStory=notificationState().setStoryNotifications('example',true), secondStory=notificationState().setStoryNotifications('other',true);
+assert.equal(notificationPermissionCalls,permissionBeforeConcurrent+1,'different stories share one permission request instead of dropping the second tap');
+assert.equal(notificationState().pendingNotifications.other,true);
+acceptAlertPermission(true);await Promise.all([firstStory,secondStory]);
+assert.equal(notificationState().saved.example.notifyReleases,true);assert.equal(notificationState().saved.other.notifyReleases,true);
+permissionAllowed=false;await refreshNotificationPermission();notificationState().setStoryOptions('example',{notifyReleases:false});
 const staleEnable=notificationState().setStoryNotifications('example',true);
-await notificationState().setStoryNotifications('example',false);acceptAlertPermission(true);await staleEnable;
-assert.equal(notificationState().saved.example.notifyReleases,false,'late permission approval cannot undo a newer bell-off choice');
+await notificationState().toggleStoryNotifications('example');assert.equal(notificationState().pendingNotifications.example,undefined);
+acceptAlertPermission(true);await staleEnable;
+assert.equal(notificationState().saved.example.notifyReleases,false,'a newer bell-off tap overrides late permission approval');
+permissionAllowed=false;await refreshNotificationPermission();
 const staleBookmarkEnable=notificationState().setStoryNotifications('example',true);
-notificationState().setStoryOptions('example',{bookmarked:false});acceptAlertPermission(true);await staleBookmarkEnable;
-assert.equal(notificationState().saved.example.bookmarked,false,'late permission approval cannot re-bookmark a story the user removed');
-notificationState();const stopPermissionRefresh=alertState.effects.at(-1).callback();await new Promise(resolve=>setTimeout(resolve,0));
-assert.equal(notificationState().preferences.releaseNotifications,false,'revoked Android permission is reflected instead of leaving notification controls misleadingly enabled');stopPermissionRefresh();
-console.log('Late notification approval preserves newer bell/bookmark choices and revoked OS permission is reflected');
+notificationState().setStoryOptions('example',{bookmarked:false});assert.equal(notificationState().pendingNotifications.example,undefined);
+acceptAlertPermission(true);await staleBookmarkEnable;
+assert.equal(notificationState().saved.example.bookmarked,false,'unbookmark cancels a pending alert intent immediately');
+notificationState().setStoryOptions('example',{bookmarked:true,notifyReleases:false});notificationState().setStoryOptions('other',{notifyReleases:false});
+permissionAllowed=false;await refreshNotificationPermission();
+const pendingGlobal=notificationState().setStoryNotifications('example',true);
+await notificationState().setReleaseNotifications(false);assert.equal(Object.keys(notificationState().pendingNotifications).length,0);
+acceptAlertPermission(true);await pendingGlobal;
+assert.equal(notificationState().preferences.releaseNotifications,false,'global notification-off cannot be undone by an older permission request');
+permissionAllowed=false;await refreshNotificationPermission();alertPermission=async()=>false;
+await notificationState().setStoryNotifications('example',true);
+assert.equal(notificationState().saved.example.notifyReleases,false);assert.equal(notificationState().pendingNotifications.example,undefined,'permission denial removes the pending visual state');
+assert.equal(permissionAlerts.at(-1)[0],'Notifications are disabled');
+const likedBefore=notificationState().saved.example.liked;optionWriteFails=true;notificationState().toggleStory('example','liked');optionWriteFails=false;
+assert.equal(notificationState().saved.example.liked,likedBefore);assert.equal(notificationState().notice,'Storage unavailable','failed local writes are explained instead of silently pretending a toggle worked');
+console.log('Immediate bell feedback, permission sharing, rapid taps, cancellation, unrelated-control independence and scheduler isolation passed');
+const scopedVerify=verifiedRetry.render('useSourceRetry',()=>{},'asura');verifiedRetry.effects.forEach(effect=>effect.callback());retryFocus();scopedVerify();
+assert.equal(verificationRoutes.at(-1).params.source,'asura');
 let verificationFocus, verificationNetwork, finishVerificationProbe, verificationSignal, verifiedSessions=0, verificationBacks=0;
 const verifyPage=component('../src/app/verify-source.tsx',{
  'react-native':{ActivityIndicator:'ActivityIndicator',Text:'Text',View:'View',AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},

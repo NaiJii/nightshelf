@@ -16,9 +16,14 @@ const CHANNEL = "bookmarked-releases";
 Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldPlaySound: false, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
 
 let permissionRequest: Promise<boolean> | undefined;
+let releaseChannel: Promise<void> | undefined;
+function ensureReleaseChannel(): Promise<void> {
+  return releaseChannel ??= Notifications.setNotificationChannelAsync(CHANNEL, { name: "Bookmarked releases", importance: Notifications.AndroidImportance.DEFAULT })
+    .then(() => {}).catch(error => { releaseChannel = undefined; throw error; });
+}
 export async function releasePermissionGranted(): Promise<boolean> { return (await Notifications.getPermissionsAsync()).granted; }
 export async function requestReleasePermission(promptAgain = true): Promise<boolean> {
-  await Notifications.setNotificationChannelAsync(CHANNEL, { name: "Bookmarked releases", importance: Notifications.AndroidImportance.DEFAULT });
+  await ensureReleaseChannel();
   const current = await Notifications.getPermissionsAsync();
   if (current.granted) return true;
   if (current.canAskAgain === false || (!promptAgain && current.status !== "undetermined")) return false;
@@ -69,6 +74,7 @@ let configuration = Promise.resolve();
 export function configureReleaseChecks(): Promise<void> {
   configuration = configuration.catch(() => {}).then(async () => {
     const enabled = releaseChecksEnabled(), interval = loadPreferences().releaseCheckInterval;
+    if (enabled && loadPreferences().releaseNotifications) await ensureReleaseChannel();
     const registered = await TaskManager.isTaskRegisteredAsync(TASK);
     const options = registered ? await TaskManager.getTaskOptionsAsync<{ minimumInterval?: number }>(TASK) : undefined;
     if (registered && (!enabled || options?.minimumInterval !== interval)) await BackgroundTask.unregisterTaskAsync(TASK);

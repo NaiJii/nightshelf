@@ -20,7 +20,7 @@ export function Cover({ item, style }: { item: Series; style: object }) {
 export function Page({ title, subtitle, children, action }: { title: string; subtitle: string; children: ReactNode; action?: ReactNode }) {
   const shelf = useShelf();
   return <SafeAreaView edges={["top"]} style={ui.safe}>
-    <ScrollView contentContainerStyle={ui.page} refreshControl={<RefreshControl refreshing={shelf.refreshing} onRefresh={() => void shelf.sync()} tintColor={color.lilac} colors={[color.purple]} />}>
+    <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={ui.page} refreshControl={<RefreshControl refreshing={shelf.refreshing} onRefresh={() => void shelf.sync()} tintColor={color.lilac} colors={[color.purple]} />}>
       <PageHeading title={title} subtitle={subtitle} action={action} />
       {children}
     </ScrollView>

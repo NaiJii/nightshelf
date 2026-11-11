@@ -82,7 +82,7 @@ export default function Library() {
       { text: "Cancel", style: "cancel" },
     ]);
   }
-  return <SafeAreaView edges={["top"]} style={ui.safe}><FlatList
+  return <SafeAreaView edges={["top"]} style={ui.safe}><FlatList keyboardDismissMode="on-drag"
     data={library} keyExtractor={item => item.slug} initialNumToRender={8} maxToRenderPerBatch={8} windowSize={5}
     contentContainerStyle={{ paddingBottom: 26 }} keyboardShouldPersistTaps="handled"
     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void sync()} tintColor={color.lilac} colors={[color.purple]} />}

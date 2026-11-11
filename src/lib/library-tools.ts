@@ -58,10 +58,10 @@ export async function storageSummaryAsync(signal?: AbortSignal): Promise<ReturnT
 export function storageSummary() {
   return { free: freeBytes(), covers: folderBytes(COVERS), stories: loadCatalog().filter(item => item.hasLocalFiles).map(item => ({ item, bytes: folderBytes(new Directory(LIBRARY, item.slug)) })).sort((a, b) => b.bytes - a.bytes) };
 }
-export function updateStoryOptions(slug: string, change: Partial<SavedStory>): void {
-  updateStoriesOptions([slug], change);
+export function updateStoryOptions(slug: string, change: Partial<SavedStory>): Record<string, SavedStory> {
+  return updateStoriesOptions([slug], change);
 }
-export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory>): void {
+export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory>): Record<string, SavedStory> {
   if (slugs.some(slug => !/^[a-zA-Z0-9_.-]+$/.test(slug) || slug === "." || slug === "..")) throw new Error("Invalid story.");
   const all = savedStories();
   let snapshots: ReturnType<typeof releaseSnapshots> | undefined, updates: ReturnType<typeof releaseUpdates> | undefined;
@@ -89,6 +89,7 @@ export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory
   if (snapshotsChanged) writeJson(new File(ROOT, "releases.json"), snapshots);
   if (updatesChanged) writeJson(new File(ROOT, "release-updates.json"), updates);
   writeJson(new File(ROOT, "saved.json"), all);
+  return all;
 }
 // Estimates use saved chapters of the same story, then an explicit format fallback.
 export function estimateDownload(slug: string, count: number, novel: boolean, knownChapters?: string[]): { bytes: number; sampled: boolean } {

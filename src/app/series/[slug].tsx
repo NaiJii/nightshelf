@@ -156,7 +156,7 @@ export default function SeriesDetails() {
   }
   return <SafeAreaView style={ui.safe} edges={["top", "bottom"]}>
     <View style={[ui.row, { paddingHorizontal: 10, borderBottomWidth: 1, borderColor: color.line }]}><Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable><Text numberOfLines={1} style={[ui.text, { flex: 1, fontWeight: "700" }]}>{item.title}</Text><DownloadIndicator/></View>
-    <FlatList ref={listRef} onContentSizeChange={() => { chapterContentReady.current = true; openChapterList(); }} onScrollBeginDrag={() => { chapterShortcut.current = false; }} onScrollToIndexFailed={info=>{
+    <FlatList keyboardDismissMode="on-drag" ref={listRef} onContentSizeChange={() => { chapterContentReady.current = true; openChapterList(); }} onScrollBeginDrag={() => { chapterShortcut.current = false; }} onScrollToIndexFailed={info=>{
       if(visibleIds.current.indexOf(jumpRequest.current)!==info.index)return;
       if(jumpAttempts.current++>=3){setJumpMessage("Could not scroll to this chapter. Use Find a chapter to narrow the list.");return;}
       listRef.current?.scrollToOffset({offset:Math.max(0,info.averageItemLength*info.index),animated:false});

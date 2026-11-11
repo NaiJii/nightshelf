@@ -60,6 +60,7 @@ function useAppState() {
   }, [scope]);
   useEffect(() => { void refreshCatalog().catch(error => setNotice(error instanceof Error ? error.message : String(error))); }, [refreshCatalog]);
   const [notificationBusy, setNotificationBusy] = useState(false);
+  const [pendingNotifications, setPendingNotifications] = useState<Record<string, boolean>>({});
   const [deleting, setDeleting] = useState(false);
   const [sourceSessionRevision, setSourceSessionRevision] = useState(0);
   const sourceSessionChanged = useCallback(() => { setNotice(current => current.includes("needs browser verification") ? "" : current); setSourceSessionRevision(value => value + 1); }, []);
@@ -73,6 +74,19 @@ function useAppState() {
   useEffect(() => () => { for (const controller of detailLocks.current.values()) controller.abort(); }, []);
   const notificationLock = useRef(false);
   const notificationIntents = useRef(new Map<string, number>()), permissionRevision = useRef(0);
+  const notificationTargets = useRef(new Map<string, boolean>());
+  const permissionKnown = useRef<boolean | undefined>(undefined);
+  const globalNotificationIntent = useRef(0);
+  const notificationRequest = useRef<{ version: number; promise: Promise<boolean> } | null>(null);
+  const clearPendingNotifications = useCallback((slugs: string[]) => {
+    let changed = false;
+    for (const slug of slugs) if (notificationTargets.current.delete(slug)) changed = true;
+    if (changed) setPendingNotifications(Object.fromEntries(notificationTargets.current));
+  }, []);
+  const invalidateNotificationIntents = useCallback((slugs: string[]) => {
+    for (const slug of slugs) notificationIntents.current.set(slug, (notificationIntents.current.get(slug) || 0) + 1);
+    clearPendingNotifications(slugs);
+  }, [clearPendingNotifications]);
   const syncLock = useRef(false);
   const providerRequests = useRef(new AbortController());
   const deleteLock = useRef(false);
@@ -285,10 +299,12 @@ function useAppState() {
   }, [queue, refreshCatalog, queuedDownloadBusy]);
 
   const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
-    if (field === "bookmarked") notificationIntents.current.set(slug, (notificationIntents.current.get(slug) || 0) + 1);
-    updateStoryOptions(slug, { [field]: !savedStories()[slug]?.[field] });
-    setSaved(savedStories()); if (field === "bookmarked") setUpdates(releaseUpdates());
-  }, []);
+    if (field === "bookmarked") invalidateNotificationIntents([slug]);
+    try {
+      setSaved(updateStoryOptions(slug, { [field]: !savedStories()[slug]?.[field] }));
+      if (field === "bookmarked") setUpdates(releaseUpdates());
+    } catch (error) { showFailure(error); }
+  }, [invalidateNotificationIntents, showFailure]);
 
   const providerViews = useRef<Partial<Record<string, Partial<Preferences>>>>({});
   const updatePreferences = useCallback((change: Partial<Preferences>) => {
@@ -302,7 +318,7 @@ function useAppState() {
       cancelDetails(); providerRequests.current.abort(); providerRequests.current = new AbortController(); lastAttempt.current = 0;
     }
     savePreferences(value);
-    backgroundTransfers?.setNetworkPolicy(value.mobileData === "never");
+    if (previous.mobileData !== value.mobileData) backgroundTransfers?.setNetworkPolicy(value.mobileData === "never");
     setPreferences(value);
   }, [cancelDetails]);
 
@@ -314,33 +330,88 @@ function useAppState() {
     updatePreferences({searchHistory: {...history, [provider]: term ? [term, ...(history[provider] || []).filter(value => value.toLowerCase() !== term.toLowerCase())].slice(0,8) : []}});
   }, [updatePreferences]);
 
-  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => { if (change.bookmarked === false || change.notifyReleases === false) notificationIntents.current.set(slug,(notificationIntents.current.get(slug)||0)+1); updateStoryOptions(slug, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
-  const setStoriesOptions = useCallback((slugs: string[], change: Partial<SavedStory>) => { if (change.bookmarked === false || change.notifyReleases === false) for (const slug of slugs) notificationIntents.current.set(slug,(notificationIntents.current.get(slug)||0)+1); updateStoriesOptions(slugs, change); setSaved(savedStories()); setUpdates(releaseUpdates()); }, []);
+  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => {
+    if (change.bookmarked === false || change.notifyReleases === false) invalidateNotificationIntents([slug]);
+    try {
+      setSaved(updateStoryOptions(slug, change));
+      if (change.bookmarked !== undefined || change.autoDownload === true || change.notifyReleases === true) setUpdates(releaseUpdates());
+      return true;
+    } catch (error) { showFailure(error); return false; }
+  }, [invalidateNotificationIntents, showFailure]);
+  const setStoriesOptions = useCallback((slugs: string[], change: Partial<SavedStory>) => {
+    if (change.bookmarked === false || change.notifyReleases === false) invalidateNotificationIntents(slugs);
+    try {
+      setSaved(updateStoriesOptions(slugs, change));
+      if (change.bookmarked !== undefined || change.autoDownload === true || change.notifyReleases === true) setUpdates(releaseUpdates());
+    } catch (error) { showFailure(error); }
+  }, [invalidateNotificationIntents, showFailure]);
+  const toggleAutoDownload = useCallback((slug: string) => {
+    const story = savedStories()[slug];
+    const enabled = !Boolean(story?.bookmarked && story.autoDownload);
+    return setStoryOptions(slug, { autoDownload: enabled }) ? enabled : false;
+  }, [setStoryOptions]);
   const reloadLocal = useCallback(() => { void refreshCatalog(); setRead(readChapters()); setSaved(savedStories()); setPreferences(loadPreferences()); }, [refreshCatalog]);
 
-  useEffect(() => { void autoDownload().catch(showFailure); void configureReleaseChecks().catch(showFailure); }, [autoDownload, saved, showFailure, preferences.releaseCheckInterval, preferences.releaseNotifications, preferences.deleteAfterReading]);
+  const automaticStories = useMemo(() => Object.entries(saved).filter(([, story]) => story.bookmarked && story.autoDownload).map(([slug]) => slug).sort().join("\n"), [saved]);
+  const backgroundNeeded = preferences.deleteAfterReading || Object.values(saved).some(story => story.bookmarked && (story.autoDownload || (preferences.releaseNotifications && story.notifyReleases !== false)));
+  useEffect(() => { void autoDownload().catch(showFailure); }, [autoDownload, automaticStories, showFailure]);
+  useEffect(() => {
+    const origin = noticeScope.current;
+    void configureReleaseChecks().catch(() => { if (origin === noticeScope.current) setNotice("Background checks are unavailable. Releases will still be checked while the app is open."); });
+  }, [backgroundNeeded, preferences.releaseCheckInterval, preferences.releaseNotifications]);
 
-  const setReleaseNotifications = useCallback(async (enabled: boolean) => {
-    if (notificationLock.current) return false;
+  const setReleaseNotifications = useCallback(async function enableReleaseNotifications(enabled: boolean): Promise<boolean> {
+    if (!enabled) {
+      globalNotificationIntent.current++;
+      invalidateNotificationIntents([...notificationTargets.current.keys()]);
+      try { updatePreferences({ releaseNotifications: false }); return true; }
+      catch (error) { showFailure(error); return false; }
+    }
+    if ((loadPreferences().releaseNotifications && permissionKnown.current !== false) || permissionKnown.current === true) {
+      try { if (!loadPreferences().releaseNotifications) updatePreferences({ releaseNotifications: true }); return true; }
+      catch (error) { showFailure(error); return false; }
+    }
+    const pending = notificationRequest.current;
+    if (pending) return pending.version === globalNotificationIntent.current ? pending.promise : pending.promise.then(() => enableReleaseNotifications(true));
+    const version = ++globalNotificationIntent.current;
     const origin = noticeScope.current;
     permissionRevision.current++;
     notificationLock.current = true; setNotificationBusy(true);
-    try {
-      if (enabled && !await requestReleasePermission()) { updatePreferences({ releaseNotifications: false }); Alert.alert("Notifications are disabled", "Allow NightShelf notifications in Android Settings to receive release alerts."); return false; }
-      updatePreferences({ releaseNotifications: enabled });
-      await configureReleaseChecks().catch(() => { if (origin === noticeScope.current) setNotice(enabled ? "Release alerts are enabled. Background checks are unavailable; releases will be checked while the app is open." : "Release alerts are off. Android’s background schedule could not be updated."); });
-      return true;
-    } catch (error) { if (origin === noticeScope.current) setNotice(error instanceof Error ? error.message : String(error)); return false; }
-    finally { permissionRevision.current++; notificationLock.current = false; setNotificationBusy(false); }
-  }, [updatePreferences]);
+    const promise = (async () => {
+      try {
+        const allowed = await requestReleasePermission();
+        permissionKnown.current = allowed;
+        if (version !== globalNotificationIntent.current) return false;
+        if (!allowed) { updatePreferences({ releaseNotifications: false }); Alert.alert("Notifications are disabled", "Allow NightShelf notifications in Android Settings to receive release alerts."); return false; }
+        updatePreferences({ releaseNotifications: true });
+        return true;
+      } catch (error) { if (version === globalNotificationIntent.current && origin === noticeScope.current) setNotice(error instanceof Error ? error.message : String(error)); return false; }
+      finally { permissionRevision.current++; notificationLock.current = false; notificationRequest.current = null; setNotificationBusy(false); }
+    })();
+    notificationRequest.current = { version, promise };
+    return promise;
+  }, [updatePreferences, invalidateNotificationIntents, showFailure]);
 
   const setStoryNotifications = useCallback(async (slug: string, enabled: boolean) => {
     const version = (notificationIntents.current.get(slug) || 0) + 1;
     notificationIntents.current.set(slug,version);
-    if (enabled && !await setReleaseNotifications(true)) return;
-    if (notificationIntents.current.get(slug) !== version) return;
-    setStoryOptions(slug, { notifyReleases: enabled });
-  }, [setReleaseNotifications, setStoryOptions]);
+    if (!enabled || (loadPreferences().releaseNotifications && permissionKnown.current !== false)) {
+      clearPendingNotifications([slug]);
+      setStoryOptions(slug, { notifyReleases: enabled });
+      return;
+    }
+    notificationTargets.current.set(slug, true);
+    setPendingNotifications(Object.fromEntries(notificationTargets.current));
+    try {
+      if (!await setReleaseNotifications(true) || notificationIntents.current.get(slug) !== version) return;
+      setStoryOptions(slug, { notifyReleases: true });
+    } finally { if (notificationIntents.current.get(slug) === version) clearPendingNotifications([slug]); }
+  }, [setReleaseNotifications, setStoryOptions, clearPendingNotifications]);
+  const toggleStoryNotifications = useCallback((slug: string) => {
+    const story = savedStories()[slug];
+    const enabled = notificationTargets.current.get(slug) ?? Boolean(story?.bookmarked && loadPreferences().releaseNotifications && story.notifyReleases !== false);
+    return setStoryNotifications(slug, !enabled);
+  }, [setStoryNotifications]);
 
   const sync = useCallback(async (automatic = false) => {
     const settings = loadPreferences();
@@ -408,7 +479,6 @@ function useAppState() {
     const recovery = setTimeout(() => { for (const job of [...queue.jobs]) if (job.status === "cancelling") void cancelDownload(job.series.slug).catch(showFailure); }, 0);
     queue.reconcileNative(states);
     queue.resumeWaiting();
-    void configureReleaseChecks().catch(() => setNotice("Background release checks are unavailable. Releases will still be checked when the app is open."));
     const timer = setInterval(() => { if (AppState.currentState === "active") void sync(true); }, 60_000);
     const app = AppState.addEventListener("change", state => {
       if (state === "active") { setNetworkNotice(""); void refreshCatalog(); setRead(readChapters()); setUpdates(releaseUpdates()); setPreferences(loadPreferences()); queue.reconcileNative(transferStates()); queue.resumeWaiting(); queue.pump(); void sync(true); }
@@ -448,7 +518,10 @@ function useAppState() {
       const version = ++permissionRevision.current;
       try {
         const allowed = await releasePermissionGranted();
-        if (mounted && version === permissionRevision.current && !notificationLock.current && !allowed && loadPreferences().releaseNotifications) updatePreferences({releaseNotifications:false});
+        if (mounted && version === permissionRevision.current && !notificationLock.current) {
+          permissionKnown.current = allowed;
+          if (!allowed && loadPreferences().releaseNotifications) updatePreferences({releaseNotifications:false});
+        }
       } catch { /* A failed permission query must not change the user's settings. */ }
     };
     void check();
@@ -456,7 +529,7 @@ function useAppState() {
     return () => { mounted = false; listener.remove(); };
   }, [updatePreferences]);
 
-  return { rememberSearch, fetchReaderChapter, catalogReady, connection, setStoryNotifications, setStoryOptions, setStoriesOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, cancelDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloadQueue: queue, downloadBusy, moveDownload, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
+  return { rememberSearch, fetchReaderChapter, catalogReady, connection, setStoryNotifications, toggleStoryNotifications, toggleAutoDownload, pendingNotifications, setStoryOptions, setStoriesOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, cancelDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloadQueue: queue, downloadBusy, moveDownload, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
 }
 const AppContext = createContext<ReturnType<typeof useAppState> | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) { return <AppContext.Provider value={useAppState()}>{children}</AppContext.Provider>; }
