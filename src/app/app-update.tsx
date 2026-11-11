@@ -80,7 +80,7 @@ export default function AppUpdateScreen() {
         if (network.isConnected === false || network.isInternetReachable === false || ((wifiOnly || loadPreferences().mobileData === "never") && (network.type !== "wifi" || network.details?.isConnectionExpensive))) {
           cancelled.current = true;
           void transfer.cancelAsync().catch(() => {});
-          if (active.current) { setStatus("Download paused."); setError("Connection changed. Retry on Wi-Fi, or approve mobile data before downloading."); }
+          if (active.current) { setStatus("Download paused."); setError("Connection changed. Retry on unmetered Wi-Fi, or approve this metered connection before downloading."); }
         }
       });
       setStatus("Downloading update…");
@@ -113,6 +113,6 @@ export default function AppUpdateScreen() {
     {!busy && status ? <Text accessibilityLiveRegion="polite" style={ui.muted}>{status}</Text> : null}
     {error || checkError ? <Text accessibilityLiveRegion="polite" style={{color:"#f08080"}}>{error || checkError}</Text> : null}
     <Pressable disabled={checking || busy || !installed} onPress={() => void check(true)} style={[ui.chip,{alignSelf:"flex-start"}]}><Text style={{color:color.lilac}}>{checking ? "Checking…" : "Check now"}</Text></Pressable>
-    <Text style={[ui.muted,{fontSize:12,lineHeight:19}]}>Updates come from NightShelf’s free GitHub releases. Downloads follow your mobile-data settings. Android asks you to approve installation.</Text>
+    <Text style={[ui.muted,{fontSize:12,lineHeight:19}]}>Updates come from NightShelf’s free GitHub releases. Downloads follow your metered-connection settings. Android asks you to approve installation.</Text>
   </View></Page>;
 }

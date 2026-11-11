@@ -18,6 +18,10 @@ export function connectionAccess(
   return policy === "allow" || approved ? "allow" : "ask";
 }
 
-export function connectionPauseMessage(access: ReturnType<typeof connectionAccess>): string {
-  return access === "allow" ? "" : access === "offline" ? "You’re offline. Your library is still available." : "Waiting for Wi-Fi. You can change mobile data access in Settings.";
+export function connectionPauseMessage(access: ReturnType<typeof connectionAccess>, state?: { type: string; details?: { isConnectionExpensive?: boolean } | null }): string {
+  if (access === "allow") return "";
+  if (access === "offline") return "You’re offline. Your library is still available.";
+  return state?.type === "wifi" && state.details?.isConnectionExpensive
+    ? "This Wi-Fi is marked as metered. Waiting for unmetered Wi-Fi; you can allow metered connections in Settings."
+    : "Waiting for unmetered Wi-Fi. You can allow metered connections in Settings.";
 }

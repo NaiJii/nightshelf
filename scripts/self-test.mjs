@@ -267,6 +267,10 @@ assert.equal(connectionAccess({ ...wifi, type: "cellular" }, "never", true), "de
 assert.equal(connectionAccess({ ...wifi, isConnected: false }, "allow", true), "offline");
 assert.match(connectionPauseMessage(connectionAccess({...wifi,type:"cellular"},"never",false)), /Wi-Fi/);
 assert.equal(connectionPauseMessage(connectionAccess(wifi,"never",false)), "", "Wi-Fi recovery clears the pause message");
+const meteredWifi={...wifi,details:{isConnectionExpensive:true}};
+assert.match(connectionPauseMessage(connectionAccess(meteredWifi,"never",false),meteredWifi),/Wi-Fi is marked as metered/);
+assert.match(connectionPauseMessage(connectionAccess(meteredWifi,"never",false),meteredWifi),/unmetered Wi-Fi/);
+assert.equal(connectionPauseMessage(connectionAccess(meteredWifi,"allow",false),meteredWifi),"", "allowing metered Wi-Fi clears the wait reason");
 assert.equal(connectionPauseMessage(connectionAccess({...wifi,type:"cellular"},"allow",false)), "", "allowing data clears the pause message");
 assert.match(connectionPauseMessage(connectionAccess({...wifi,isConnected:false},"allow",false)), /offline/, "a lost network replaces the Wi-Fi message");
 assert.equal(filterDiscovery(candidates, { ...filters, hideDownloaded: false }, {}).length, 3);
