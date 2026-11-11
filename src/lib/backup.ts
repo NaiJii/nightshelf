@@ -55,7 +55,6 @@ export function validateBackup(text: string) {
     if (data.preferences.releaseCheckInterval === 60 || data.preferences.releaseCheckInterval === 120) preferences.releaseCheckInterval = data.preferences.releaseCheckInterval;
     if (data.preferences.interval === 5 || data.preferences.interval === 10) preferences.interval = data.preferences.interval;
     if (typeof data.preferences.autoDownloadLimitMB === "number" && Number.isFinite(data.preferences.autoDownloadLimitMB)) preferences.autoDownloadLimitMB = Math.max(128, Math.min(100_000, data.preferences.autoDownloadLimitMB));
-    if (object(data.preferences.weights)) { const weights = { ...DEFAULT_PREFERENCES.weights }; for (const key of ["trending", "rating", "length"] as const) { const value = data.preferences.weights[key]; if (typeof value === "number" && Number.isFinite(value)) weights[key] = Math.max(0, Math.min(5, value)); } preferences.weights = weights; }
   }
   return { catalog, saved, read, history, preferences };
 }

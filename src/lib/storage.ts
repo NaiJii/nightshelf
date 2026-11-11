@@ -1,7 +1,7 @@
 import { readJson, writeJson } from "./json-store";
 import { Directory, File, Paths } from "expo-file-system";
-import { chapterSort, DEFAULT_WEIGHTS } from "./parser";
-import type { DiscoveryFilters, NovelText, Period, SavedStory, Series, SortOrder, SortWeights } from "./parser";
+import { chapterSort } from "./parser";
+import type { DiscoveryFilters, NovelText, Period, SavedStory, Series, SortOrder } from "./parser";
 import type { DownloadJob } from "./download-queue";
 import { throwIfAborted } from "./request-control";
 
@@ -21,13 +21,13 @@ export function loadDownloads(): DownloadJob[] {
   try { const jobs = readJson<DownloadJob[]>(DOWNLOADS, []); return Array.isArray(jobs) ? jobs.filter(job => job?.series && safePart(job.series.slug) && typeof job.selection === "string") : []; } catch { return []; }
 }
 export function saveDownloads(jobs: DownloadJob[]): void { initializeStorage(); writeJson(DOWNLOADS, jobs); }
-export type Preferences = DiscoveryFilters & { autoAppUpdates?: boolean; searchHistory?: Record<string, string[]>; readerContinuous: boolean; readerPrefetch: boolean; releaseCheckInterval: 60 | 120; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; weights: SortWeights; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
-export const DEFAULT_PREFERENCES: Preferences = { readerContinuous: true, readerPrefetch: true, releaseCheckInterval: 120, autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", interval: 10, sort: "smart", weights: DEFAULT_WEIGHTS, contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
+export type Preferences = DiscoveryFilters & { autoAppUpdates?: boolean; searchHistory?: Record<string, string[]>; readerContinuous: boolean; readerPrefetch: boolean; releaseCheckInterval: 60 | 120; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
+export const DEFAULT_PREFERENCES: Preferences = { readerContinuous: true, readerPrefetch: true, releaseCheckInterval: 120, autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", interval: 10, sort: "smart", contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
 export type ReadingPosition = { chapter: string; fraction: number; readAt: string; chapters?: Record<string, { fraction: number; readAt: string }> };
 
 export function loadPreferences(): Preferences {
   initializeStorage();
-  try { return { ...DEFAULT_PREFERENCES, ...readJson(PREFERENCES, {}), readerKeepAwake: true, readerContinuous: true }; } catch { return DEFAULT_PREFERENCES; }
+  try { const stored = readJson<Partial<Preferences> & { weights?: unknown }>(PREFERENCES, {}); delete stored.weights; return { ...DEFAULT_PREFERENCES, ...stored, readerKeepAwake: true, readerContinuous: true }; } catch { return DEFAULT_PREFERENCES; }
 }
 export function savePreferences(value: Preferences): void { initializeStorage(); writeJson(PREFERENCES, value); }
 export function savedStories(): Record<string, SavedStory> {

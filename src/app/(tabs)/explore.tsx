@@ -107,7 +107,7 @@ export function ExploreResults({ provider }: { provider: string }) {
     ? filtered.sort((a, b) => (sourceOrder.get(a.slug) ?? a.sourceRank ?? 9999) - (sourceOrder.get(b.slug) ?? b.sourceRank ?? 9999))
     : preferences.sort === "trending" && !debounced
     ? filtered.filter(item => item.popularRanks?.[preferences.period]).sort((a, b) => a.popularRanks![preferences.period]! - b.popularRanks![preferences.period]!)
-    : sortExplore(filtered, preferences.sort, preferences.weights);
+    : sortExplore(filtered, preferences.sort);
   const waitingForCatalog = Boolean(ids?.length && ids.some(id => !catalogIds.has(id)));
   return <SafeAreaView style={ui.safe} edges={["top"]}><FlatList ref={list}
     data={visible} numColumns={2} keyExtractor={item => item.slug} renderItem={({ item }) => <SeriesCard item={item} grid />}

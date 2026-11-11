@@ -264,20 +264,14 @@ export function parseDiscovery(source: string): string[] {
 }
 
 export type SortOrder = "smart" | "trending" | "rating" | "updated" | "chapters" | "title";
-export type SortWeights = { trending: number; rating: number; length: number };
-export const DEFAULT_WEIGHTS: SortWeights = { trending: 3, rating: 2, length: 1 };
-
-export function sortExplore(items: Series[], order: SortOrder, weights: SortWeights): Series[] {
-  const score = (item: Series) => weights.trending * (item.rank ? (11 - item.rank) / 10 : 0)
-    + weights.rating * (Number(item.rating) || 0) / 10
-    + weights.length * Math.min(item.chapterCount / 200, 1);
+export function sortExplore(items: Series[], order: SortOrder): Series[] {
   return [...items].sort((a, b) => {
     if (order === "title") return a.title.localeCompare(b.title);
     if (order === "rating") return (Number(b.rating) || 0) - (Number(a.rating) || 0);
     if (order === "trending") return (a.rank || 999) - (b.rank || 999);
     if (order === "updated") return (b.updatedAt || "").localeCompare(a.updatedAt || "");
     if (order === "chapters") return b.chapterCount - a.chapterCount;
-    return score(b) - score(a);
+    return 0;
   });
 }
 

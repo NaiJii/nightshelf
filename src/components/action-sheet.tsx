@@ -9,6 +9,7 @@ type Action = { text: string; style?: "default" | "cancel" | "destructive"; sele
 type Sheet = { title: string; message?: string; actions: Action[]; path: string };
 type ShowSheet = (title: string, message?: string, actions?: Action[]) => void;
 const SheetContext = createContext<ShowSheet | null>(null);
+const SheetOpenContext = createContext(false);
 
 export function ActionSheetProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -26,7 +27,7 @@ export function ActionSheetProvider({ children }: { children: ReactNode }) {
     if (!sheet || sheet.path !== pathname || current.current !== sheet) return;
     close(); action.onPress?.();
   }
-  return <SheetContext.Provider value={showSheet}>{children}
+  return <SheetContext.Provider value={showSheet}><SheetOpenContext.Provider value={Boolean(sheet && sheet.path === pathname)}>{children}
     <Modal visible={Boolean(sheet && sheet.path === pathname)} transparent animationType="fade" statusBarTranslucent onRequestClose={close}>
       <View style={{ flex: 1, justifyContent: "flex-end" }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Dismiss menu" onPress={close} style={{ position: "absolute", inset: 0, backgroundColor: "#00000099" }} />
@@ -43,8 +44,10 @@ export function ActionSheetProvider({ children }: { children: ReactNode }) {
         </SafeAreaView>
       </View>
     </Modal>
-  </SheetContext.Provider>;
+  </SheetOpenContext.Provider></SheetContext.Provider>;
 }
+
+export function useActionSheetOpen(): boolean { return useContext(SheetOpenContext); }
 
 export function useActionSheet(): ShowSheet {
   const show = useContext(SheetContext);

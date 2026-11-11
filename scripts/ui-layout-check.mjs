@@ -593,15 +593,16 @@ retryRevision++;beginVerify();retryFocus();assert.equal(replayed,1,'a later unre
 console.log('Two-chapter sequential prefetch and one-shot verification retry checks passed');
 
 // Update discovery stays quiet on metered connections and keeps a validated
-// cached offer across app launches. Manual checks bypass the daily throttle.
+// cached offer across app launches. Every foreground launch checks without a time throttle.
 const updatePolicy=await import('../src/lib/app-update-policy.ts');
 const installedUpdate={version:'2.0.6',versionCode:23,architecture:'armv7',canInstall:false};
 const publishedUpdate={version:'2.0.7',architecture:'armv7',url:'https://github.com/NaiJii/nightshelf/releases/download/v2.0.7/NightShelf-2.0.7-armv7.apk',sha256:'a'.repeat(64),size:40000000,notes:'Changes'};
 const updateReleases=[{tag_name:'v2.0.7',draft:false,prerelease:false,body:'Changes',assets:[{name:'NightShelf-2.0.7-armv7.apk',state:'uploaded',browser_download_url:publishedUpdate.url,digest:'sha256:'+publishedUpdate.sha256,size:publishedUpdate.size}]}];
-let updateNetwork={type:'cellular',isConnected:true}, updateRequests=0, updateConsent=0, updateCache='', updateHttpOk=true;
+let updateNetwork={type:'cellular',isConnected:true}, updateRequests=0, updateConsent=0, updateCache='', updateHttpOk=true, updateAppListener;
+const updateAppState={currentState:'active',addEventListener:(_event,listener)=>{updateAppListener=listener;return {remove(){}};}};
 const updatePreferences={autoAppUpdates:true};
 const updateModules={
- 'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
+ 'react-native':{AppState:updateAppState},
  '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>updateNetwork,addEventListener:()=>()=>{}}},
  'expo-file-system':{File:class{textSync(){return updateCache;}write(text){updateCache=text;}},Directory:class{exists=false;},Paths:{cache:'file:///cache/'}},
  '../lib/app-state':{useShelf:()=>({preferences:updatePreferences})},
@@ -614,13 +615,66 @@ const updater=()=>updateProvider.render('AppUpdatesProvider',{}).props.value;
 await updater().check();assert.equal(updateRequests,0,'automatic update checks do not use mobile data');
 updateNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}};
 await updater().check();assert.equal(updateRequests,1);assert.equal(updater().update.version,'2.0.7');
-await updater().check();assert.equal(updateRequests,1,'reopening within 24 hours cannot repeatedly call GitHub');
+await updater().check();assert.equal(updateRequests,1,'duplicate events within one foreground session do not repeat the request');
+const updateLifecycleCleanup=updateProvider.effects.find(effect=>effect.deps?.length===1).callback();
+updateAppState.currentState='background';updateAppListener('background');
+updateAppState.currentState='active';updateAppListener('active');
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(updateRequests,2,'opening the app again immediately checks without waiting for a daily or retry interval');
+updateLifecycleCleanup();
 updatePreferences.autoAppUpdates=false;await updater().check(true);
-assert.equal(updateRequests,2);assert.equal(updateConsent,1,'manual checks honor the existing connection consent policy');
+assert.equal(updateRequests,3);assert.equal(updateConsent,1,'manual checks honor the existing connection consent policy');
 updateHttpOk=false;await updater().check(true);
 assert.match(updater().error,/limiting/);assert.equal(updater().update.version,'2.0.7','a failed check preserves the last valid update offer');
+updateHttpOk=true;updatePreferences.autoAppUpdates=true;
 const reopenedUpdateProvider=component('../src/components/app-updates-provider.tsx',updateModules,updateGlobals);
-assert.equal(reopenedUpdateProvider.render('AppUpdatesProvider',{}).props.value.update.version,'2.0.7','a cached update survives reopening offline');
+const reopened=()=>reopenedUpdateProvider.render('AppUpdatesProvider',{}).props.value;
+assert.equal(reopened().update.version,'2.0.7','a cached update survives reopening offline');
+const requestsBeforeRelaunch=updateRequests;
+await reopened().check();assert.equal(updateRequests,requestsBeforeRelaunch+1,'a fresh launch checks despite a check completed moments ago');
+
+const updatePrompts=[], updatePromptRoutes=[];
+let updatePromptPath='/reader/example/1', updateMenuOpen=false, updatePromptChecking=false, promptAppListener;
+const promptModules={
+ 'react-native':{AppState:{currentState:'active',addEventListener:(_event,listener)=>{promptAppListener=listener;return{remove(){}};}}},
+ 'expo-router':{usePathname:()=>updatePromptPath,router:{navigate:path=>updatePromptRoutes.push(path)}},
+ '../lib/app-state':{useShelf:()=>({preferences:updatePreferences,catalogReady:true})},
+ './app-updates-provider':{useAppUpdates:()=>({update:publishedUpdate,checking:updatePromptChecking})},
+ './action-sheet':{useActionSheet:()=>(...args)=>updatePrompts.push(args),useActionSheetOpen:()=>updateMenuOpen},
+};
+const updatePrompt=component('../src/components/app-update-prompt.tsx',promptModules);
+const runUpdatePrompt=()=>{updatePrompt.render('AppUpdatePrompt',{});updatePrompt.effects.find(effect=>effect.deps?.length>1).callback();};
+runUpdatePrompt();assert.equal(updatePrompts.length,0,'update popup waits until leaving the reader');
+updatePrompt.effects.find(effect=>effect.deps?.length===0).callback();
+updatePromptPath='/library';updateMenuOpen=true;runUpdatePrompt();assert.equal(updatePrompts.length,0,'update popup cannot replace an open menu');
+updateMenuOpen=false;updatePromptChecking=true;runUpdatePrompt();assert.equal(updatePrompts.length,0,'update popup waits for the current check');
+updatePromptChecking=false;promptAppListener('background');runUpdatePrompt();assert.equal(updatePrompts.length,0,'background completion cannot show a popup');
+promptAppListener('active');runUpdatePrompt();assert.equal(updatePrompts.length,1,'an available compatible update prompts in the foreground');
+assert.equal(updatePrompts[0][0],'Update available');
+updatePrompts[0][2].find(action=>action.text==='Review update').onPress();assert.equal(updatePromptRoutes[0],'/app-update');
+runUpdatePrompt();assert.equal(updatePrompts.length,1,'a dismissed offer is not repeatedly shown during the same app run');
+{
+  let requestCount=0, finishStale, firstSignal, lifecycle;
+  const lifecycleState={currentState:'active',addEventListener:(_event,callback)=>{lifecycle=callback;return{remove(){}};}};
+  const raceProvider=component('../src/components/app-updates-provider.tsx',{
+    ...updateModules,'react-native':{AppState:lifecycleState},
+  },{fetch:async(_url,options)=>{
+    requestCount++;
+    if(requestCount===1){firstSignal=options.signal;return new Promise(resolve=>{finishStale=resolve;});}
+    return{ok:true,json:async()=>updateReleases};
+  }});
+  const raceState=()=>raceProvider.render('AppUpdatesProvider',{}).props.value;
+  const firstCheck=raceState().check();
+  const cleanup=raceProvider.effects.find(effect=>effect.deps?.length===1).callback();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  lifecycleState.currentState='background';lifecycle('background');assert.equal(firstSignal.aborted,true,'backgrounding aborts the old launch check');
+  lifecycleState.currentState='active';lifecycle('active');
+  finishStale({ok:true,json:async()=>[]});await firstCheck;await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(requestCount,2,'rapid return starts the pending new-launch check after the previous request drains');
+  assert.equal(raceState().update.version,'2.0.7','late old responses cannot erase the fresh update');
+  cleanup();
+}
+console.log('Every-launch update checks, immediate reopen, cached offers, and foreground update prompts passed');
 
 let apkFile=false, apkSize=publishedUpdate.size, badUpdateHash=false, permissionResult='installer', appStateCallback;
 const installationCalls=[], verifiedUpdates=[], deletedUpdates=[];
@@ -661,7 +715,7 @@ permissionInstaller.render('default',{});permissionInstaller.effects[1].callback
 installedUpdate.canInstall=true;permissionResult='installer';const beforePermission=installationCalls.length;
 appStateCallback('active');appStateCallback('active');await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(installationCalls.length,beforePermission+1,'granting installation permission resumes once without stacking installer prompts');
-console.log('Automatic Wi-Fi update checks, daily throttling, caching, APK validation failures and installer permission recovery passed');
+console.log('Automatic Wi-Fi update checks, caching, APK validation failures and installer permission recovery passed');
 
 waitForApk=true;apkFile=false;
 const blurredUpdater=component('../src/app/app-update.tsx',installerModules);

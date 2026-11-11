@@ -28,7 +28,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     id: "asura", name: "Asura", requestAgent: "mobile", chapterNoun: "chapters", audienceNoun: "saves",
     hosts: ["asurascans.com"], requestHosts: ["api.asurascans.com"],
     formats: ["comic", "novel"],
-    sorts: [["smart", "For you"], ["trending", "Popular"], ["rating", "Top rated"], ["updated", "Latest updates"], ["chapters", "Long reads"], ["title", "A–Z"]],
+    sorts: [["smart", "Popular"], ["trending", "Popular"], ["rating", "Top rated"], ["updated", "Latest updates"], ["chapters", "Long reads"], ["title", "A–Z"]],
     periods: ["week", "month", "all"], localSorts: ["smart", "chapters"],
     chapterCache: "inline",
     rankOrder: "period",

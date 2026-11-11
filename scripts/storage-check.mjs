@@ -49,6 +49,8 @@ try {
   storage.savePreferences({...storage.loadPreferences(),readerContinuous:false,readerKeepAwake:false});
   assert.equal(storage.loadPreferences().readerContinuous,true,'continuous reading is enabled even for older disabled preferences');
   assert.equal(storage.loadPreferences().readerKeepAwake,true,'reader screen stays awake without a user-facing toggle');
+  storage.savePreferences({...storage.loadPreferences(),weights:{trending:0,rating:0,length:5}});
+  assert.equal('weights' in storage.loadPreferences(),false,'removed recommendation weights are ignored when reading legacy preferences');
 
   const { readJson, writeJson } = await import('../src/lib/json-store.ts');
   const durable = new File(storage.ROOT, 'durable-test.json');

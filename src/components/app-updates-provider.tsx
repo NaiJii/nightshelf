@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import { Directory, File, Paths } from "expo-file-system";
@@ -23,9 +23,13 @@ function useUpdatesState() {
       try { const folder = new Directory(Paths.cache, "app-updates"); if (folder.exists) folder.delete(); } catch { /* Android may already have evicted the APK cache. */ }
     }
   }, [installed, initial]);
-  const busy = useRef(false), nextAttempt = useRef(0), checkedThisSession = useRef(false);
-  const check = useCallback(async (manual = false) => {
-    if (!installed || busy.current || (!manual && (preferences.autoAppUpdates === false || Date.now() < nextAttempt.current || (checkedThisSession.current && checkedAt <= Date.now() && Date.now() - checkedAt < 24 * 3600_000)))) return;
+  const busy = useRef(false), launch = useRef(0), checkedLaunch = useRef(-1);
+  const request = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+  const latestCheck = useRef<(manual?: boolean) => Promise<void>>(async () => {});
+  const check = useCallback(async function checkUpdates(manual = false): Promise<void> {
+    if (!installed || busy.current || (!manual && (preferences.autoAppUpdates === false || checkedLaunch.current === launch.current))) return;
+    const generation = launch.current;
     busy.current = true;
     try {
       if (manual) await networkGuard("Check for a NightShelf update?")();
@@ -33,28 +37,42 @@ function useUpdatesState() {
         const network = await NetInfo.fetch();
         if (AppState.currentState !== "active" || network.type !== "wifi" || !network.isConnected || network.isInternetReachable === false || network.details?.isConnectionExpensive) return;
       }
-      nextAttempt.current = Date.now() + 15 * 60_000;
+      if (generation !== launch.current || AppState.currentState !== "active") return;
+      checkedLaunch.current = generation;
       setChecking(true); setError("");
-      const controller = new AbortController();
+      const controller = new AbortController(); request.current = controller;
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
-        const response = await fetch(RELEASES_API, { signal: controller.signal, headers: { Accept: "application/vnd.github+json" } });
+        const response = await fetch(RELEASES_API, { signal: controller.signal, cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
         if (!response.ok) throw new Error(response.status === 403 || response.status === 429 ? "GitHub is limiting update checks. Try again later." : `Update check failed (${response.status}).`);
         const latest = selectAppUpdate(await response.json(), installed);
+        if (controller.signal.aborted || generation !== launch.current) return;
         const at = Date.now();
-        checkedThisSession.current = true;
         setUpdate(latest); setCheckedAt(at);
         ROOT.create({ intermediates: true, idempotent: true });
         new File(ROOT, "app-update.json").write(JSON.stringify({ checkedAt: at, update: latest }));
-      } finally { clearTimeout(timer); }
-    } catch (failure) { if (manual) setError(failure instanceof Error && failure.name !== "AbortError" ? failure.message : "Update check timed out. Try again."); }
-    finally { busy.current = false; setChecking(false); }
-  }, [installed, checkedAt, preferences.autoAppUpdates]);
+      } finally { clearTimeout(timer); request.current = null; }
+    } catch (failure) { if (manual && generation === launch.current) setError(failure instanceof Error && failure.name !== "AbortError" ? failure.message : "Update check timed out. Try again."); }
+    finally {
+      busy.current = false;
+      if (mounted.current) setChecking(false);
+      if (mounted.current && generation !== launch.current && AppState.currentState === "active") void latestCheck.current();
+    }
+  }, [installed, preferences.autoAppUpdates]);
+  useLayoutEffect(() => { latestCheck.current = check; }, [check]);
   useEffect(() => {
+    mounted.current = true;
+    const invalidate = () => { launch.current++; request.current?.abort(); };
     const timer = setTimeout(() => { void check(); }, 500);
-    const listener = AppState.addEventListener("change", state => { if (state === "active") void check(); });
+    let state = AppState.currentState;
+    const listener = AppState.addEventListener("change", next => {
+      if (next === state) return;
+      state = next;
+      if (next === "active") void check();
+      else invalidate();
+    });
     const network = NetInfo.addEventListener(() => { void check(); });
-    return () => { clearTimeout(timer); listener.remove(); network(); };
+    return () => { mounted.current = false; clearTimeout(timer); listener.remove(); network(); invalidate(); };
   }, [check]);
   return { installed, update, checking, checkedAt, error, check };
 }

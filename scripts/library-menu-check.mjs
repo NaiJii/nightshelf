@@ -41,8 +41,17 @@ const root = render();
 const list = nodes(root).find(node => node.type === "FlatList");
 assert.ok(list, "library uses a virtualized list");
 assert.equal(list.props.data.length, 1);
-const countedTab=nodes(list.props.ListHeaderComponent).find(node=>node.props?.accessibilityRole==='tab'&&nodes(node).some(child=>child.props?.children?.[0]==='Downloads'));
-assert.ok(nodes(countedTab).some(node=>node.props?.children?.at?.(-1)===1),'Downloads displays its actual story count');
+const libraryTabs=nodes(list.props.ListHeaderComponent).filter(node=>node.props?.accessibilityRole==='tab');
+assert.equal(libraryTabs.length,5);
+const countedTab=libraryTabs.find(node=>node.props.accessibilityLabel==='Downloads, 1 story');
+assert.ok(countedTab,'icon tab exposes its name and actual count to accessibility');
+assert.ok(nodes(countedTab).some(node=>node.type==='Text'&&node.props.children===1),'Downloads displays its actual story count');
+assert.equal(countedTab.props.accessibilityState.selected,true);
+assert.equal(libraryTabs.every(tab=>nodes(tab).some(node=>node.type==='Icon')),true,'all library tabs use compact icons');
+const bookmarkTab=libraryTabs.find(node=>node.props.accessibilityLabel.startsWith('Bookmarks,'));
+bookmarkTab.props.onPress();
+assert.ok(nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).some(node=>node.props?.accessibilityRole==='tab'&&node.props.accessibilityLabel.startsWith('Bookmarks,')&&node.props.accessibilityState.selected),'icon tabs still switch library scope');
+countedTab.props.onPress();
 assert.ok(nodes(list.props.ListHeaderComponent).some(node=>node.type==='Chip'&&node.props.text==='Unread · 1'),'Unread counts stories with unread saved chapters');
 shelf.read={example:{'1':'read'}};
 assert.ok(nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).some(node=>node.type==='Chip'&&node.props.text==='Unread · 0'),'counts update immediately when read status changes');
@@ -75,13 +84,13 @@ console.log("Library menu navigation, confirmation and download guard checks pas
 
 shelf.catalog=[story,{...story,slug:'automatic',title:'Automatic',alternativeTitles:['Ragnar: L’Héritier de la Lame']}];
 shelf.saved={automatic:{bookmarked:true,autoDownload:true}};
-const autoTab=nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).find(node=>node.props?.accessibilityRole==='tab'&&nodes(node).some(child=>child.props?.children?.[0]==='Auto-downloads'));
+const autoTab=nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).find(node=>node.props?.accessibilityRole==='tab'&&node.props.accessibilityLabel?.startsWith('Auto-downloads,'));
 assert.ok(autoTab);autoTab.props.onPress();
 assert.deepEqual(nodes(render()).find(node=>node.type==='FlatList').props.data.map(item=>item.slug),['automatic'],'Auto-downloads contains only enabled stories');
 
 const findList=()=>nodes(render()).find(node=>node.type==='FlatList');
 const libraryHeader=()=>nodes(findList().props.ListHeaderComponent);
-libraryHeader().find(node=>node.props?.accessibilityRole==='tab'&&nodes(node).some(child=>child.props?.children?.[0]==='Downloads')).props.onPress();
+libraryHeader().find(node=>node.props?.accessibilityRole==='tab'&&node.props.accessibilityLabel?.startsWith('Downloads,')).props.onPress();
 libraryHeader().find(node=>node.props?.accessibilityLabel==='Search your library').props.onChangeText('auto');
 assert.deepEqual(findList().props.data.map(item=>item.slug),['automatic'],'search filters the active shelf');
 libraryHeader().find(node=>node.props?.accessibilityLabel==='Search your library').props.onChangeText('lheritier');

@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import { loadCatalog } from "../lib/storage";
 import { StatusBar } from "expo-status-bar";
 import { AppUpdatesProvider } from "../components/app-updates-provider";
+import { AppUpdatePrompt } from "../components/app-update-prompt";
 import { AppProvider } from "../lib/app-state";
 import { DownloadDrawerProvider } from "../components/download-drawer";
 import { ActionSheetProvider } from "../components/action-sheet";
@@ -28,6 +29,7 @@ export default function RootLayout() {
   return (
     <AppProvider>
       <AppUpdatesProvider><ActionSheetProvider><DownloadDrawerProvider>
+        <AppUpdatePrompt />
         <StatusBar style="light" />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0b0b10" } }} />
       </DownloadDrawerProvider></ActionSheetProvider></AppUpdatesProvider>
