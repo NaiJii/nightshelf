@@ -23,7 +23,8 @@ export function loadDownloads(): DownloadJob[] {
 export function saveDownloads(jobs: DownloadJob[]): void { initializeStorage(); writeJson(DOWNLOADS, jobs); }
 export type Preferences = DiscoveryFilters & { autoAppUpdates?: boolean; searchHistory?: Record<string, string[]>; readerContinuous: boolean; readerPrefetch: boolean; releaseCheckInterval: 60 | 120; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
 export const DEFAULT_PREFERENCES: Preferences = { readerContinuous: true, readerPrefetch: true, releaseCheckInterval: 120, autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", interval: 10, sort: "smart", contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
-export type ReadingPosition = { chapter: string; fraction: number; readAt: string; chapters?: Record<string, { fraction: number; readAt: string }> };
+export type PanelPosition = { index: number; offset: number };
+export type ReadingPosition = { chapter: string; fraction: number; readAt: string; panel?: PanelPosition; chapters?: Record<string, { fraction: number; readAt: string; panel?: PanelPosition }> };
 
 export function loadPreferences(): Preferences {
   initializeStorage();
@@ -43,12 +44,13 @@ export function readingHistory(): Record<string, ReadingPosition> {
   initializeStorage();
   try { return readJson(HISTORY, {}); } catch { return {}; }
 }
-export function savePosition(slug: string, chapter: string, fraction: number): void {
+export function savePosition(slug: string, chapter: string, fraction: number, panel?: PanelPosition): void {
   if (![slug, chapter].every(safePart) || !Number.isFinite(fraction)) throw new Error("Invalid reading position.");
   const history = readingHistory(), previous = history[slug];
   const chapters = { ...previous?.chapters };
   if (previous && !chapters[previous.chapter]) chapters[previous.chapter] = { fraction: previous.fraction, readAt: previous.readAt };
-  const position = { fraction: Math.max(0, Math.min(1, fraction)), readAt: new Date().toISOString() };
+  const anchor = panel && Number.isInteger(panel.index) && panel.index >= 0 && Number.isFinite(panel.offset) ? { index: panel.index, offset: Math.max(0, Math.min(1, panel.offset)) } : undefined;
+  const position = { fraction: Math.max(0, Math.min(1, fraction)), readAt: new Date().toISOString(), ...(anchor ? { panel: anchor } : {}) };
   chapters[chapter] = position;
   history[slug] = { chapter, ...position, chapters };
   writeJson(HISTORY, history);
@@ -78,7 +80,7 @@ export function setChaptersRead(slug: string, chapters: string[], value: boolean
     position.chapters ||= {};
     for (const chapter of chapters) {
       position.chapters[chapter] = { fraction: 0, readAt };
-      if (position.chapter === chapter) { position.fraction = 0; position.readAt = readAt; }
+      if (position.chapter === chapter) { position.fraction = 0; position.readAt = readAt; delete position.panel; }
     }
     writeJson(HISTORY, history);
   }
@@ -245,9 +247,40 @@ export function chapterFiles(slug: string, chapter: string, includeMissing = fal
     }
   } catch { /* legacy download uses directory listing */ }
   return folder.list()
-    .filter(item => item instanceof File && /^\d+\.(avif|gif|jpe?g|png|webp)$/i.test(item.name))
+    .filter(item => item instanceof File && item.size > 0 && /^\d+\.(avif|gif|jpe?g|png|webp)$/i.test(item.name))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     .map(item => item.uri);
+}
+
+/** Only publish an ordered prefix of committed panels; .part files are never readable. */
+export function chapterReadState(slug: string, chapter: string): { files: string[]; total: number; complete: boolean } {
+  const folder = chapterDirectory(slug, chapter);
+  if (!folder.exists) return { files: [], total: 0, complete: false };
+  if (new File(folder, ".complete").exists) {
+    const files = chapterFiles(slug, chapter, true);
+    return { files, total: files.length, complete: chapterIntact(slug, chapter) };
+  }
+  try {
+    const plan = JSON.parse(new File(folder, ".panels.json").textSync());
+    if (Array.isArray(plan.urls) && plan.urls.every((url: unknown) => typeof url === "string")) {
+      const files: string[] = [];
+      for (const [index, url] of (plan.urls as string[]).entries()) {
+        const ext = new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp";
+        const file = new File(folder, `${String(index + 1).padStart(3, "0")}${ext}`);
+        if (!file.exists || !file.size) break;
+        try { if (new File(folder, `.original-${index + 1}`).textSync() !== url) break; } catch { break; }
+        files.push(file.uri);
+      }
+      return { files, total: plan.urls.length, complete: false };
+    }
+  } catch { /* Older partial downloads can still expose their committed prefix. */ }
+  const files = chapterFiles(slug, chapter);
+  const prefix: string[] = [];
+  for (const [index, uri] of files.entries()) {
+    if (Number(uri.split("/").at(-1)?.split(".")[0]) !== index + 1) break;
+    prefix.push(uri);
+  }
+  return { files: prefix, total: prefix.length, complete: false };
 }
 
 

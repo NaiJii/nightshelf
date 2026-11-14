@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { router, useFocusEffect } from "expo-router";
-import { useShelf } from "../lib/app-state";
-import { chapterIntact } from "../lib/storage";
+import { useDownloads, useShelf } from "../lib/app-state";
+import { chapterIntact, chapterReadState } from "../lib/storage";
+import { queuedChapters } from "../lib/download-display";
 import { useSourceRetry } from "./use-source-retry";
 import { useActionSheet } from "./action-sheet";
 import { needsVerification } from "../lib/provider-errors";
@@ -10,6 +11,8 @@ import { sourceOf } from "../lib/parser";
 
 export function useReaderNavigation(slug: string, title: string | undefined, next: string | undefined, transition?: string, push = false, onOpen?: (chapter: string, previous: boolean) => void, afterNext?: string) {
   const { preferences, fetchReaderChapter, connection, read, catalog } = useShelf();
+  const downloads = useDownloads(true);
+  const canRead = (target: string) => chapterIntact(slug, target) || chapterReadState(slug, target).files.length > 0 || downloads.some(job => job.series.slug === slug && ["queued", "downloading", "waiting"].includes(job.status) && queuedChapters(job).includes(target));
   const showSheet = useActionSheet();
   const [status, setStatus] = useState(transition ? `Chapter ${transition}` : "");
   const [busy, setBusy] = useState(false);
@@ -70,12 +73,12 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
     setBusy(true);
     setProgress(0);
     try {
-      if (!chapterIntact(slug, target)) {
+      if (!canRead(target)) {
         setStatus(`Preparing chapter ${target}…`);
         await fetchChapter(target, automatic);
       }
       if (!active.current || version !== generation.current || AppState.currentState !== "active") return;
-      if (!chapterIntact(slug, target)) throw new Error(`Chapter download is incomplete. ${push ? "Choose Read now to retry." : "Tap next or previous to retry."}`);
+      if (!canRead(target)) throw new Error(`Chapter download is incomplete. ${push ? "Choose Read now to retry." : "Tap next or previous to retry."}`);
       setStatus("");
       if (onOpen) { onOpen(target, previous); return; }
       const route = { pathname: "/reader/[slug]/[chapter]" as const, params: { slug, chapter: target, title, entry: push ? read?.[slug]?.[target] ? "start" : undefined : previous ? "end" : "start", transition: push ? undefined : target } };
@@ -90,7 +93,7 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
   function go(target?: string, automatic = false, previous = false) {
     if (!target || navigating.current) return;
     if (automatic && !preferences.readerContinuous) return;
-    if (automatic || chapterIntact(slug, target)) { void open(target, automatic, previous); return; }
+    if (automatic || canRead(target)) { void open(target, automatic, previous); return; }
     if (["Offline","No internet"].includes(connection?.label)) { showSheet("Internet required","This chapter is not saved. Connect to download it; your saved chapters remain readable."); return; }
     // The connection guard supplies the cellular confirmation; avoid a second dialog.
     if (connection?.label !== "Wi-Fi" && connection?.label !== "Online") { void open(target, false, previous); return; }

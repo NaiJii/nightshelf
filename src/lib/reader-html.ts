@@ -1,12 +1,13 @@
 import type { NovelText } from "./parser";
 
 const escape = (text: string) => text.replace(/[&<>"']/g, value => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[value]!);
+const waitingPanel = `<button class="download-tail" onclick="window.ReactNativeWebView.postMessage(JSON.stringify({downloadPending:true,chapter:this.closest('section').dataset.chapter}))"><span class="download-ring" aria-hidden="true">↓</span><span class="download-label">Waiting for more panels…</span><small>Open download controls</small></button>`;
 
 export function readerChapterHtml(files: string[], novel?: NovelText | null): string {
   return novel ? `<main class="novel"><h1>${escape(novel.title)}</h1>${novel.paragraphs.map(text => `<p>${escape(text)}</p>`).join("")}</main>` : files.filter(uri => uri.startsWith("file://")).map((uri, index) => `<div class="reader-panel"><img src="${escape(uri)}" alt="Page ${index + 1}" decoding="async" onerror="this.hidden=true;this.nextElementSibling.hidden=false;window.ReactNativeWebView.postMessage(JSON.stringify({error:true,page:${index},chapter:this.closest('section').dataset.chapter}))"><button class="panel-repair" hidden onclick="window.ReactNativeWebView.postMessage(JSON.stringify({repair:${index},chapter:this.closest('section').dataset.chapter}))" aria-label="Repair page ${index + 1}">↻ Page ${index + 1} could not open · Tap to repair</button></div>`).join("");
 }
 
-export function readerHtml(files: string[], fraction = 0, novel?: NovelText | null, fontSize = 19, theme: "dark" | "sepia" = "dark", chapter = ""): string {
+export function readerHtml(files: string[], fraction = 0, novel?: NovelText | null, fontSize = 19, theme: "dark" | "sepia" = "dark", chapter = "", complete = true): string {
   const safeFraction = Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0;
   const size = Number.isFinite(fontSize) ? Math.max(14, Math.min(30, fontSize)) : 19;
   const sepia = Boolean(novel) && theme === "sepia";
@@ -14,9 +15,12 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=6, user-scalable=yes">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>html,body{overflow-anchor:none;touch-action:manipulation;margin:0;padding:0;background:${sepia ? "#f4ecd8" : "#08080b"};color:${sepia ? "#483b2c" : "#ded9e6"}}img{display:block;width:100%;height:auto;margin:0}.novel{max-width:720px;margin:auto;padding:24px 22px 50px}.novel p{font:${size}px/1.85 Georgia,serif;margin:0 0 1.2em;text-align:left;overflow-wrap:break-word}.novel h1{font:600 24px/1.4 sans-serif;margin:6px 0 30px}.end{font:11px sans-serif;text-align:center;padding:14px 8px;margin:0;color:#8b8494}</style><style id="reader-appearance"></style></head><body>
-<div id="reader-chapters"><section id="reader-chapter" class="reader-chapter" data-chapter="${escape(chapter)}">${readerChapterHtml(files, novel)}<p class="end">End of chapter</p></section></div>
+<div id="reader-chapters"><section id="reader-chapter" class="reader-chapter" data-chapter="${escape(chapter)}" data-complete="${complete}">${readerChapterHtml(files, novel)}<p class="end" ${complete ? "" : "hidden"}>End of chapter</p>${complete ? "" : waitingPanel}</section></div>
 <style>
 .reader-panel img[hidden],.panel-repair[hidden]{display:none}.panel-repair{display:block;width:100%;min-height:60vh;border:0;background:#17171f;color:#c9a7ff;font:14px/1.6 sans-serif;padding:24px;overflow-wrap:anywhere}
+.download-tail{width:100%;min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;border:0;background:#111117;color:#c9a7ff;font:13px sans-serif;padding:28px;box-sizing:border-box}.download-tail[hidden],.end[hidden]{display:none}.download-tail small{color:#8b8494;font-size:11px}.download-ring{position:relative;display:grid;place-items:center;width:38px;height:38px;font-size:24px}.download-ring:before{content:'';position:absolute;inset:0;border:2px solid #c9a7ff30;border-top-color:#c9a7ff;border-radius:50%;animation:download-spin 1s linear infinite}@keyframes download-spin{to{transform:rotate(360deg)}}
+.reader-chapter[data-complete="false"]{min-height:100vh}
+.download-tail[data-state="paused"] .download-ring:before,.download-tail[data-state="error"] .download-ring:before{animation:none;border-top-color:#c9a7ff30}
 #reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;padding:4px 20px 8px;background:#17171ff2;color:#aaa6b3;border-radius:16px;transform-origin:top left;font:11px/1.4 sans-serif;touch-action:none}
 #reader-scrubber[hidden],#scrub-preview[hidden],#scrub-crop[hidden],#scrub-text[hidden]{display:none}
 #scrub-range{display:block;width:100%;height:44px;margin:0;accent-color:#c9a7ff;touch-action:none}
@@ -149,6 +153,7 @@ window.readerSetActive = active => {
   if (active) report();
 };
 addEventListener('touchstart', event => {
+  pendingPanelRestore = undefined;
   if (scrubEvent(event)) { touch = null; swipe = null; return; }
   if (event.touches.length > 1) hideControls();
   const finger = event.touches[0];
@@ -199,7 +204,7 @@ function finalPanelVisible(rect, viewport) {
   return rect.bottom > viewport.top && rect.bottom <= viewport.bottom + 1 && rect.right > viewport.left && rect.left < viewport.right;
 }
 function checkCompletion() {
-  if (finished || !restored || !window.readerActive || document.hidden) return false;
+  if (finished || !restored || !window.readerActive || document.hidden || chapterRoot?.dataset?.complete === 'false') return false;
   const last = images.at(-1) || (chapterRoot || document).querySelector('.novel p:last-child');
   const viewport = window.visualViewport;
   const top = viewport ? viewport.offsetTop : 0, left = viewport ? viewport.offsetLeft : 0;
@@ -222,7 +227,9 @@ function report(snapshot = false) {
   const visiblePage = images.findIndex(image => image.getBoundingClientRect().bottom > top);
   const page = visiblePage < 0 ? Math.max(0, images.length - 1) : visiblePage;
   const atStart = scrollY + top - bounds.start <= 1;
-  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(1, (scrollY + top - bounds.start) / max)), page: page + 1,chapter:readerChapter,snapshot,complete:snapshot && finished ? true : undefined}));
+  const imageRect = images[page]?.getBoundingClientRect();
+  const panel = imageRect ? {index:page,offset:Math.max(0,Math.min(1,(top-imageRect.top)/Math.max(1,imageRect.bottom-imageRect.top)))} : undefined;
+  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(chapterRoot?.dataset?.complete === 'false' ? 0.99 : 1, (scrollY + top - bounds.start) / max)), page: page + 1,panel,chapter:readerChapter,snapshot,complete:snapshot && finished ? true : undefined}));
 }
 addEventListener('load', () => { const bounds = chapterBounds(); scrollTo(0, bounds.start + ${safeFraction} * Math.max(0, bounds.end - bounds.start - innerHeight)); restored = true; report(); });
 function onScroll() {
@@ -250,9 +257,46 @@ const attaching = new Map(), prefetchRequested = new Set();
 let edgeRequested = '';
 let lastStreamY = scrollY;
 let restoreTarget;
+let pendingPanelRestore;
 window.readerNeighbors = [];
 let endingConfig;
 function sectionFor(id) { return [...chapterHost.children].find(node => node.dataset.chapter === id); }
+function setDownloadState(node, complete, total) {
+  node.dataset.complete = String(complete);
+  const end = node.querySelector('.end');
+  if (end) end.hidden = !complete;
+  let tail = node.querySelector('.download-tail');
+  if (!complete && !tail) {
+    const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(waitingPanel)};
+    tail = holder.firstElementChild; node.appendChild(tail);
+  }
+  if (tail) {
+    tail.hidden = complete;
+    const count = node.querySelectorAll('.reader-panel').length;
+    tail.querySelector('.download-label').textContent = total > count ? count + '/' + total + ' panels saved · Waiting for more…' : 'Waiting for download to finish…';
+  }
+}
+window.readerUpdateChapter = (id, content, complete, total) => {
+  const node = chapterHost && sectionFor(id);
+  if (!node) return;
+  const holder = document.createElement('div'); holder.innerHTML = content;
+  const prose = holder.querySelector('.novel');
+  if (prose && !node.querySelector('.novel')) node.insertBefore(prose, node.querySelector('.end'));
+  const panels = [...holder.querySelectorAll('.reader-panel')];
+  const count = node.querySelectorAll('.reader-panel').length;
+  const before = node.querySelector('.end') || node.querySelector('.download-tail');
+  for (const panel of panels.slice(count)) node.insertBefore(panel, before);
+  setDownloadState(node, complete, total);
+  if (node === chapterRoot) { images = [...node.querySelectorAll('img')]; window.readerUpdateControls(); }
+  if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, pendingPanelRestore.panel);
+};
+window.readerSetDownloadStatus = (id, status) => {
+  const tail = sectionFor(id)?.querySelector('.download-tail');
+  if (!tail || tail.hidden) return;
+  tail.dataset.state = status;
+  const label = status === 'paused' ? 'Download paused · Your saved panels are still readable' : status === 'error' ? 'Download needs attention' : status === 'waiting' ? 'Waiting for a connection to download more panels…' : status === 'queued' ? 'More panels are queued…' : '';
+  if (label) tail.querySelector('.download-label').textContent = label;
+};
 function keepReaderAnchor(change) {
   const top = chapterRoot.getBoundingClientRect().top;
   change();
@@ -298,6 +342,21 @@ window.readerRestorePosition = (id, fraction) => {
   scrollTo(0, bounds.start + scrubFraction(fraction) * Math.max(0, bounds.end - bounds.start - innerHeight));
   report();
 };
+window.readerRestorePanel = (id, panel) => {
+  if (!Number.isInteger(panel?.index) || panel.index < 0 || !Number.isFinite(panel.offset)) return;
+  const node = sectionFor(id), image = node?.querySelectorAll('img')[panel.index];
+  if (!image) { pendingPanelRestore = {id,panel}; return; }
+  if (!image.complete || !image.naturalWidth) {
+    pendingPanelRestore = {id,panel};
+    image.addEventListener('load', () => { if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, panel); }, {once:true});
+    return;
+  }
+  pendingPanelRestore = undefined;
+  activateChapter(node);
+  const rect = image.getBoundingClientRect();
+  scrollTo(0, Math.max(0, scrollY + rect.top + Math.max(0,Math.min(1,panel.offset)) * (rect.bottom-rect.top)));
+  report();
+};
 window.readerTrackChapter = () => {
   if (!chapterHost || !restored || !window.readerActive || document.hidden || !window.readerContinuous || scrubbing || (window.visualViewport?.scale || 1) > 1.05) return;
   const y = window.visualViewport?.offsetTop || 0;
@@ -324,11 +383,13 @@ window.readerTrackChapter = () => {
     }
   } else if (!atEnd && !atTop) edgeRequested = '';
 };
-window.readerAttachChapter = (id, content) => {
-  if (!chapterHost || sectionFor(id) || attaching.has(id)) return;
+window.readerAttachChapter = (id, content, complete = true, total = 0) => {
+  if (!chapterHost || attaching.has(id)) return;
+  if (sectionFor(id)) { window.readerUpdateChapter(id, content, complete, total); return; }
   const node = document.createElement('section');
   node.className = 'reader-chapter'; node.dataset.chapter = id;
   node.innerHTML = content + '<p class="end">Chapter ' + id.replace(/[^0-9.]/g,'') + ' · End</p>';
+  setDownloadState(node, complete, total);
   const pending = [...node.querySelectorAll('img')].map(image => new Promise(resolve => {
     if (image.complete) resolve();
     else { image.addEventListener('load', resolve, {once:true}); image.addEventListener('error', resolve, {once:true}); }
@@ -341,6 +402,7 @@ window.readerAttachChapter = (id, content) => {
     keepReaderAnchor(() => window.readerNeighbors[0] === id ? chapterHost.prepend(node) : chapterHost.append(node));
     lastStreamY = scrollY; renderEnding();
     if (restoreTarget?.id === id) window.readerRestorePosition(id, restoreTarget.fraction);
+    if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, pendingPanelRestore.panel);
     window.ReactNativeWebView.postMessage(JSON.stringify({attachedChapter:id}));
     window.readerUpdateControls();
   });

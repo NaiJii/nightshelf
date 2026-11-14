@@ -218,7 +218,7 @@ const chapterSheets = [], readNowChoices = [];
 const details = component('../src/app/series/[slug].tsx', {
   'expo-router': {useLocalSearchParams: () => ({slug:'example'}), useFocusEffect: () => {}, router: {}},
   '../../lib/parser': parser,
-  '../../lib/storage': {readingHistory: () => positions, chapterIntact:()=>true},
+  '../../lib/storage': {readingHistory: () => positions, chapterIntact:()=>true, chapterReadState:()=>({files:[]})},
   '../../lib/app-state': {useShelf: () => shelf,useDownloads:()=>shelf.downloads},
   '../../lib/library-tools': {estimateDownload: (...args) => {estimateCalls.push(args);return {bytes:1};}, formatBytes: () => '1 MB', freeBytes: () => 1000},
   '../../components/ui': {color: {}, ui: {}, Cover: 'Cover', Icon: 'Icon', Chip: 'Chip'},
@@ -401,8 +401,8 @@ const readerShelf={connection:{label:'Wi-Fi'},preferences:{readerContinuous:true
 const readerNavigation=component('../src/components/use-reader-navigation.ts',{
   'react-native':{AppState:{currentState:'active',addEventListener:(_name,callback)=>{navigationAppEvent=callback;return {remove(){}};}}},
   'expo-router':{router:{replace:route=>readerRoutes.push(route),push:route=>readerRoutes.push({...route,pushed:true})},useFocusEffect:callback=>{readerFocus=callback;}},
-  '../lib/app-state':{useShelf:()=>readerShelf},
-  '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter)},
+  '../lib/app-state':{useShelf:()=>readerShelf,useDownloads:()=>readerShelf.downloads || []},
+  '../lib/storage':{chapterIntact:(_,chapter)=>readerSaved.has(chapter),chapterReadState:()=>({files:[],total:0,complete:false})},
   '../lib/parser':parser,
   './action-sheet':{useActionSheet:()=>(...args)=>readerSheets.push(args)},
   './use-source-retry':{useSourceRetry:()=>()=>{}},
@@ -837,12 +837,13 @@ const chapterView=component('../src/app/reader/[slug]/[chapter].tsx',{
   'react-native':{View:'View',Text:'Text',ScrollView:'ScrollView',ActivityIndicator:'ActivityIndicator',Animated:{},AppState:readerLifecycle},
   'react-native-webview':{WebView:'WebView'},
   'expo-router':{router:{},Stack:{Screen:'Screen'},useFocusEffect:callback=>readerFocusEffects.push(callback)},
-  '../../../lib/storage':{chapterDirectory:()=>({uri:'file:///reader'}),chapterFiles:()=>['file:///1.webp','file:///2.webp'],novelChapter:()=>null,localChapters:()=>['1','2'],chapterIntact:()=>true,readingHistory:()=>readerHistory,savePosition:(...args)=>readerWrites.push(args)},
+  '../../../lib/storage':{chapterReadState:()=>({files:['file:///1.webp','file:///2.webp'],total:2,complete:true}),chapterDirectory:()=>({uri:'file:///reader'}),chapterFiles:()=>['file:///1.webp','file:///2.webp'],novelChapter:()=>null,localChapters:()=>['1','2'],chapterIntact:()=>true,readingHistory:()=>readerHistory,savePosition:(...args)=>readerWrites.push(args)},
   '../../../lib/parser':parser,
   '../../../lib/reader-html':{readerHtml:()=>'<html/>',readerChapterHtml:()=>'<section/>'},
   '../../../lib/reader-controls':{readerControls:null},
   '../../../components/ui':{ui:{},color:{},Icon:'Icon'},
-  '../../../lib/app-state':{useShelf:()=>({preferences:{readerContinuous:true},read:{},catalog:[{...story,chapterIds:['1','2','3']}],saved:{},detailsLoading:[],detailsErrors:{},loadDetails:()=>{},cancelDetails:()=>{},leaveChapter:()=>{},completeChapter:(...args)=>readerCompletions.push(args)})},
+  '../../../lib/app-state':{useDownloads:()=>[],useShelf:()=>({preferences:{readerContinuous:true},read:{},catalog:[{...story,chapterIds:['1','2','3']}],saved:{},detailsLoading:[],detailsErrors:{},loadDetails:()=>{},cancelDetails:()=>{},leaveChapter:()=>{},completeChapter:(...args)=>readerCompletions.push(args)})},
+  '../../../components/download-drawer-context':{useDownloadDrawer:()=>()=>{}},
   '../../../components/action-sheet':{useActionSheet:()=>()=>{}},
   '../../../components/use-reader-navigation':{useReaderNavigation:()=>({prefetch(){}})},
   '../../../components/reader-options':{useReaderConveniences:()=>'',ReaderOptions:'ReaderOptions'},
@@ -975,10 +976,10 @@ notificationPermission={granted:false,status:'undetermined',canAskAgain:true};
 await Promise.all([permissionModule.render('requestReleasePermission',false),permissionModule.render('requestReleasePermission',false)]);
 assert.equal(permissionPrompts,1,'concurrent first downloads share one Android permission request');
 console.log('Single cellular confirmation, shared reader progress, cancellation, notification cleanup and permission deduplication passed');
-const homeChapterRoutes=[], homeReads=[];
+const homeChapterRoutes=[], homeReads=[];let homeCatalogReady=true;
 const resumeShortcut=component('../src/components/reading-shortcut.tsx',{
   'expo-router':{router:{push:route=>homeChapterRoutes.push(route)}},
-  '../lib/app-state':{useShelf:()=>({read:{example:{}}})},
+  '../lib/app-state':{useShelf:()=>({read:{example:{}},catalogReady:homeCatalogReady})},
   '../lib/parser':parser,'../lib/reading-ux':readingUx,
   '../lib/storage':{readingHistory:()=>({example:{chapter:'1',fraction:0}})},
   './use-reader-navigation':{useReaderNavigation:()=>({busy:false,status:'',go:id=>homeReads.push(id)})},
@@ -991,6 +992,11 @@ assert.ok(!nodes(resumeHomeButton).includes(homeChapterButton),'the rightmost ch
 homeChapterButton.props.onPress();assert.equal(homeReads.length,0);
 assert.equal(homeChapterRoutes.at(-1).params.chapters,'1','the shortcut requests the chapter-list anchor');
 resumeHomeButton.props.onPress();assert.deepEqual(homeReads,['1']);
+homeCatalogReady=false;
+const bootNodes=nodes(resumeShortcut.render('ReadingShortcut',{item:{...story,localChapters:undefined},chapter:'1'}));
+assert.ok(bootNodes.some(node=>node.props?.disabled&&node.props?.accessibilityLabel?.startsWith('Checking saved chapter')),'startup waits for local hydration instead of offering an incorrect download');
+assert.ok(!bootNodes.some(node=>node.props?.children==='Download & read'),'a saved chapter never flashes a download action while storage is being checked');
+homeCatalogReady=true;
 console.log('Home Resume label and separate right-aligned chapter-list navigation passed');
 let alertPermission=async()=>true, permissionAllowed=false, notificationPermissionCalls=0, schedulerCalls=0, optionWriteFails=false;
 let alertPrefs={source:'asura',releaseNotifications:false,mobileData:'ask'};
@@ -1105,3 +1111,14 @@ browserVerification.props.onError({nativeEvent:{description:'Connection failed'}
 assert.ok(!verificationNodes().some(node=>node.type==='ActivityIndicator'),'a failed verification page never leaves an endless loading indicator');
 closeVerification();stopVerificationNetwork();
 console.log('Verification focus ownership, late-result rejection and terminal loading feedback passed');
+
+readerShelf.downloads=[{series:{...story,slug:'example'},status:'downloading',chapters:['41'],selection:'41',progress:0}];
+const fetchesBeforeQueuedRead=readerFetches.length;
+const queuedRead=readerNavigation.render('useReaderNavigation','example','Example',undefined,undefined,true);
+const leaveQueuedRead=readerFocus();
+queuedRead.go('41');
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(readerRoutes.at(-1).params.chapter,'41','a queued chapter opens the progressive reader even before its first panel arrives');
+assert.equal(readerFetches.length,fetchesBeforeQueuedRead,'opening queued panels never starts a competing Read now download or holds the queue');
+leaveQueuedRead();readerShelf.downloads=[];
+console.log('Queued chapter reading opens immediately without replacing the active download passed');

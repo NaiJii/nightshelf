@@ -1,4 +1,4 @@
-import { downloadDetail } from "../../lib/download-display";
+import { downloadDetail, queuedChapters } from "../../lib/download-display";
 import { Pressable } from "../../components/pressable";
 import { ExpandableSummary } from "../../components/expandable-summary";
 import { useActionSheet } from "../../components/action-sheet";
@@ -11,7 +11,7 @@ import { Chip, color, Cover, DownloadBadge, DownloadIndicator, Icon, ui } from "
 import { PublicationStatus, SaveActions } from "../../components/story-row";
 import { useDownloadDrawer } from "../../components/download-drawer";
 import { chapterProgress, chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating, selectChapters, resumeTarget } from "../../lib/parser";
-import { chapterIntact, readingHistory } from "../../lib/storage";
+import { chapterIntact, chapterReadState, readingHistory } from "../../lib/storage";
 import { estimateDownload, formatBytes, freeBytes } from "../../lib/library-tools";
 import { useSourceRetry } from "../../components/use-source-retry";
 import { providerInfo } from "../../lib/provider-info";
@@ -185,12 +185,14 @@ export default function SeriesDetails() {
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes. Restricted episodes require WEBTOON." : "No chapters loaded. Pull to refresh.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {
         const isSaved = ownedSet.has(chapter), isRead = Boolean(ledger[chapter]), checked = chosenSet.has(chapter);
+        const pending = Boolean(job && queuedChapters(job).includes(chapter));
+        const readable = isSaved || (pending && chapterReadState(slug, chapter).files.length > 0);
         const progress = isRead ? 1 : Math.min(0.99, chapterProgress(history[slug], chapter));
         const chapterTitle = item.chapterTitles?.[chapter] || `Chapter ${chapter}`;
         return <View style={[ui.row, { position: "relative", overflow: "hidden", gap: 3, borderBottomWidth: 1, borderColor: color.line, backgroundColor: checked || chapter===jumpTarget ? "#8b5cf626" : isSaved ? "#65cba10d" : "transparent", borderLeftWidth: 3, borderLeftColor: isSaved ? "#65cba180" : "transparent" }]}>
           <View pointerEvents="none" accessibilityRole="progressbar" accessibilityLabel={`Chapter ${chapter} reading progress`} accessibilityValue={{ min: 0, max: 100, now: Math.floor(progress * 100) }} style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${progress * 100}%`, backgroundColor: isRead ? "#65cba118" : "#8b5cf61c" }} />
           <Pressable disabled={deleting || locked.has(chapter)} accessibilityRole="checkbox" accessibilityLabel={`Select chapter ${chapter}`} accessibilityState={{ checked }} onPress={() => toggle(chapter)} style={{ padding: 12 }}><Icon name={checked ? "checkbox" : "square-outline"} tint={checked ? color.lilac : color.muted} /></Pressable>
-          <Pressable disabled={deleting} accessibilityLabel={`${chapterTitle}, ${isSaved ? "downloaded" : "not downloaded"}`} accessibilityHint={isSaved ? "Read chapter. Hold for more actions." : locked.has(chapter) ? "Provider access required" : "Select for download. Hold for Read now or Read from here."} onPress={() => isSaved ? open(chapter) : toggle(chapter)} onLongPress={() => chapterActions(chapter)} style={{ flex: 1, paddingVertical: 16 }}><View style={[ui.row, { gap: 7 }]}>{locked.has(chapter)?<Icon name="lock-closed-outline" size={16} tint={color.muted}/>:isSaved && <Icon name="download-outline" size={16} tint="#9de1bf" />}<Text style={[ui.text, { flex: 1, fontWeight: "600", color: isSaved ? "#9de1bf" : color.text }]}>{chapterTitle}</Text></View></Pressable>
+          <Pressable disabled={deleting} accessibilityLabel={`${chapterTitle}, ${isSaved ? "downloaded" : readable ? "ready to start reading" : pending ? "download pending" : "not downloaded"}`} accessibilityHint={readable || pending ? "Read available panels. Hold for more actions." : locked.has(chapter) ? "Provider access required" : "Select for download. Hold for Read now or Read from here."} onPress={() => isSaved ? open(chapter) : pending ? readNow.go(chapter) : toggle(chapter)} onLongPress={() => chapterActions(chapter)} style={{ flex: 1, paddingVertical: 16 }}><View style={[ui.row, { gap: 7 }]}>{locked.has(chapter)?<Icon name="lock-closed-outline" size={16} tint={color.muted}/>:isSaved ? <Icon name="download-outline" size={16} tint="#9de1bf" /> : readable ? <Icon name="play-outline" size={16} tint={color.lilac}/> : null}<Text style={[ui.text, { flex: 1, fontWeight: "600", color: isSaved ? "#9de1bf" : color.text }]}>{chapterTitle}</Text></View></Pressable>
           <View style={{marginLeft:4}}>{!isSaved && <DownloadBadge slug={slug} chapter={chapter}/>}</View><Pressable accessibilityLabel={`Actions for chapter ${chapter}`} onPress={() => chapterActions(chapter)} style={{padding:10,minHeight:44,justifyContent:"center"}}><Icon name="ellipsis-vertical" size={18} tint={color.muted}/></Pressable><Pressable accessibilityRole="checkbox" accessibilityLabel={`Chapter ${chapter} read`} accessibilityState={{ checked: isRead }} onPress={() => { setReadStatus(slug, [chapter], !isRead); setHistory(readingHistory()); }} style={{ padding: 14 }}><Icon name={isRead ? "checkmark-circle" : "checkmark-circle-outline"} tint={isRead ? "#65cba1" : color.muted} /></Pressable>
         </View>;
       }} />

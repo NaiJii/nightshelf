@@ -369,6 +369,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
         if (content.kind !== "images") throw new Error("Expected comic panels.");
         const images = content.assets.map(asset => asset.url);
         if (!images.length) throw new Error(`No public images found for chapter ${chapter.id}`);
+        new File(folder, ".panels.json").write(JSON.stringify({ urls: images }));
         let previous: { urls?: string[]; hashes?: string[] } = {}; try { previous = JSON.parse(marker.textSync()); } catch { /* first download */ }
         batch.push({ id: chapter.id, marker: marker.uri, files: images.map((url, page) => ({ url, target: new File(folder, `${String(page + 1).padStart(3, "0")}${extension(url)}`).uri, original: new File(folder, `.original-${page + 1}`).uri, referer: content.assets[page].referer, agent: content.assets[page].agent, hash: previous.urls?.[page] === url ? previous.hashes?.[page] : undefined })) });
       }
@@ -416,6 +417,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
     if (!images.length) throw new Error(`No public images found for chapter ${chapter.id}`);
     const folder: Directory = chapterDirectory(series.slug, chapter.id);
     folder.create({ idempotent: true, intermediates: true });
+    new File(folder, ".panels.json").write(JSON.stringify({ urls: images }));
     const marker = new File(folder, ".complete");
     let current = false; let savedHashes: (string | undefined)[] = [];
     try { const saved = JSON.parse(marker.textSync()); savedHashes = saved.hashes || []; current = saved.quality === 2 && JSON.stringify(saved.urls) === JSON.stringify(images); } catch { /* legacy chapter */ }

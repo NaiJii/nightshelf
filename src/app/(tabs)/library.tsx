@@ -1,12 +1,12 @@
 import { Pressable } from "../../components/pressable";
 import { useActionSheet } from "../../components/action-sheet";
 import { useCallback, useDeferredValue, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, RefreshControl, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useDownloads, useShelf } from "../../lib/app-state";
 import { readingHistory } from "../../lib/storage";
-import { Chip, color, Cover, DownloadBadge, Icon, PageHeading, ui } from "../../components/ui";
+import { color, Cover, DownloadBadge, Icon, PageHeading, ui } from "../../components/ui";
 import { openSeries } from "../../components/series-card";
 import { PublicationStatus } from "../../components/story-row";
 import { unreadReleases } from "../../lib/release-policy";
@@ -49,26 +49,27 @@ export default function Library() {
     ]);
   }
   const [scope, setScope] = useState<LibraryScope>("downloads");
-  const [updatesOnly, setUpdatesOnly] = useState(false);
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [status, setStatus] = useState<"all" | "unread" | "updates">("all");
+  const updatesOnly = status === "updates", unreadOnly = status === "unread";
   const [list, setList] = useState<ReadingList | "all">("all");
   const [sort, setSort] = useState<"activity" | "updated" | "title">("activity");
   const [history, setHistory] = useState(readingHistory);
   useFocusEffect(useCallback(() => {
     setHistory(readingHistory());
-    if (params.scope === "bookmarked" || params.scope === "autoDownload") setScope(params.scope);
-    if (params.updates) { setUpdatesOnly(params.updates === "1"); setUnreadOnly(false); setList("all"); }
+    if (params.scope === "bookmarked" || params.scope === "autoDownload") { setScope(params.scope); setStatus("all"); setList("all"); setQuery(""); }
+    if (params.updates) { setStatus(params.updates === "1" ? "updates" : "all"); setList("all"); }
     if (params.scope || params.updates) router.setParams({ scope: undefined, updates: undefined });
   }, [params.scope, params.updates]));
   const updateCount = useCallback((slug: string, available?: string[]) => saved[slug]?.bookmarked ? unreadReleases(updates[slug], read[slug], available).length : 0, [saved, updates, read]);
   const scopeCounts = useMemo(() => libraryScopeCounts(catalog, saved), [catalog, saved]);
   const scoped = useMemo(() => catalog.filter(item => matchesStoryQuery(item, term) && inLibraryScope(item, saved[item.slug], scope)), [catalog, saved, scope, term]);
-  const hasUnread = (item: Series) => item.localChapters?.some(id => !read[item.slug]?.[id]);
-  const matchesList = (item: Series) => list === "all" || saved[item.slug]?.list === list;
-  const updatedStories = scoped.filter(item => matchesList(item) && (!unreadOnly || hasUnread(item)) && updateCount(item.slug, item.chapterIds) > 0).length;
-  const unreadStories = scoped.filter(item => matchesList(item) && (!updatesOnly || updateCount(item.slug, item.chapterIds) > 0) && hasUnread(item)).length;
   const library = useMemo(() => scoped.filter(item => (!updatesOnly || updateCount(item.slug, item.chapterIds) > 0) && (list === "all" || saved[item.slug]?.list === list) && (!unreadOnly || item.localChapters?.some(id => !read[item.slug]?.[id]))).sort((a, b) => sort === "title" ? a.title.localeCompare(b.title) : (Date.parse(sort === "updated" ? b.updatedAt || "" : history[b.slug]?.readAt || b.syncedAt || "") || 0) - (Date.parse(sort === "updated" ? a.updatedAt || "" : history[a.slug]?.readAt || a.syncedAt || "") || 0)), [scoped, saved, read, updateCount, updatesOnly, unreadOnly, list, sort, history]);
   const filtered = Boolean(term) || updatesOnly || unreadOnly || list !== "all";
+  function clearFilters() { setStatus("all"); setList("all"); setQuery(""); }
+  function changeScope(value: LibraryScope) { setScope(value); clearFilters(); }
+  const scopeTitle = { downloads: "Downloads", bookmarked: "Bookmarks", autoDownload: "Auto-downloads", liked: "Liked", lists: "Reading lists" }[scope];
+  const statusTitle = { all: "All stories", unread: "Unread chapters", updates: "New releases" }[status];
+  const sortTitle = { activity: "Recent activity", updated: "Recently updated", title: "Title" }[sort];
   function showActions(item: Series) {
     showSheet(item.title, "Manage the chapters saved on this phone.", [
       { text: "Saved chapters", onPress: () => router.push({ pathname: "/series/[slug]", params: { slug: item.slug, filter: "downloaded" } }) },
@@ -82,19 +83,23 @@ export default function Library() {
       { text: "Cancel", style: "cancel" },
     ]);
   }
-  return <SafeAreaView edges={["top"]} style={ui.safe}><FlatList keyboardDismissMode="on-drag"
+  return <SafeAreaView edges={["top"]} style={ui.safe}><FlatList style={{flex:1}} keyboardDismissMode="on-drag" removeClippedSubviews={false}
     data={library} keyExtractor={item => item.slug} initialNumToRender={8} maxToRenderPerBatch={8} windowSize={5}
     contentContainerStyle={{ paddingBottom: 26 }} keyboardShouldPersistTaps="handled"
     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void sync()} tintColor={color.lilac} colors={[color.purple]} />}
     ListHeaderComponent={<><PageHeading title="Your library" subtitle="SAVED FOR YOU" action={<Pressable accessibilityLabel={selecting ? "Finish selecting stories" : "Select stories"} disabled={bulkBusy} onPress={() => { setSelecting(value => !value); setSelected([]); }} style={{padding:12}}><Icon name={selecting ? "close" : "checkbox-outline"} tint={color.lilac} /></Pressable>} /><View style={{ paddingHorizontal: 22 }}>
     <View style={[ui.row,{backgroundColor:color.surface,borderRadius:12,paddingHorizontal:12,marginBottom:12}]}><Icon name="search-outline" tint={color.muted} size={19}/><TextInput accessibilityLabel="Search your library" value={query} onChangeText={setQuery} placeholder="Search your library…" placeholderTextColor={color.muted} style={{flex:1,color:color.text,height:48}}/>{query ? <Pressable accessibilityLabel="Clear library search" onPress={()=>setQuery("")} style={{padding:10}}><Icon name="close" size={17}/></Pressable>:null}</View>
     {bulkMessage ? <Text accessibilityLiveRegion="polite" style={ui.muted}>{bulkMessage}</Text>:null}
-    <View accessibilityRole="tablist" style={[ui.row, { gap: 0, borderBottomWidth: 1, borderColor: color.line }]}>{([["downloads", "Downloads", "download"], ["bookmarked", "Bookmarks", "bookmark"], ["autoDownload", "Auto-downloads", "cloud-download"], ["liked", "Liked", "heart"], ["lists", "Lists", "list"]] as const).map(([key, label, icon]) => <Pressable key={key} accessibilityRole="tab" accessibilityLabel={`${label}, ${scopeCounts[key]} ${scopeCounts[key] === 1 ? "story" : "stories"}`} accessibilityState={{ selected: scope === key }} onLongPress={() => showSheet(label, `${scopeCounts[key]} stories`)} onPress={() => setScope(key)} style={{ flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 3, paddingVertical: 9, borderBottomWidth: 2, borderColor: scope === key ? color.lilac : "transparent" }}><Icon name={scope === key ? icon : `${icon}-outline`} size={21} tint={scope === key ? color.lilac : color.muted} /><Text style={{ color: scope === key ? color.lilac : color.muted, fontSize: 10 }}>{scopeCounts[key]}</Text></Pressable>)}</View>
-    <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: updatesOnly }} onPress={() => setUpdatesOnly(value => !value)} style={[ui.row, { paddingVertical: 15, gap: 7, alignSelf: "flex-start" }]}><Icon name={updatesOnly ? "sparkles" : "sparkles-outline"} tint={color.lilac} size={16} /><Text style={{ color: updatesOnly ? color.lilac : color.muted, fontSize: 12 }}>Updates · {updatedStories}</Text></Pressable>
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingBottom: 12 }}><Chip text="All lists" active={list === "all"} onPress={() => setList("all")} />{READING_LISTS.map(([key, text]) => <Chip key={key} text={text} active={list === key} onPress={() => setList(key)} />)}</ScrollView>
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingBottom: 14 }}><Chip text={`Unread · ${unreadStories}`} active={unreadOnly} onPress={() => setUnreadOnly(value => !value)} />{([["activity", "Recent activity"], ["updated", "Recently updated"], ["title", "Title"]] as const).map(([key, text]) => <Chip key={key} text={text} active={sort === key} onPress={() => setSort(key)} />)}</ScrollView>
+    <View accessibilityRole="tablist" style={[ui.row, { gap: 0, borderBottomWidth: 1, borderColor: color.line }]}>{([["downloads", "Downloads", "download"], ["bookmarked", "Bookmarks", "bookmark"], ["autoDownload", "Auto-downloads", "cloud-download"], ["liked", "Liked", "heart"], ["lists", "Lists", "list"]] as const).map(([key, label, icon]) => <Pressable key={key} accessibilityRole="tab" accessibilityLabel={`${label}, ${scopeCounts[key]} ${scopeCounts[key] === 1 ? "story" : "stories"}`} accessibilityState={{ selected: scope === key }} onLongPress={() => showSheet(label, `${scopeCounts[key]} stories`)} onPress={() => changeScope(key)} style={{ flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 3, paddingVertical: 9, borderBottomWidth: 2, borderColor: scope === key ? color.lilac : "transparent" }}><Icon name={scope === key ? icon : `${icon}-outline`} size={21} tint={scope === key ? color.lilac : color.muted} /><Text style={{ color: scope === key ? color.lilac : color.muted, fontSize: 10 }}>{scopeCounts[key]}</Text></Pressable>)}</View>
+    <View style={[ui.row,{justifyContent:"space-between",paddingVertical:10,gap:6}]}>
+      <View style={{flex:1}}><Text style={[ui.text,{fontSize:14,fontWeight:"700"}]}>{scopeTitle}</Text><Text accessibilityLiveRegion="polite" style={[ui.muted,{fontSize:11,marginTop:3}]}>{!catalogReady ? "Checking saved files…" : filtered ? `${library.length} of ${scopeCounts[scope]} stories` : `${library.length} stories`}</Text></View>
+      <Pressable accessibilityLabel={`Filter: ${statusTitle}`} onPress={() => showSheet("Show stories", undefined, ([["all","All stories"],["unread","Unread chapters"],["updates","New releases"]] as const).map(([key,text])=>({text,selected:status===key,onPress:()=>setStatus(key)})))} style={[ui.row,{minHeight:44,paddingHorizontal:10,gap:5}]}><Icon name="filter-outline" tint={status!=="all"?color.lilac:color.muted} size={17}/><Text style={{color:status!=="all"?color.lilac:color.muted,fontSize:11}}>{status==="all"?"Filter":statusTitle}</Text></Pressable>
+      <Pressable accessibilityLabel={`Sort: ${sortTitle}`} onPress={() => showSheet("Sort stories", undefined, ([["activity","Recent activity"],["updated","Recently updated"],["title","Title"]] as const).map(([key,text])=>({text,selected:sort===key,onPress:()=>setSort(key)})))} style={{minHeight:44,paddingHorizontal:10,justifyContent:"center"}}><Icon name="swap-vertical-outline" tint={color.muted} size={18}/></Pressable>
+      {filtered && <Pressable accessibilityLabel="Clear library filters" onPress={clearFilters} style={{minHeight:44,paddingHorizontal:10,justifyContent:"center"}}><Icon name="close-circle-outline" tint={color.lilac} size={20}/></Pressable>}
+    </View>
+    {scope==="lists" && <Pressable accessibilityLabel="Choose reading list" onPress={()=>showSheet("Reading list",undefined,[{text:"All lists",selected:list==="all",onPress:()=>setList("all")},...READING_LISTS.map(([key,text])=>({text,selected:list===key,onPress:()=>setList(key)}))])} style={[ui.row,{paddingVertical:10,gap:8}]}><Icon name="list-outline" tint={color.lilac} size={17}/><Text style={[ui.text,{fontSize:12}]}>{READING_LISTS.find(([key])=>key===list)?.[1] || "All lists"}</Text><Icon name="chevron-down" tint={color.muted} size={13}/></Pressable>}
 </View></>}
-    ListEmptyComponent={<View style={{ alignItems: "center", paddingHorizontal: 22, paddingVertical: 70 }}><Icon name={scope === "autoDownload" ? "cloud-download-outline" : scope === "downloads" ? "download-outline" : scope === "liked" ? "heart-outline" : "bookmark-outline"} tint={color.lilac} size={40} /><Text style={[ui.empty, { textAlign: "center" }]}>{!catalogReady ? "Loading your library…" : filtered ? "No stories match these filters." : scope === "autoDownload" ? "Enable the cloud-download icon on a story." : scope === "downloads" ? "Save a story’s chapters to read anywhere." : "Save stories from their detail page. They’ll appear here."}</Text>{filtered && <Pressable onPress={() => { setUpdatesOnly(false); setUnreadOnly(false); setList("all"); setQuery(""); }} style={[ui.primary, { marginTop: 16 }]}><Text style={ui.primaryText}>Clear filters</Text></Pressable>}</View>}
+    ListEmptyComponent={<View style={{ alignItems: "center", paddingHorizontal: 22, paddingVertical: 70 }}><Icon name={scope === "autoDownload" ? "cloud-download-outline" : scope === "downloads" ? "download-outline" : scope === "liked" ? "heart-outline" : "bookmark-outline"} tint={color.lilac} size={40} /><Text style={[ui.empty, { textAlign: "center" }]}>{!catalogReady ? "Loading your library…" : filtered ? "No stories match these filters." : scope === "autoDownload" ? "Enable the cloud-download icon on a story." : scope === "downloads" ? "Save a story’s chapters to read anywhere." : "Save stories from their detail page. They’ll appear here."}</Text>{filtered && <Pressable onPress={clearFilters} style={[ui.primary, { marginTop: 16 }]}><Text style={ui.primaryText}>Clear filters</Text></Pressable>}</View>}
     renderItem={({ item }) => {
       const chapters = item.localChapters || [];
       const last = history[item.slug];

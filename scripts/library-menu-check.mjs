@@ -11,7 +11,7 @@ let busy = false, cursor = 0; const slots=[];
 const story = { slug: "example", title: "Example", hasLocalFiles: true, localChapters: ["1"] };
 const edits=[];
 const bulkEdits=[];
-const shelf = { setStoriesOptions:(slugs,change)=>{bulkEdits.push([slugs,change]);edits.push(...slugs.map(slug=>[slug,change]));},setStoryOptions:(...args)=>edits.push(args),pauseDownload:()=>{}, catalog: [story], saved: {}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
+const shelf = { catalogReady:true, setStoriesOptions:(slugs,change)=>{bulkEdits.push([slugs,change]);edits.push(...slugs.map(slug=>[slug,change]));},setStoryOptions:(...args)=>edits.push(args),pauseDownload:()=>{}, catalog: [story], saved: {}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
 const element = (type, props) => ({ type, props });
 const modules = {
   "react/jsx-runtime": { jsx: element, jsxs: element },
@@ -52,9 +52,14 @@ const bookmarkTab=libraryTabs.find(node=>node.props.accessibilityLabel.startsWit
 bookmarkTab.props.onPress();
 assert.ok(nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).some(node=>node.props?.accessibilityRole==='tab'&&node.props.accessibilityLabel.startsWith('Bookmarks,')&&node.props.accessibilityState.selected),'icon tabs still switch library scope');
 countedTab.props.onPress();
-assert.ok(nodes(list.props.ListHeaderComponent).some(node=>node.type==='Chip'&&node.props.text==='Unread · 1'),'Unread counts stories with unread saved chapters');
+let activeList=nodes(render()).find(node=>node.type==='FlatList');
+nodes(activeList.props.ListHeaderComponent).find(node=>node.props?.accessibilityLabel==='Filter: All stories').props.onPress();
+alerts.at(-1)[2].find(action=>action.text==='Unread chapters').onPress();
+assert.equal(nodes(render()).find(node=>node.type==='FlatList').props.data.length,1,'Unread shows stories with unread saved chapters');
 shelf.read={example:{'1':'read'}};
-assert.ok(nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).some(node=>node.type==='Chip'&&node.props.text==='Unread · 0'),'counts update immediately when read status changes');
+assert.equal(nodes(render()).find(node=>node.type==='FlatList').props.data.length,0,'read status updates filtered membership immediately');
+countedTab.props.onPress();
+assert.equal(nodes(render()).find(node=>node.type==='FlatList').props.data.length,1,'choosing a category clears hidden status filters');
 shelf.read={};
 
 assert.ok(!nodes(list.props.ListHeaderComponent).some(node => node.type === "DownloadList"), "queue controls live in the shared drawer rather than expanding the library header");

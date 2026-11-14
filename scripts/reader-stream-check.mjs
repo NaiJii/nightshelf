@@ -199,3 +199,34 @@ assert.equal(caughtUp.ending.children[2]['aria-pressed'],'true');
 assert.equal(caughtUp.ending.children[4].disabled,true,'pending checks disable duplicate refreshes');
 assert.ok(!caughtUp.messages.some(message=>message.complete),'a caught-up card does not mark unseen panels as read');
 console.log('Transition label, caught-up controls and pending-update feedback checks passed');
+
+// Growing a chapter must preserve the mounted panel nodes and stop showing the
+// waiting footer only once the writer commits the complete chapter.
+const incrementalScript=readerHtml([],0,null,19,'dark','1',false).match(/<script>([\s\S]*?)<\/script>/)[1];
+const updateCode=incrementalScript.slice(incrementalScript.indexOf('function setDownloadState('),incrementalScript.indexOf('function keepReaderAnchor('));
+const firstPanel={src:'file:///1.webp'}, panelNodes=[firstPanel];
+const pendingLabel={textContent:''}, pendingTail={hidden:false,querySelector:()=>pendingLabel};
+const endingLabel={hidden:true};
+const growingNode={dataset:{chapter:'1',complete:'false'},
+ querySelector:selector=>selector==='.end'?endingLabel:selector==='.download-tail'?pendingTail:null,
+ querySelectorAll:()=>panelNodes,
+ insertBefore:panel=>panelNodes.push(panel)};
+const growingWindow={readerUpdateControls(){}};
+const growingContext=vm.createContext({window:growingWindow,chapterHost:{},chapterRoot:growingNode,images:panelNodes,pendingPanelRestore:undefined,
+ sectionFor:()=>growingNode,document:{createElement:()=>({
+  set innerHTML(content){this.panels=[...content.matchAll(/src="([^"]+)"/g)].map(match=>({src:match[1]}));},
+  querySelector:()=>null,querySelectorAll(){return this.panels;}})}});
+vm.runInContext(updateCode,growingContext);
+growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp','file:///2.webp']),false,3);
+assert.equal(panelNodes.length,2);assert.equal(panelNodes[0],firstPanel,'new panels are appended without replacing already displayed panels');
+assert.equal(pendingTail.hidden,false);assert.match(pendingLabel.textContent,/2\/3/);
+growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp','file:///2.webp','file:///3.webp']),true,3);
+assert.equal(panelNodes.length,3);assert.equal(pendingTail.hidden,true);assert.equal(endingLabel.hidden,false);
+const incomplete=session();incomplete.root().dataset.complete='false';incomplete.scroll(1240);incomplete.settle();
+assert.ok(!incomplete.messages.some(message=>message.complete),'the temporary end of available panels never completes an unfinished download');
+incomplete.root().dataset.complete='true';incomplete.report();
+assert.ok(incomplete.messages.some(message=>message.complete),'the actual end can complete only after the download is committed');
+const panelResume=session();
+panelResume.window.readerRestorePanel('3',{index:1,offset:0.2});
+assert.equal(panelResume.y(),1200,'panel anchors restore within the actual panel rather than using an outdated chapter-height fraction');
+console.log('Progressive panel append, stable mounted images, waiting indicators and incomplete read protection passed');

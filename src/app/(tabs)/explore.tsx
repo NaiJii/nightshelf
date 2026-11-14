@@ -95,6 +95,7 @@ export function ExploreResults({ provider }: { provider: string }) {
       busy.current = false; setIds(cached?.ids || null); setHasMore(more.current); setError("");
       if (shortQuery) { more.current = false; setHasMore(false); setRefreshing(false); }
       else if (!cached || refresh) void loadMore(refresh);
+      else { setLoading(false); setRefreshing(false); }
     }, 0);
     return () => { clearTimeout(timer); saveSession(); generation.current = version + 1; controller.current?.abort(); };
   }, [loadMore, reload, sessionKey, saveSession, shortQuery]);
@@ -136,13 +137,13 @@ export function ExploreResults({ provider }: { provider: string }) {
     </>}
     ListEmptyComponent={loading || waitingForCatalog ? <View accessibilityLabel="Loading story previews" style={{ padding: 22, gap: 18 }}>{[0, 1, 2].map(index => <View key={index} style={{ height: 160, backgroundColor: color.surface, borderRadius: 16 }} />)}</View> : !hasMore ? <Text style={[ui.empty, { paddingHorizontal: 22 }]}>Nothing matches these filters. Try adjusting them.</Text> : null}
     ListFooterComponent={<View style={{ paddingHorizontal: 22, paddingVertical: 20, alignItems: "center", gap: 10 }}>
-      {loading ? <View accessibilityLiveRegion="polite" style={ui.row}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>{ids === null ? "Finding stories…" : "Loading more stories…"}</Text></View> : <>
+      {loading || waitingForCatalog ? <View accessibilityLiveRegion="polite" style={ui.row}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>{waitingForCatalog ? "Loading previews…" : ids === null ? "Finding stories…" : "Loading more stories…"}</Text></View> : <>
         {error ? <Text style={[ui.muted, { textAlign: "center" }]}>{error}</Text> : null}
         {info.verification && needsVerification(error) && <Pressable onPress={verify} style={[ui.primary, { minWidth: 160 }]}><Text style={ui.primaryText}>Verify and retry</Text></Pressable>}
         {error && hasMore ? <Pressable accessibilityLabel="Retry loading titles" onPress={() => void loadMore(true)} style={[ui.chip, { minWidth: 160, alignItems: "center" }]}><Text style={{ color: color.lilac }}>Retry</Text></Pressable> : !hasMore ? <Text style={ui.muted}>{preferences.sort === "trending" && !debounced ? "End of this ranking" : "You’ve reached the end"}</Text> : null}
       </>}
     </View>}
-  /></SafeAreaView>;
+  />{Boolean(ids?.length) && (loading || waitingForCatalog) && <View pointerEvents="none" accessibilityLiveRegion="polite" style={[ui.row,{position:"absolute",bottom:14,alignSelf:"center",backgroundColor:color.surface,borderWidth:1,borderColor:color.line,borderRadius:18,paddingHorizontal:14,paddingVertical:10,gap:8}]}><ActivityIndicator size="small" color={color.lilac}/><Text style={[ui.muted,{fontSize:12}]}>{waitingForCatalog ? "Loading previews…" : "Loading more…"}</Text></View>}</SafeAreaView>;
 }
 
 
