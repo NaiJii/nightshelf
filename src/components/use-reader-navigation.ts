@@ -9,7 +9,7 @@ import { useActionSheet } from "./action-sheet";
 import { needsVerification } from "../lib/provider-errors";
 import { sourceOf } from "../lib/parser";
 
-export function useReaderNavigation(slug: string, title: string | undefined, next: string | undefined, transition?: string, push = false, onOpen?: (chapter: string, previous: boolean) => void, afterNext?: string) {
+export function useReaderNavigation(slug: string, title: string | undefined, next: string | undefined, transition?: string, push = false, onOpen?: (chapter: string, previous: boolean) => void, afterNext?: string, readingChapter?: string) {
   const { preferences, fetchReaderChapter, connection, read, catalog } = useShelf();
   const downloads = useDownloads(true);
   const canRead = (target: string) => chapterIntact(slug, target) || chapterReadState(slug, target).files.length > 0 || downloads.some(job => job.series.slug === slug && ["queued", "downloading", "waiting"].includes(job.status) && queuedChapters(job).includes(target));
@@ -110,14 +110,24 @@ export function useReaderNavigation(slug: string, title: string | undefined, nex
     return (async () => {
       for (const target of [next, afterNext]) {
         if (!target || !ahead.current.includes(target) || !active.current || version !== generation.current || navigating.current || AppState.currentState !== "active") break;
-        if (!chapterIntact(slug, target)) await fetchChapter(target, true);
+        if (!canRead(target)) await fetchChapter(target, true);
         if (active.current && version === generation.current) prepared?.(target);
       }
       return next;
-    })().catch(() => { if (attempted.current === key) retryPrefetchAt.current = Date.now() + 30000; return undefined; });
+    })().catch(() => { if (version === generation.current && attempted.current === key) retryPrefetchAt.current = Date.now() + 30000; return undefined; });
   }
-  async function cancel() { const pending = request.current; pending?.controller.abort(); await pending?.promise.catch(()=>{}); }
+  const cancel = useCallback(async () => {
+    generation.current++; navigating.current = false;
+    setBusy(false); setStatus(""); setVerification(null);
+    const pending = request.current; pending?.controller.abort(); await pending?.promise.catch(()=>{});
+  }, []);
   const story = catalog?.find(item => item.slug === slug);
   const verify = useSourceRetry(() => { if (verification) void open(verification.target, verification.automatic, verification.previous); }, story ? sourceOf(story) : undefined);
+  const context = useRef(readingChapter);
+  useEffect(() => {
+    if (context.current === readingChapter) return;
+    context.current = readingChapter;
+    void cancel(); attempted.current = ""; retryPrefetchAt.current = 0;
+  }, [readingChapter, cancel]);
   return { go, prefetch, status, busy, progress, cancel, verify, needsVerification: Boolean(verification), clearStatus: () => setStatus("") };
 }

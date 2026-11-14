@@ -104,6 +104,12 @@ try {
   new File(partial,'.complete').write(JSON.stringify({quality:2,urls:planUrls}));
   assert.equal(storage.chapterReadState('example','3').complete,true,'completion becomes visible after the writer commits its manifest');
   new File(partial,'.complete').delete();
+  const racingFolder=storage.chapterDirectory('deletion-race','1');racingFolder.create();
+  const listBeforeRace=Directory.prototype.list;
+  try {
+    Directory.prototype.list=function(){if(this.uri===racingFolder.uri){this.delete();throw Error('Directory removed during scan');}return listBeforeRace.call(this);};
+    assert.deepEqual(storage.chapterReadState('deletion-race','1'),{files:[],total:0,complete:false},'cancel-and-delete during a reader scan yields an empty state rather than crashing');
+  } finally {Directory.prototype.list=listBeforeRace;}
   const outside = new File(testRoot, "keep.txt"); outside.write("keep");
   const cover = new File(storage.COVERS, "example.webp"); cover.write("cover");
   storage.toggleSaved("example", "bookmarked"); storage.toggleSaved("example", "liked");

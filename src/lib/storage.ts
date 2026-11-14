@@ -254,33 +254,35 @@ export function chapterFiles(slug: string, chapter: string, includeMissing = fal
 
 /** Only publish an ordered prefix of committed panels; .part files are never readable. */
 export function chapterReadState(slug: string, chapter: string): { files: string[]; total: number; complete: boolean } {
-  const folder = chapterDirectory(slug, chapter);
-  if (!folder.exists) return { files: [], total: 0, complete: false };
-  if (new File(folder, ".complete").exists) {
-    const files = chapterFiles(slug, chapter, true);
-    return { files, total: files.length, complete: chapterIntact(slug, chapter) };
-  }
   try {
-    const plan = JSON.parse(new File(folder, ".panels.json").textSync());
-    if (Array.isArray(plan.urls) && plan.urls.every((url: unknown) => typeof url === "string")) {
-      const files: string[] = [];
-      for (const [index, url] of (plan.urls as string[]).entries()) {
-        const ext = new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp";
-        const file = new File(folder, `${String(index + 1).padStart(3, "0")}${ext}`);
-        if (!file.exists || !file.size) break;
-        try { if (new File(folder, `.original-${index + 1}`).textSync() !== url) break; } catch { break; }
-        files.push(file.uri);
-      }
-      return { files, total: plan.urls.length, complete: false };
+    const folder = chapterDirectory(slug, chapter);
+    if (!folder.exists) return { files: [], total: 0, complete: false };
+    if (new File(folder, ".complete").exists) {
+      const files = chapterFiles(slug, chapter, true);
+      return { files, total: files.length, complete: chapterIntact(slug, chapter) };
     }
-  } catch { /* Older partial downloads can still expose their committed prefix. */ }
-  const files = chapterFiles(slug, chapter);
-  const prefix: string[] = [];
-  for (const [index, uri] of files.entries()) {
-    if (Number(uri.split("/").at(-1)?.split(".")[0]) !== index + 1) break;
-    prefix.push(uri);
-  }
-  return { files: prefix, total: prefix.length, complete: false };
+    try {
+      const plan = JSON.parse(new File(folder, ".panels.json").textSync());
+      if (Array.isArray(plan.urls) && plan.urls.every((url: unknown) => typeof url === "string")) {
+        const files: string[] = [];
+        for (const [index, url] of (plan.urls as string[]).entries()) {
+          const ext = new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp";
+          const file = new File(folder, `${String(index + 1).padStart(3, "0")}${ext}`);
+          if (!file.exists || !file.size) break;
+          try { if (new File(folder, `.original-${index + 1}`).textSync() !== url) break; } catch { break; }
+          files.push(file.uri);
+        }
+        return { files, total: plan.urls.length, complete: false };
+      }
+    } catch { /* Older partial downloads can still expose their committed prefix. */ }
+    const files = chapterFiles(slug, chapter);
+    const prefix: string[] = [];
+    for (const [index, uri] of files.entries()) {
+      if (Number(uri.split("/").at(-1)?.split(".")[0]) !== index + 1) break;
+      prefix.push(uri);
+    }
+    return { files: prefix, total: prefix.length, complete: false };
+  } catch { return { files: [], total: 0, complete: false }; } // A cancellation can remove the folder during a scan.
 }
 
 

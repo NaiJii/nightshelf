@@ -11,7 +11,7 @@ import { readerChapterHtml, readerHtml } from "../../../lib/reader-html";
 import { color, Icon, ui } from "../../../components/ui";
 import { useDownloads, useShelf } from "../../../lib/app-state";
 import { useDownloadDrawer } from "../../../components/download-drawer-context";
-import { queuedChapters } from "../../../lib/download-display";
+import { chapterDownloadStatus, queuedChapters } from "../../../lib/download-display";
 import { useActionSheet } from "../../../components/action-sheet";
 import { useReaderNavigation } from "../../../components/use-reader-navigation";
 import { ReaderOptions, useReaderConveniences } from "../../../components/reader-options";
@@ -48,7 +48,7 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   const local = chapterState.chapter === chapter ? chapterState : chapterReadState(slug, chapter);
   const files = local.files;
   const novel = useMemo(() => local.complete ? novelChapter(slug, chapter) : null, [slug, chapter, local.complete]);
-  const { preferences, updatePreferences, read, completeChapter, setReadStatus, catalog, loadDetails, cancelDetails, fetchReaderChapter, leaveChapter, saved, toggleStory, setStoryOptions, setStoryNotifications, detailsLoading, detailsErrors } = useShelf();
+  const { preferences, updatePreferences, read, completeChapter, setReadStatus, catalog, loadDetails, cancelDetails, fetchReaderChapter, leaveChapter, saved, toggleStory, setStoryOptions, setStoryNotifications, detailsLoading, detailsErrors, startDownload } = useShelf();
   const showSheet = useActionSheet();
   const downloads = useDownloads(true);
   const showDownloads = useDownloadDrawer();
@@ -92,9 +92,7 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
   const attach = useCallback((id: string) => {
     const state = chapterReadState(slug, id), text = novelChapter(slug, id);
     if (!state.files.length && !text && !downloads.some(job => job.series.slug === slug && queuedChapters(job).includes(id))) return;
-    const signature = JSON.stringify([state, text]);
-    if (loading.current || published.current.get(id) === signature) return;
-    published.current.set(id, signature);
+    if (loading.current) return;
     const content = readerChapterHtml(state.files, text);
     web.current?.injectJavaScript(`window.readerAttachChapter?.(${JSON.stringify(id)},${JSON.stringify(content)},${state.complete},${state.total});true;`);
   }, [slug, downloads]);
@@ -106,7 +104,7 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
     pendingOpen.current = { chapter: id, end };
     web.current?.injectJavaScript(`window.readerOpenChapter?.(${JSON.stringify(id)},${end});true;`);
     attach(id);
-  }, chapters[index + 2]);
+  }, chapters[index + 2], chapter);
   const syncNeighbors = () => {
     web.current?.injectJavaScript(`window.readerSetNeighbors?.(${JSON.stringify(preferences.readerContinuous ? [previous, next] : [])},${preferences.readerContinuous});true;`);
     if (preferences.readerContinuous) {
@@ -115,8 +113,7 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
     }
   };
   useEffect(syncNeighbors, [attach, previous, next, preferences.readerContinuous, item?.localChapters]);
-  const downloadStatus = downloads.find(job => job.series.slug === slug)?.status || "paused";
-  const downloadStatusScript = `window.readerSetDownloadStatus?.(${JSON.stringify(chapter)},${JSON.stringify(downloadStatus)});true;`;
+  const downloadStatusScript = [...new Set([chapter, previous, next].filter((id): id is string => Boolean(id)))].map(id => `window.readerSetDownloadStatus?.(${JSON.stringify(id)},${JSON.stringify(chapterDownloadStatus(downloads, slug, id))});`).join("") + "true;";
   useEffect(() => { web.current?.injectJavaScript(downloadStatusScript); }, [downloadStatusScript]);
   // Watch the current chapter only while incomplete or while this story is queued.
   // Existing panels stay mounted; new committed panels are appended in place.
@@ -207,7 +204,14 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
       onMessage={event => {
         try {
           const data = JSON.parse(event.nativeEvent.data);
-          if (data.downloadPending && focused.current) { showDownloads(); return; }
+          if (data.downloadPending && focused.current) {
+            const id = typeof data.chapter === "string" ? data.chapter : currentChapter.current;
+            if (downloads.some(job => job.series.slug === slug)) showDownloads();
+            else if (item?.chapterIds?.includes(id)) showSheet("Continue downloading?", "Saved panels stay readable. Download the remaining panels using your current connection settings.", [
+              { text: "Cancel", style: "cancel" }, { text: "Continue download", onPress: () => startDownload(item, id) },
+            ]);
+            return;
+          }
           if (loading.current && (Number.isFinite(data.fraction) || data.activeChapter)) return;
           if (data.ending && focused.current && AppState.currentState === "active") {
             if (data.ending === "refresh") void loadDetails(slug, true);
@@ -221,12 +225,14 @@ function ChapterReader({ slug, chapter: initialChapter, title, entry, transition
           }
           if (typeof data.activeChapter === "string" && chapters.includes(data.activeChapter) && focused.current && AppState.currentState === "active") {
             const id = data.activeChapter;
+            void navigation.cancel();
             flushProgress();
             currentChapter.current = id; visited.current.add(id); pendingOpen.current = null;
             setChapter(id); setPage(1); setIntact(chapterIntact(slug, id)); setError("");
             return;
           }
           if (typeof data.attachedChapter === "string") {
+            published.current.delete(data.attachedChapter);
             const pending = pendingOpen.current;
             if (pending && pending.chapter === data.attachedChapter && focused.current) web.current?.injectJavaScript(pending.fraction === undefined ? `window.readerOpenChapter?.(${JSON.stringify(pending.chapter)},${pending.end});true;` : `window.readerRestorePosition?.(${JSON.stringify(pending.chapter)},${pending.fraction});true;`);
             return;

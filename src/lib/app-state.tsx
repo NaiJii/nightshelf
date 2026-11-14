@@ -99,7 +99,9 @@ function useAppState() {
     else setNotice(message);
   }, []);
 
-  const readerFetches = useRef(new Map<string, { chapter: string; page?: number; signal: AbortSignal; promise: Promise<void> }>());
+  const readerFetches = useRef(new Map<string, { chapter: string; page?: number; signal: AbortSignal; abort: () => void; promise: Promise<void> }>());
+  const stoppingReaders = useRef(new Set<string>());
+  const downloadIntents = useRef(new Map<string, number>());
   const lastQueueSave = useRef({ at: 0, state: "" });
   const [queue] = useState(() => new DownloadQueue(restoredDownloads(loadDownloads()), async (job, signal, progress, plan) => {
     try {
@@ -143,10 +145,32 @@ function useAppState() {
   }, slug => deleteChapters(slug, [], true), () => AppState.currentState === "active" || Boolean(backgroundTransfers?.serviceRunning()), loadDownloads));
   const queuedDownloadBusy = useCallback((slug?: string) => queue.isBusy(slug) || queue.jobs.some(job => job.readerHeld && (!slug || job.series.slug === slug)) || Object.entries(transferStates(slug)).some(([id, value]) => (value.active || (value.hasPlan && ["queued", "waiting", "running", "preparing"].includes(value.state))) && (!slug || id === slug)), [queue]);
   const downloadBusy = useCallback((slug?: string) => (slug ? readerFetches.current.has(slug) : readerFetches.current.size > 0) || queuedDownloadBusy(slug), [queuedDownloadBusy]);
-  const pauseDownload = useCallback((slug: string) => { if (cancelReaderTransfer(slug)) return; const origin = noticeScope.current; queue.pause(slug); void backgroundTransfers?.pause(slug).catch(error => showFailure(error, origin)); }, [queue, showFailure]);
+  const pauseDownload = useCallback((slug: string) => { downloadIntents.current.set(slug, (downloadIntents.current.get(slug) || 0) + 1); queue.pause(slug); readerFetches.current.get(slug)?.abort(); cancelReaderTransfer(slug); const origin = noticeScope.current; void backgroundTransfers?.pause(slug).catch(error => showFailure(error, origin)); }, [queue, showFailure]);
   const moveDownload = useCallback((slug: string, direction: -1 | 1) => queue.move(slug, direction), [queue]);
-  const resumeDownload = useCallback((slug: string) => { if (deleteLock.current || readerFetches.current.has(slug)) { setNotice("Wait for the reader download or deletion to finish before resuming downloads."); return; } const origin = noticeScope.current; void stopTransfer(slug).then(() => queue.resume(slug)).catch(error => showFailure(error, origin)); }, [queue, showFailure]);
-  const cancelDownload = useCallback(async (slug: string, deleteFiles = false) => { if (deleteFiles && readerFetches.current.has(slug)) { setNotice("Cancel the reader download before deleting this story’s files."); return; } if (!deleteFiles && cancelReaderTransfer(slug)) return; if (queue.jobs.find(job => job.series.slug === slug)?.autoBookmark) { updateStoryOptions(slug, { autoDownload: false }); setSaved(savedStories()); } await queue.cancel(slug, deleteFiles, async () => { await stopTransfer(slug); await backgroundTransfers?.discard(slug); }); void refreshCatalog(); }, [queue, refreshCatalog]);
+  const resumeDownload = useCallback((slug: string) => {
+    if (deleteLock.current || stoppingReaders.current.has(slug) || readerFetches.current.has(slug)) { setNotice("Wait for the reader download or deletion to finish before resuming downloads."); return; }
+    const origin = noticeScope.current, intent = (downloadIntents.current.get(slug) || 0) + 1;
+    downloadIntents.current.set(slug, intent);
+    void stopTransfer(slug).then(() => { if (downloadIntents.current.get(slug) === intent && !stoppingReaders.current.has(slug)) queue.resume(slug); }).catch(error => { if (downloadIntents.current.get(slug) === intent) showFailure(error, origin); });
+  }, [queue, showFailure]);
+  const cancelDownload = useCallback(async (slug: string, deleteFiles = false) => {
+    if (stoppingReaders.current.has(slug)) return;
+    downloadIntents.current.set(slug, (downloadIntents.current.get(slug) || 0) + 1);
+    stoppingReaders.current.add(slug); queue.stopReaderPrefetch(slug);
+    const origin = noticeScope.current;
+    const pending = readerFetches.current.get(slug);
+    pending?.abort(); cancelReaderTransfer(slug);
+    try {
+      if (queue.jobs.find(job => job.series.slug === slug)?.autoBookmark) {
+        try { updateStoryOptions(slug, { autoDownload: false }); setSaved(savedStories()); }
+        catch (error) { showFailure(error, origin); } // A metadata failure must not prevent stopping the writer.
+      }
+      const closeWriters = async () => { await pending?.promise.catch(() => {}); await stopTransfer(slug); await backgroundTransfers?.discard(slug); };
+      if (queue.jobs.some(job => job.series.slug === slug)) await queue.cancel(slug, deleteFiles, closeWriters);
+      else { await closeWriters(); if (deleteFiles) deleteChapters(slug, [], true); }
+    } catch (error) { showFailure(error, origin); }
+    finally { stoppingReaders.current.delete(slug); void refreshCatalog(); }
+  }, [queue, refreshCatalog, showFailure]);
 
   const search = useCallback(async (query: string, mode: ContentMode) => {
     setNetworkNotice("");
@@ -231,6 +255,8 @@ function useAppState() {
   const fetchReaderChapter = useCallback(function fetchChapter(slug: string, chapter: string, automatic: boolean, signal: AbortSignal, progress: (message: string, fraction: number) => void, repairPage?: number): Promise<void> {
     const item = catalogMetadata().find(item => item.slug === slug);
     if (!item || !item.chapterIds?.includes(chapter)) return Promise.reject(new Error("This public chapter is unavailable. Refresh the story’s chapters first."));
+    if (stoppingReaders.current.has(slug)) return Promise.reject(new Error("Wait for cancellation to finish."));
+    const checkPrefetch = () => { if (automatic && !queue.canPrefetchReader(slug)) throw new NetworkPaused("Download paused or cancelled. Resume it explicitly to continue."); };
     if (deleteLock.current) return Promise.reject(new Error("Wait for deletion to finish."));
     const pending = readerFetches.current.get(slug);
     if (pending?.signal.aborted) return withAbort(async () => {
@@ -248,6 +274,7 @@ function useAppState() {
     let lastStorageCheck = 0;
     const guard = async () => {
       throwIfAborted(signal);
+      checkPrefetch();
       if (automatic) {
         if (AppState.currentState !== "active") throw new NetworkPaused("Reader download paused.");
         const network = await NetInfo.fetch();
@@ -275,11 +302,13 @@ function useAppState() {
       };
       let job = ownsChapter();
       while (job && !chapterIntact(slug, chapter)) {
+        checkPrefetch();
         throwIfAborted(signal); progress("Waiting for the queued chapter…", job.progress);
         await withAbort(() => new Promise(resolve => setTimeout(resolve, 500)), signal);
         job = ownsChapter();
       }
       throwIfAborted(signal);
+      checkPrefetch();
       if (!chapterIntact(slug, chapter)) await downloadChapters(item, chapter, progress, guard, signal, [chapter], undefined, () => void refreshCatalog(), false, false, false);
       await refreshCatalog();
     };
@@ -294,7 +323,7 @@ function useAppState() {
       finally { release(); }
     };
     const promise = Promise.resolve().then(() => automatic ? run() : withForeground(repairPage === undefined ? readNow : run)).finally(() => { transfer?.finish(); callerSignal.removeEventListener("abort", abort); readerFetches.current.delete(slug); void refreshCatalog(); });
-    readerFetches.current.set(slug, { chapter, page:repairPage, signal, promise });
+    readerFetches.current.set(slug, { chapter, page:repairPage, signal, abort, promise });
     return promise;
   }, [queue, refreshCatalog, queuedDownloadBusy]);
 
@@ -444,9 +473,11 @@ function useAppState() {
   }, [showFailure, queue, autoDownload, refreshCatalog]);
 
   const startDownload = useCallback((item: Series, selection: string) => {
-    if (deleteLock.current || readerFetches.current.has(item.slug)) { setNotice("Wait for the reader’s download or deletion to finish before adding another download for this story."); return false; }
+    if (deleteLock.current || stoppingReaders.current.has(item.slug) || readerFetches.current.has(item.slug)) { setNotice("Wait for the reader’s download or deletion to finish before adding another download for this story."); return false; }
     setNetworkNotice("");
-    return queue.enqueue(item, selection);
+    const added = queue.enqueue(item, selection);
+    if (added) downloadIntents.current.set(item.slug, (downloadIntents.current.get(item.slug) || 0) + 1);
+    return added;
   }, [queue]);
 
   useEffect(() => {

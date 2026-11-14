@@ -205,16 +205,16 @@ console.log('Transition label, caught-up controls and pending-update feedback ch
 const incrementalScript=readerHtml([],0,null,19,'dark','1',false).match(/<script>([\s\S]*?)<\/script>/)[1];
 const updateCode=incrementalScript.slice(incrementalScript.indexOf('function setDownloadState('),incrementalScript.indexOf('function keepReaderAnchor('));
 const firstPanel={src:'file:///1.webp'}, panelNodes=[firstPanel];
-const pendingLabel={textContent:''}, pendingTail={hidden:false,querySelector:()=>pendingLabel};
+const pendingLabel={textContent:''}, pendingTail={hidden:false,dataset:{},querySelector:()=>pendingLabel};
 const endingLabel={hidden:true};
 const growingNode={dataset:{chapter:'1',complete:'false'},
  querySelector:selector=>selector==='.end'?endingLabel:selector==='.download-tail'?pendingTail:null,
  querySelectorAll:()=>panelNodes,
  insertBefore:panel=>panelNodes.push(panel)};
 const growingWindow={readerUpdateControls(){}};
-const growingContext=vm.createContext({window:growingWindow,chapterHost:{},chapterRoot:growingNode,images:panelNodes,pendingPanelRestore:undefined,
+const growingContext=vm.createContext({window:growingWindow,chapterHost:{},chapterRoot:growingNode,images:panelNodes,pendingPanelRestore:undefined,completedChapters:new Set(),finished:false,
  sectionFor:()=>growingNode,document:{createElement:()=>({
-  set innerHTML(content){this.panels=[...content.matchAll(/src="([^"]+)"/g)].map(match=>({src:match[1]}));},
+  set innerHTML(content){this.panels=[...content.matchAll(/src="([^"]+)"/g)].map(match=>({src:match[1],complete:true}));},
   querySelector:()=>null,querySelectorAll(){return this.panels;}})}});
 vm.runInContext(updateCode,growingContext);
 growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp','file:///2.webp']),false,3);
@@ -222,6 +222,22 @@ assert.equal(panelNodes.length,2);assert.equal(panelNodes[0],firstPanel,'new pan
 assert.equal(pendingTail.hidden,false);assert.match(pendingLabel.textContent,/2\/3/);
 growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp','file:///2.webp','file:///3.webp']),true,3);
 assert.equal(panelNodes.length,3);assert.equal(pendingTail.hidden,true);assert.equal(endingLabel.hidden,false);
+for (const panel of panelNodes) panel.remove=()=>{const index=panelNodes.indexOf(panel);if(index>=0)panelNodes.splice(index,1);};
+growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp']),false,3);
+assert.equal(panelNodes.length,1,'cancel-and-delete removes stale panel nodes instead of leaving phantom readable pages');
+assert.equal(growingContext.finished,false);assert.equal(pendingTail.hidden,false);
+growingWindow.readerSetDownloadStatus('1','paused');assert.match(pendingLabel.textContent,/paused/);
+growingWindow.readerSetDownloadStatus('1','downloading');assert.ok(!pendingLabel.textContent.includes('paused'),'resuming clears stale paused text before another panel finishes');
+growingWindow.readerSetDownloadStatus('1','stopped');assert.match(pendingLabel.textContent,/stopped/);
+growingWindow.readerUpdateChapter('1','',false,0);
+assert.equal(panelNodes.length,0,'deleting all local panels leaves only the stopped-download placeholder');
+let removedProse=false;
+const queryBeforeProse=growingNode.querySelector;
+growingNode.querySelector=selector=>selector==='.novel'?{remove(){removedProse=true;}}:queryBeforeProse(selector);
+growingNode.readerContent='previously saved novel text';
+growingWindow.readerUpdateChapter('1','',false,0);
+assert.equal(removedProse,true,'cancel-and-delete also removes stale novel text from the document');
+growingNode.querySelector=queryBeforeProse;
 const incomplete=session();incomplete.root().dataset.complete='false';incomplete.scroll(1240);incomplete.settle();
 assert.ok(!incomplete.messages.some(message=>message.complete),'the temporary end of available panels never completes an unfinished download');
 incomplete.root().dataset.complete='true';incomplete.report();
@@ -229,4 +245,50 @@ assert.ok(incomplete.messages.some(message=>message.complete),'the actual end ca
 const panelResume=session();
 panelResume.window.readerRestorePanel('3',{index:1,offset:0.2});
 assert.equal(panelResume.y(),1200,'panel anchors restore within the actual panel rather than using an outdated chapter-height fraction');
+const revisiting=session();
+revisiting.window.readerAttachChapter('4','saved');await revisiting.flush();
+revisiting.window.readerOpenChapter('4',false);revisiting.window.readerSetNeighbors(['3','5'],true);revisiting.settle();
+revisiting.window.readerAttachChapter('5','saved');await revisiting.flush();
+revisiting.window.readerOpenChapter('5',false);revisiting.window.readerSetNeighbors(['4','6'],true);revisiting.settle();
+assert.ok(!revisiting.ids().includes('3'),'the old chapter has been trimmed from the bounded document');
+revisiting.window.readerOpenChapter('4',false);revisiting.window.readerSetNeighbors(['3','5'],true);revisiting.settle();
+revisiting.window.readerAttachChapter('3','saved');await revisiting.flush();
+assert.deepEqual(revisiting.ids(),['3','4','5'],'a trimmed chapter can be mounted again during reverse navigation');
+const staleAnchor=session(), oldAnchorImage=staleAnchor.root().panels[1];
+oldAnchorImage.complete=false;staleAnchor.window.readerRestorePanel('3',{index:1,offset:0.2});
+staleAnchor.window.readerAttachChapter('4','saved');await staleAnchor.flush();staleAnchor.window.readerOpenChapter('4',false);
+oldAnchorImage.complete=true;oldAnchorImage.listeners.load();
+assert.equal(staleAnchor.root().dataset.chapter,'4','a late image load cannot restore the chapter the user already left');
+const replacedAnchor=session(), replacedImages=replacedAnchor.root().panels;
+replacedImages[0].complete=false;replacedImages[1].complete=false;
+replacedAnchor.window.readerRestorePanel('3',{index:0,offset:0.2});
+replacedAnchor.window.readerRestorePanel('3',{index:1,offset:0.1});
+replacedImages[0].complete=true;replacedImages[0].listeners.load();
+assert.equal(replacedAnchor.y(),0,'an older panel callback cannot replace a newer restore target in the same chapter');
+replacedImages[1].complete=true;replacedImages[1].listeners.load();
+assert.equal(replacedAnchor.y(),1100,'only the latest panel anchor is restored');
 console.log('Progressive panel append, stable mounted images, waiting indicators and incomplete read protection passed');
+
+// A preceding partial chapter can grow while the user is reading its successor.
+panelNodes.length=0;panelNodes.push({src:'file:///1.webp',complete:true});growingNode.readerContent='one old panel';
+let viewportY=1100,pendingPrevious;
+const readingSuccessor={getBoundingClientRect:()=>({top:panelNodes.length*1000-viewportY})};
+growingContext.chapterRoot=readingSuccessor;
+growingContext.keepReaderAnchor=change=>{const top=readingSuccessor.getBoundingClientRect().top;change();viewportY+=readingSuccessor.getBoundingClientRect().top-top;};
+growingContext.document.createElement=()=>({
+ set innerHTML(content){this.panels=[...content.matchAll(/src="([^"]+)"/g)].map((match,index)=>({src:match[1],complete:index!==1,addEventListener(type,callback){if(type==='load')pendingPrevious=callback;}}));},
+ querySelector:()=>null,querySelectorAll(){return this.panels;}});
+growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp','file:///2.webp']),false,3);
+assert.equal(panelNodes.length,1,'preceding images finish loading before changing the visible chapter layout');
+viewportY+=25;const visibleTop=readingSuccessor.getBoundingClientRect().top;
+pendingPrevious();await new Promise(resolve=>setImmediate(resolve));
+assert.equal(panelNodes.length,2);assert.equal(readingSuccessor.getBoundingClientRect().top,visibleTop,'growing earlier chapters preserve the user latest scroll position');
+console.log('Preceding partial chapter growth preserves the current viewport passed');
+growingContext.document.createElement=()=>({
+ set innerHTML(content){this.panels=[...content.matchAll(/src="([^"]+)"/g)].map((match,index)=>({src:match[1],complete:index!==2,addEventListener(type,callback){if(type==='load')pendingPrevious=callback;}}));},
+ querySelector:()=>null,querySelectorAll(){return this.panels;}});
+const committedTwo=readerChapterHtml(['file:///1.webp','file:///2.webp']);
+growingWindow.readerUpdateChapter('1',readerChapterHtml(['file:///1.webp','file:///2.webp','file:///3.webp']),false,3);
+growingWindow.readerUpdateChapter('1',committedTwo,false,3);
+pendingPrevious();await new Promise(resolve=>setImmediate(resolve));
+assert.equal(panelNodes.length,2,'returning to the committed state invalidates a decoded-but-no-longer-valid panel update');

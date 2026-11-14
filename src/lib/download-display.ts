@@ -6,6 +6,9 @@ export function queuedChapters(job: DownloadJob): string[] {
   try { return selectChapters((job.series.chapterIds || []).map(id => ({id,url:""})), job.selection).map(chapter => chapter.id); }
   catch { return []; }
 }
+export function chapterDownloadStatus(jobs: DownloadJob[], slug: string, chapter: string): DownloadJob["status"] | "stopped" {
+  return jobs.find(job => job.series.slug === slug && queuedChapters(job).includes(chapter))?.status || "stopped";
+}
 export function downloadConflicts(job: DownloadJob, ids: string[], all = false): boolean {
   if ((job.status === "error" || job.status === "paused") && !job.native) return false;
   if (all || job.status === "cancelling") return true;

@@ -20,7 +20,7 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 .reader-panel img[hidden],.panel-repair[hidden]{display:none}.panel-repair{display:block;width:100%;min-height:60vh;border:0;background:#17171f;color:#c9a7ff;font:14px/1.6 sans-serif;padding:24px;overflow-wrap:anywhere}
 .download-tail{width:100%;min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;border:0;background:#111117;color:#c9a7ff;font:13px sans-serif;padding:28px;box-sizing:border-box}.download-tail[hidden],.end[hidden]{display:none}.download-tail small{color:#8b8494;font-size:11px}.download-ring{position:relative;display:grid;place-items:center;width:38px;height:38px;font-size:24px}.download-ring:before{content:'';position:absolute;inset:0;border:2px solid #c9a7ff30;border-top-color:#c9a7ff;border-radius:50%;animation:download-spin 1s linear infinite}@keyframes download-spin{to{transform:rotate(360deg)}}
 .reader-chapter[data-complete="false"]{min-height:100vh}
-.download-tail[data-state="paused"] .download-ring:before,.download-tail[data-state="error"] .download-ring:before{animation:none;border-top-color:#c9a7ff30}
+.download-tail[data-state="paused"] .download-ring:before,.download-tail[data-state="error"] .download-ring:before,.download-tail[data-state="stopped"] .download-ring:before{animation:none;border-top-color:#c9a7ff30}
 #reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;padding:4px 20px 8px;background:#17171ff2;color:#aaa6b3;border-radius:16px;transform-origin:top left;font:11px/1.4 sans-serif;touch-action:none}
 #reader-scrubber[hidden],#scrub-preview[hidden],#scrub-crop[hidden],#scrub-text[hidden]{display:none}
 #scrub-range{display:block;width:100%;height:44px;margin:0;accent-color:#c9a7ff;touch-action:none}
@@ -154,6 +154,7 @@ window.readerSetActive = active => {
 };
 addEventListener('touchstart', event => {
   pendingPanelRestore = undefined;
+  restoreTarget = undefined;
   if (scrubEvent(event)) { touch = null; swipe = null; return; }
   if (event.touches.length > 1) hideControls();
   const finger = event.touches[0];
@@ -263,6 +264,8 @@ let endingConfig;
 function sectionFor(id) { return [...chapterHost.children].find(node => node.dataset.chapter === id); }
 function setDownloadState(node, complete, total) {
   node.dataset.complete = String(complete);
+  node.dataset.total = String(total);
+  if (!complete) { completedChapters.delete(node.dataset.chapter); if (node === chapterRoot) finished = false; }
   const end = node.querySelector('.end');
   if (end) end.hidden = !complete;
   let tail = node.querySelector('.download-tail');
@@ -279,23 +282,46 @@ function setDownloadState(node, complete, total) {
 window.readerUpdateChapter = (id, content, complete, total) => {
   const node = chapterHost && sectionFor(id);
   if (!node) return;
+  const requested = node.readerRequest;
+  if (requested?.pending && requested.content === content && requested.complete === complete && requested.total === total) return;
+  const version = node.readerUpdateVersion = (node.readerUpdateVersion || 0) + 1;
+  const request = node.readerRequest = {content, complete, total, pending:false};
+  if (node.readerContent === content && node.dataset.complete === String(complete) && node.dataset.total === String(total)) return;
   const holder = document.createElement('div'); holder.innerHTML = content;
-  const prose = holder.querySelector('.novel');
-  if (prose && !node.querySelector('.novel')) node.insertBefore(prose, node.querySelector('.end'));
+  const prose = holder.querySelector('.novel'), oldProse = node.querySelector('.novel');
   const panels = [...holder.querySelectorAll('.reader-panel')];
-  const count = node.querySelectorAll('.reader-panel').length;
-  const before = node.querySelector('.end') || node.querySelector('.download-tail');
-  for (const panel of panels.slice(count)) node.insertBefore(panel, before);
-  setDownloadState(node, complete, total);
-  if (node === chapterRoot) { images = [...node.querySelectorAll('img')]; window.readerUpdateControls(); }
-  if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, pendingPanelRestore.panel);
+  const existing = [...node.querySelectorAll('.reader-panel')], count = existing.length;
+  const apply = () => {
+    if (sectionFor(id) !== node || node.readerUpdateVersion !== version) return;
+    const change = () => {
+      if (prose && !oldProse) node.insertBefore(prose, node.querySelector('.end'));
+      else if (!prose && oldProse) oldProse.remove();
+      for (const panel of existing.slice(panels.length)) panel.remove();
+      const before = node.querySelector('.end') || node.querySelector('.download-tail');
+      for (const panel of panels.slice(count)) node.insertBefore(panel, before);
+      setDownloadState(node, complete, total); node.readerContent = content;
+    };
+    if (node === chapterRoot) change(); else keepReaderAnchor(change);
+    if (node === chapterRoot) { images = [...node.querySelectorAll('img')]; window.readerUpdateControls(); }
+    if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, pendingPanelRestore.panel);
+  };
+  // Decode additions before changing a preceding section's height. Keeping the
+  // current anchor then accounts for the full layout change in a single step.
+  const pending = node === chapterRoot ? [] : [...holder.querySelectorAll('img')].filter(image => !image.complete).map(image => new Promise(resolve => {
+    image.addEventListener('load', resolve, {once:true}); image.addEventListener('error', resolve, {once:true});
+  }));
+  if (pending.length) {
+    request.pending = true;
+    Promise.all(pending).then(() => { request.pending = false; apply(); });
+  } else apply();
 };
 window.readerSetDownloadStatus = (id, status) => {
-  const tail = sectionFor(id)?.querySelector('.download-tail');
+  const node = sectionFor(id), tail = node?.querySelector('.download-tail');
   if (!tail || tail.hidden) return;
   tail.dataset.state = status;
-  const label = status === 'paused' ? 'Download paused · Your saved panels are still readable' : status === 'error' ? 'Download needs attention' : status === 'waiting' ? 'Waiting for a connection to download more panels…' : status === 'queued' ? 'More panels are queued…' : '';
-  if (label) tail.querySelector('.download-label').textContent = label;
+  const count = node.querySelectorAll('.reader-panel').length, total = Number(node.dataset.total) || 0;
+  const label = status === 'paused' ? 'Download paused · Your saved panels are still readable' : status === 'stopped' ? 'Download stopped · Tap to continue' : status === 'cancelling' ? 'Stopping download…' : status === 'error' ? 'Download needs attention' : status === 'waiting' ? 'Download waiting · Open controls for details' : status === 'queued' ? 'More panels are queued…' : total > count ? count + '/' + total + ' panels saved · Waiting for more…' : 'Saving remaining panels…';
+  tail.querySelector('.download-label').textContent = label;
 };
 function keepReaderAnchor(change) {
   const top = chapterRoot.getBoundingClientRect().top;
@@ -322,6 +348,8 @@ window.readerSetNeighbors = (ids, continuous) => {
   lastStreamY = scrollY;
 };
 function activateChapter(node) {
+  if (pendingPanelRestore && pendingPanelRestore.id !== node.dataset.chapter) pendingPanelRestore = undefined;
+  if (restoreTarget && restoreTarget.id !== node.dataset.chapter) restoreTarget = undefined;
   if (node === chapterRoot) return;
   chapterRoot = node; readerChapter = node.dataset.chapter;
   images = [...node.querySelectorAll('img')]; finished = completedChapters.has(readerChapter);
@@ -347,8 +375,8 @@ window.readerRestorePanel = (id, panel) => {
   const node = sectionFor(id), image = node?.querySelectorAll('img')[panel.index];
   if (!image) { pendingPanelRestore = {id,panel}; return; }
   if (!image.complete || !image.naturalWidth) {
-    pendingPanelRestore = {id,panel};
-    image.addEventListener('load', () => { if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, panel); }, {once:true});
+    const pending = {id,panel}; pendingPanelRestore = pending;
+    image.addEventListener('load', () => { if (pendingPanelRestore === pending) window.readerRestorePanel(id, panel); }, {once:true});
     return;
   }
   pendingPanelRestore = undefined;
@@ -390,6 +418,7 @@ window.readerAttachChapter = (id, content, complete = true, total = 0) => {
   node.className = 'reader-chapter'; node.dataset.chapter = id;
   node.innerHTML = content + '<p class="end">Chapter ' + id.replace(/[^0-9.]/g,'') + ' · End</p>';
   setDownloadState(node, complete, total);
+  node.readerContent = content;
   const pending = [...node.querySelectorAll('img')].map(image => new Promise(resolve => {
     if (image.complete) resolve();
     else { image.addEventListener('load', resolve, {once:true}); image.addEventListener('error', resolve, {once:true}); }
@@ -409,6 +438,8 @@ window.readerAttachChapter = (id, content, complete = true, total = 0) => {
 };
 window.readerOpenChapter = (id, end) => {
   if (!chapterHost) return;
+  if (pendingPanelRestore?.id !== id) pendingPanelRestore = undefined;
+  if (restoreTarget?.id !== id) restoreTarget = undefined;
   const node = sectionFor(id);
   if (!node) return;
   activateChapter(node);

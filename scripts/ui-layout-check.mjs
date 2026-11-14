@@ -460,7 +460,7 @@ readerShelf.fetchReaderChapter=originalReaderFetch;readerSaved.delete("8");delet
 console.log('Reader download consent, prefetch deduplication, continuous settings and cancellation checks passed');
 
 let readerNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}}, closeReaderWriter;
-const directReaderCalls=[], readerDeletions=[], readerPriority=[];
+const directReaderCalls=[], readerDeletions=[], readerPriority=[];let readerStopError;
 const intactReaderChapters=new Set(['1']);
 const readerStory={...story,chapterIds:['1','2'],localChapters:['1']};
 const readerProvider=component('../src/lib/app-state.tsx',{
@@ -472,8 +472,8 @@ const readerProvider=component('../src/lib/app-state.tsx',{
   './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});requestControl.throwIfAborted(args[4]);intactReaderChapters.add(args[1]);}},
   './network':{networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
   './network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
-  './releases':{requestReleasePermission:async()=>true},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];isBusy(){return false;}async holdForReader(){readerPriority.push('hold');return ()=>readerPriority.push('release');}}},
-  './request-control':requestControl,'./background-downloads':{transferStates:()=>({})},
+  './releases':{requestReleasePermission:async()=>true},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];blocked=false;stopReaderPrefetch(){this.blocked=true;}canPrefetchReader(){return !this.blocked;}pause(){this.blocked=true;this.jobs.forEach(job=>job.status='paused');}isBusy(){return false;}async holdForReader(){readerPriority.push('hold');return ()=>readerPriority.push('release');}}},
+  './request-control':requestControl,'./background-downloads':{transferStates:()=>({}),stopTransfer:async()=>{if(readerStopError)throw readerStopError;}},
   './library-tools':{freeBytes:()=>1024**3,libraryBytesAsync:async()=>0},
 });
 const readerApp=()=>readerProvider.render('AppProvider',{}).props.value;
@@ -845,7 +845,7 @@ const chapterView=component('../src/app/reader/[slug]/[chapter].tsx',{
   '../../../lib/app-state':{useDownloads:()=>[],useShelf:()=>({preferences:{readerContinuous:true},read:{},catalog:[{...story,chapterIds:['1','2','3']}],saved:{},detailsLoading:[],detailsErrors:{},loadDetails:()=>{},cancelDetails:()=>{},leaveChapter:()=>{},completeChapter:(...args)=>readerCompletions.push(args)})},
   '../../../components/download-drawer-context':{useDownloadDrawer:()=>()=>{}},
   '../../../components/action-sheet':{useActionSheet:()=>()=>{}},
-  '../../../components/use-reader-navigation':{useReaderNavigation:()=>({prefetch(){}})},
+  '../../../components/use-reader-navigation':{useReaderNavigation:()=>({prefetch(){},cancel:async()=>{}})},
   '../../../components/reader-options':{useReaderConveniences:()=>'',ReaderOptions:'ReaderOptions'},
 }, {}, ['ChapterReader']);
 const readerTree=chapterView.render('ChapterReader',{slug:'example',chapter:'1',hidden:true,setHidden:value=>chromeVisibility.push(value),optionsOpen:false,setOptionsOpen(){}});
@@ -1122,3 +1122,90 @@ assert.equal(readerRoutes.at(-1).params.chapter,'41','a queued chapter opens the
 assert.equal(readerFetches.length,fetchesBeforeQueuedRead,'opening queued panels never starts a competing Read now download or holds the queue');
 leaveQueuedRead();readerShelf.downloads=[];
 console.log('Queued chapter reading opens immediately without replacing the active download passed');
+
+// A late transfer may finish after the user has already selected another chapter.
+const contextOpens=[], contextRequests=[];
+const normalFetch=readerShelf.fetchReaderChapter;
+readerShelf.fetchReaderChapter=(_slug,id,_automatic,signal)=>new Promise(resolve=>contextRequests.push({id,signal,resolve}));
+readerSaved.delete('61');
+const oldContext=readerNavigation.render('useReaderNavigation','example','Example','61',undefined,false,(id)=>contextOpens.push(id),undefined,'1');
+const leaveContext=readerFocus();readerNavigation.effects.at(-1).callback();
+oldContext.go('61',true);await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(contextRequests.length,1);
+const newContext=readerNavigation.render('useReaderNavigation','example','Example','3',undefined,false,(id)=>contextOpens.push(id),undefined,'2');
+readerNavigation.effects.at(-1).callback();
+assert.equal(contextRequests[0].signal.aborted,true,'changing active chapter cancels its stale reader-owned request');
+newContext.go('1');await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(contextOpens,['1'],'another saved chapter remains immediately available after cancellation');
+contextRequests[0].resolve();await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(contextOpens,['1'],'a source ignoring abort cannot navigate away when its old request finally completes');
+leaveContext();readerShelf.fetchReaderChapter=normalFetch;
+readerShelf.downloads=[{series:{...story,slug:'example'},status:'downloading',chapters:['71','72'],selection:'71,72',progress:0}];
+const callsBeforeQueuedPrefetch=readerFetches.length, queuedPrepared=[];
+const queueAware=readerNavigation.render('useReaderNavigation','example','Example','71',undefined,false,undefined,'72','1');
+const leaveQueueAware=readerFocus();readerNavigation.effects.forEach(effect=>effect.callback());
+await queueAware.prefetch(.8,id=>queuedPrepared.push(id));
+assert.equal(readerFetches.length,callsBeforeQueuedPrefetch,'prefetch attaches queued neighbors without a competing reader writer or queue wait');
+assert.deepEqual(queuedPrepared,['71','72']);leaveQueueAware();readerShelf.downloads=[];
+
+// Pause/cancel must reach an automatic reader writer as well as the bulk queue.
+intactReaderChapters.delete('2');readerNetwork={type:'wifi',isConnected:true,details:{isConnectionExpensive:false}};
+readerApp().downloadQueue.blocked=false;readerApp().downloadQueue.jobs=[];
+const pausedWriter=readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{});
+const pausedRejection=assert.rejects(pausedWriter,{name:'AbortError'});
+await new Promise(resolve=>setTimeout(resolve,0));
+readerApp().pauseDownload('example');
+assert.equal(directReaderCalls.at(-1)[4].aborted,true,'pause aborts automatic prefetch, not just visible manual reader transfers');
+closeReaderWriter();await pausedRejection;
+const callsAfterPause=directReaderCalls.length;
+await assert.rejects(readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{}),/paused or cancelled/);
+assert.equal(directReaderCalls.length,callsAfterPause,'paused downloads are not restarted through the prefetch fallback');
+readerApp().downloadQueue.blocked=false;
+const cancelledWriter=readerApp().fetchReaderChapter('example','2',true,new AbortController().signal,()=>{});
+const cancelledRejection=assert.rejects(cancelledWriter,{name:'AbortError'});
+await new Promise(resolve=>setTimeout(resolve,0));
+readerDeletions.length=0;
+let cancellationDone=false;
+const cancelWithDelete=readerApp().cancelDownload('example',true).then(()=>{cancellationDone=true;});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(cancellationDone,false,'cancel-and-delete waits for the reader writer to close');
+assert.equal(readerDeletions.length,0,'files are never deleted underneath an active reader writer');
+assert.equal(readerApp().startDownload(readerStory,'2'),false,'new work cannot race cancellation after a writer has been aborted');
+closeReaderWriter();await cancelledRejection;await cancelWithDelete;
+assert.equal(readerDeletions.at(-1)[0],'example');assert.equal(readerDeletions.at(-1)[1].length,0);
+assert.equal(readerDeletions.at(-1)[2],true,'cancel-and-delete works even when only a reader transfer existed');
+assert.equal(readerApp().downloadQueue.blocked,true,'cancel suppresses later speculative reader transfers');
+assert.equal(readerApp().downloadBusy('example'),false);
+console.log('Late chapter navigation, queue-aware prefetch, pause propagation and drained reader cancellation passed');
+
+chapterView.render('ChapterReader',{slug:'example',chapter:'1',hidden:true,setHidden(){},optionsOpen:false,setOptionsOpen(){}});
+const syncMountedNeighbors=chapterView.effects.find(effect=>effect.callback.name==='syncNeighbors');
+readerScripts.length=0;syncMountedNeighbors.callback();
+const firstMountRequests=readerScripts.filter(script=>script.includes('readerAttachChapter')).length;
+readerScripts.length=0;syncMountedNeighbors.callback();
+assert.ok(firstMountRequests>0);
+assert.equal(readerScripts.filter(script=>script.includes('readerAttachChapter')).length,firstMountRequests,'React must resend neighbor mounts after the WebView may have trimmed them; stale publication caches cannot block reverse navigation');
+const unrelatedQueue=[{series:{slug:'example'},selection:'2',chapters:['2'],status:'downloading'}];
+assert.equal(downloadDisplay.chapterDownloadStatus(unrelatedQueue,'example','1'),'stopped','a different chapter downloading cannot make a stopped chapter show as active');
+assert.equal(downloadDisplay.chapterDownloadStatus(unrelatedQueue,'example','2'),'downloading');
+unrelatedQueue[0].status='paused';assert.equal(downloadDisplay.chapterDownloadStatus(unrelatedQueue,'example','2'),'paused');
+console.log('Trimmed-neighbor remounts and per-chapter rather than per-story pending state passed');
+
+readerStopError=Error('Native writer is still closing');
+const deletionsBeforeFailedStop=readerDeletions.length;
+await readerApp().cancelDownload('example',true);
+assert.equal(readerDeletions.length,deletionsBeforeFailedStop,'a failed writer stop must retain files');
+assert.match(readerApp().notice,/Native writer is still closing/,'a cancellation failure is shown instead of becoming an unhandled promise rejection');
+readerStopError=undefined;
+
+// A newer pause must invalidate an older resume waiting for Android to close.
+const intentQueue=app().downloadQueue;
+intentQueue.jobs=[{series:story,status:'paused',native:false,selection:'1',progress:0,message:'Paused'}];
+nativeControls.backgroundTransfers={pause:async()=>{}};
+let closeBeforeResume;
+nativeControls.stopTransfer=()=>new Promise(resolve=>{closeBeforeResume=resolve;});
+app().resumeDownload('example');app().pauseDownload('example');
+closeBeforeResume();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(intentQueue.jobs[0].status,'paused','a delayed resume cannot override a more recent pause');
+intentQueue.jobs=[];nativeControls.backgroundTransfers=null;
+console.log('Latest download intent wins while native writers are closing passed');
