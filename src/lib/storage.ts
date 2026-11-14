@@ -16,6 +16,17 @@ const READ = new File(ROOT, "read.json");
 const RELEASES = new File(ROOT, "releases.json");
 const UPDATES = new File(ROOT, "release-updates.json");
 const DOWNLOADS = new File(ROOT, "downloads.json");
+const DOWNLOAD_STOPS = new Directory(ROOT, "download-stops");
+export function loadDownloadStops(): string[] {
+  initializeStorage();
+  return DOWNLOAD_STOPS.exists ? DOWNLOAD_STOPS.list().filter(file => file instanceof File && file.name.endsWith(".stop") && safePart(file.name.slice(0, -5))).map(file => file.name.slice(0, -5)) : [];
+}
+export function saveDownloadStop(slug: string, stopped: boolean): void {
+  if (!safePart(slug)) throw new Error("Invalid download stop target.");
+  DOWNLOAD_STOPS.create({ intermediates: true, idempotent: true });
+  const marker = new File(DOWNLOAD_STOPS, `${slug}.stop`);
+  if (stopped) marker.write("stopped"); else if (marker.exists) marker.delete();
+}
 export function loadDownloads(): DownloadJob[] {
   initializeStorage();
   try { const jobs = readJson<DownloadJob[]>(DOWNLOADS, []); return Array.isArray(jobs) ? jobs.filter(job => job?.series && safePart(job.series.slug) && typeof job.selection === "string") : []; } catch { return []; }

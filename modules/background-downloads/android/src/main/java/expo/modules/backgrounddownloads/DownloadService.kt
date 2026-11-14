@@ -37,20 +37,25 @@ class DownloadService : Service() {
     // Android may recreate a killed service. Persisted batches resume without JS.
     directory(this).listFiles()?.filter { it.name.endsWith(".plan") }?.sortedBy { queueOrder.indexOf(it.name.removeSuffix(".plan")).let { rank -> if (rank < 0) Int.MAX_VALUE else rank } }?.forEach { file ->
       val id = file.name.removeSuffix(".plan")
-      try { if (JSONObject(File(directory(this), "$id.state").readText()).optString("state") in listOf("running", "queued")) run(id) } catch (_: Exception) {}
+      try {
+        val saved = JSONObject(File(directory(this), "$id.state").readText())
+        if (saved.optString("state") in listOf("running", "queued") && !saved.optBoolean("scheduled")) run(id)
+      } catch (_: Exception) {}
     }
   }
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == "prepare" && flags and START_FLAG_REDELIVERY != 0) {
-      intent.getStringExtra("id")?.let { state(this, it, "paused", "Preparation interrupted · resume in the app", 0.0) }
+      intent.getStringExtra("id")?.let { id ->
+        try { if (JSONObject(File(directory(this), "$id.state").readText()).optString("state") == "preparing") state(this, id, "paused", "Preparation interrupted · resume in the app", 0.0) } catch (_: Exception) {}
+      }
       stopIfIdle(); return START_NOT_STICKY
     }
     if (intent?.action == "pause-all") {
       directory(this).listFiles()?.filter { it.name.endsWith(".state") }?.forEach { file ->
-        try { if (JSONObject(file.readText()).optString("state") == "queued") { val id = file.name.removeSuffix(".state"); DownloadWorker.pause(this, id); state(this, id, "paused", "Paused from notification", 0.0) } } catch (_: Exception) {}
+        try { if (JSONObject(file.readText()).optString("state") == "queued") { val id = file.name.removeSuffix(".state"); pause(this, id); DownloadWorker.pause(this, id); state(this, id, "paused", "Paused from notification", 0.0) } } catch (_: Exception) {}
       }
-      preparing.toList().forEach { state(this, it, "paused", "Paused from notification", 0.0); preparing.remove(it) }
-      running.keys.toList().forEach { pause(it) }; stopIfIdle()
+      preparing.toList().forEach { pause(this, it) }
+      running.keys.toList().forEach { pause(this, it) }; stopIfIdle()
     } else {
       val id = intent?.getStringExtra("id")
       if (id != null) {
@@ -59,11 +64,16 @@ class DownloadService : Service() {
         else { preparing.remove(id); run(id) }
       }
     }
+    stopIfIdle()
     return START_REDELIVER_INTENT
   }
   private fun notification(message: String, progress: Int): Notification = makeNotification(this, message, progress)
   private fun update(message: String, progress: Int) { getSystemService(NotificationManager::class.java).notify(NOTICE, notification(message, progress)) }
   private fun run(id: String) {
+    // Redelivery is allowed after this particular job has already completed.
+    val saved = try { JSONObject(File(directory(this), "$id.state").readText()) } catch (_: Exception) { JSONObject() }
+    if (!TransferRecovery.canStartService(File(directory(this), "$id.plan").exists(), saved.optString("state"), false, saved.optBoolean("scheduled"))) { stopIfIdle(); return }
+    if (recoverPause(this, id)) { stopIfIdle(); return }
     val cancelled = acquire(id) ?: return
     getSystemService(NotificationManager::class.java).cancel(id.hashCode())
     serviceJobs[id] = cancelled
@@ -123,22 +133,54 @@ class DownloadService : Service() {
     @Volatile private var instance: DownloadService? = null
     fun checkId(id: String) { require(id.matches(Regex("[a-zA-Z0-9_.-]+")) && id != "." && id != "..") }
     fun acquire(id: String): AtomicBoolean? { val flag = AtomicBoolean(userPaused.contains(id)); return if (running.putIfAbsent(id, flag) == null) flag else null }
-    fun clearPause(id: String) { userPaused.remove(id) }
+    fun clearPause(context: Context, id: String) { TransferRecovery.resume(directory(context), id); userPaused.remove(id) }
     fun wasUserPaused(id: String): Boolean = userPaused.contains(id)
+    fun recoverPause(context: Context, id: String): Boolean {
+      // JS commits the intent before crossing the bridge. Read it too, so a kill
+      // in that gap cannot revive the transfer before JS has restarted.
+      val root = File(context.filesDir, "nightshelf")
+      var requested = false
+      for (file in listOf(File(root, "downloads.json"), File(root, "downloads.json.bak"))) {
+        try {
+          val jobs = org.json.JSONArray(file.readText())
+          for (index in 0 until jobs.length()) {
+            val job = jobs.getJSONObject(index)
+            if (job.getJSONObject("series").optString("slug") == id) requested = TransferRecovery.stopRequested(job.optBoolean("pauseRequested"), job.optBoolean("readerHeld"), job.optString("status"))
+          }
+          break // Use the backup only if the primary is unavailable.
+        } catch (_: Exception) {}
+      }
+      if (!requested && !TransferRecovery.isPaused(directory(context), id) && !wasUserPaused(id)) return false
+      pause(context, id)
+      state(context, id, "paused", "Paused · saved pages kept", 0.0)
+      return true
+    }
     fun release(id: String, flag: AtomicBoolean) { running.remove(id, flag) }
     fun serviceRunning(): Boolean = instance != null
     fun isActive(id: String): Boolean = running.containsKey(id) || instance?.preparing?.contains(id) == true
     fun directory(context: Context): File = File(context.filesDir, "nightshelf-transfers").apply { mkdirs() }
     @Synchronized fun atomic(file: File, text: String) { file.parentFile?.mkdirs(); val temp = File(file.path + ".tmp"); temp.writeText(text); check(temp.renameTo(file)) { "Could not persist download state" } }
-    fun state(context: Context, id: String, value: String, message: String, progress: Double, currentChapter: String? = null, chapterProgress: Double? = null, completedChapters: Int? = null, totalChapters: Int? = null) {
+    fun state(context: Context, id: String, value: String, message: String, progress: Double, currentChapter: String? = null, chapterProgress: Double? = null, completedChapters: Int? = null, totalChapters: Int? = null, scheduled: Boolean = false) {
       val file = File(directory(context), "$id.state")
       val previous = if (value != "preparing") try { val old = JSONObject(file.readText()); if (old.optString("state") == "done" && value != "done") 0.0 else old.optDouble("progress", 0.0) } catch (_: Exception) { 0.0 } else 0.0
       val details = if (value == "preparing") JSONObject() else try { JSONObject(file.readText()) } catch (_: Exception) { JSONObject() }
+      if (value == "queued") details.put("scheduled", scheduled)
       currentChapter?.let { details.put("currentChapter", it) }; chapterProgress?.let { details.put("chapterProgress", it) }
       completedChapters?.let { details.put("completedChapters", it) }; totalChapters?.let { details.put("totalChapters", it) }
       atomic(file, details.put("state", value).put("message", message).put("progress", maxOf(previous, progress)).toString())
     }
-    fun pause(id: String) { userPaused.add(id); val flag = running[id]; flag?.set(true); instance?.let { if (flag != null && it.serviceJobs[id] === flag && it.started[id] !== flag) { it.serviceJobs.remove(id, flag); running.remove(id, flag); state(it, id, "paused", "Paused", 0.0); it.stopIfIdle() }; if (it.preparing.remove(id)) { state(it, id, "paused", "Paused from notification", 0.0); it.stopIfIdle() } } }
+    fun pause(context: Context, id: String) {
+      userPaused.add(id)
+      val flag = running[id]; flag?.set(true)
+      // A full disk must not prevent stopping the live writer.
+      try { TransferRecovery.pause(directory(context), id) }
+      finally {
+        instance?.let {
+          if (flag != null && it.serviceJobs[id] === flag && it.started[id] !== flag) { it.serviceJobs.remove(id, flag); running.remove(id, flag); state(it, id, "paused", "Paused", 0.0); it.stopIfIdle() }
+          if (it.preparing.remove(id)) { state(it, id, "paused", "Paused from notification", 0.0); it.stopIfIdle() }
+        }
+      }
+    }
     fun finishPreparation(context: Context, id: String) { instance?.let { if (it.preparing.remove(id)) { try { if (JSONObject(File(directory(context), "$id.state").readText()).optString("state") == "preparing") state(context, id, "paused", "Preparation stopped", 0.0) } catch (_: Exception) {} ; it.stopIfIdle() } } }
   }
 }

@@ -390,7 +390,7 @@ export async function fetch(url,options={}){
     : '';
   return {ok:true,text:async()=>typeof data==='string'?data:JSON.stringify(data)};
 }`;
-  const nativeStub=`export let backgroundTransfers=null;export const plans=[];export function enable(){backgroundTransfers={enqueue:async text=>plans.push(JSON.parse(text))};}export async function waitForTransfer(){}`;
+  const nativeStub=`export let backgroundTransfers=null;export const plans=[];let beforeEnqueue=()=>{};export function setBeforeEnqueue(callback){beforeEnqueue=callback;}export function enable(){backgroundTransfers={enqueue:async text=>{beforeEnqueue();plans.push(JSON.parse(text));}};}export async function waitForTransfer(){}`;
   const scraperHook = registerHooks({resolve(specifier,context,next){
     if(specifier==='./source-session' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export const SOURCE_AGENT='test';export const verificationUserAgent=async()=>'native-test-agent';export const isVerificationHost=url=>new URL(url).hostname==='www.mangakakalot.gg';export const verificationCookies=async()=>'';export const requireSourceVerification=()=>new Error('Verify source');`,shortCircuit:true};
     if(specifier==='nightshelf-native-test'||(specifier==='./background-downloads' && context.parentURL?.endsWith('/scraper.ts')))return {url:`data:text/javascript,${encodeURIComponent(nativeStub)}`,shortCircuit:true};
@@ -660,13 +660,19 @@ export async function fetch(url,options={}){
     assert.equal(repairFile.md5,stableHash,'cancelled repairs preserve the saved file');
     const native=await import('nightshelf-native-test');native.enable();
     const preparation=[];
-    await downloadChapters(repairStory,'1',(message)=>preparation.push(message),async()=>{});
+    let handoffCommitted=false;
+    native.setBeforeEnqueue(()=>assert.equal(handoffCommitted,true,'native enqueue cannot run before the durable queue checkpoint'));
+    await downloadChapters(repairStory,'1',(message)=>preparation.push(message),async()=>{},undefined,undefined,undefined,undefined,false,false,true,()=>{handoffCommitted=true;});
+    native.setBeforeEnqueue(()=>{});
     assert.ok(preparation.includes('Preparing chapters \u00b7 0/1 prepared'));
     assert.ok(preparation.includes('Preparing chapters \u00b7 1/1 prepared'));
     assert.equal(native.plans.length,1);assert.equal(native.plans[0].chapters[0].files.length,2);
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.target.startsWith(storage.LIBRARY.uri+'/')));
     assert.ok(native.plans[0].chapters[0].files.every(file=>file.hash),'native repair plans carry existing checksums');
     assert.equal(native.plans[0].allowMetered,false,'a Wi-Fi download does not silently authorize future metered transfers');
+    const plansBeforeFailedCommit=native.plans.length;
+    await assert.rejects(()=>downloadChapters(repairStory,'1',()=>{},async()=>{},undefined,undefined,undefined,undefined,false,false,true,()=>{throw Error('Queue checkpoint failed');}),/Queue checkpoint failed/);
+    assert.equal(native.plans.length,plansBeforeFailedCommit,'a failed queue checkpoint cannot launch an untracked native writer');
     new File(storage.chapterDirectory('repair','1'),'001.webp').write('damaged');
     const nativePlanCount=native.plans.length;
     await downloadChapters(repairStory,'1',()=>{},async()=>{},undefined,['1'],undefined,undefined,false,false,false);

@@ -9,14 +9,19 @@ export type DownloadJob = {
   retryAt?: number; retryCount?: number;
   autoBookmark?: boolean;
   native?: boolean;
+  nativePending?: boolean;
   reader?: boolean;
   currentChapter?: string; chapterProgress?: number; completedChapters?: number; totalChapters?: number;
   pauseRequested?: boolean;
   resumeBlocked?: boolean;
   readerHeld?: boolean;
+  cancelDeleteFiles?: boolean;
 };
-type Worker = (job: DownloadJob, signal: AbortSignal, progress: (message: string, fraction: number) => void, plan: (chapters: string[]) => void) => Promise<void | "native">;
-export function restoredDownloads(jobs: DownloadJob[]): DownloadJob[] { return jobs.map(job => job.readerHeld ? { ...job, readerHeld: false, status: "paused", message: "Read now interrupted · resume bulk download" } : job.native || job.status === "paused" || job.status === "error" || job.status === "cancelling" ? { ...job } : { ...job, status: "waiting", automatic: true, message: "Interrupted · ready to resume" }); }
+type Worker = (job: DownloadJob, signal: AbortSignal, progress: (message: string, fraction: number) => void, plan: (chapters: string[]) => void, handoff: () => void) => Promise<void | "native">;
+export function restoredDownloads(jobs: DownloadJob[]): DownloadJob[] { return jobs.map(job => {
+  const restored = { ...job, resumeBlocked: false };
+  return job.readerHeld ? { ...restored, readerHeld: false, status: "paused" as const, message: "Read now interrupted · resume bulk download" } : job.native || job.status === "paused" || job.status === "error" || job.status === "cancelling" ? restored : { ...restored, status: "waiting" as const, automatic: true, message: "Interrupted · ready to resume" };
+}); }
 
 export class DownloadQueue {
   jobs: DownloadJob[];
@@ -29,6 +34,7 @@ export class DownloadQueue {
   private persisted: () => DownloadJob[];
   private removed = new Set<string>();
   private nativeResumes = new Set<string>();
+  private nativePauses = new Set<string>();
   private readerHolds = 0;
   private readerPrefetchStops = new Set<string>();
   private readerDrains = 0;
@@ -37,14 +43,17 @@ export class DownloadQueue {
   private listeners = new Set<() => void>();
   private snapshot: DownloadJob[];
   private statusSnapshot: DownloadJob[];
+  private stopPolicy?: { load: () => string[]; save: (slug: string, stopped: boolean) => void; pauseNative?: (slug: string) => Promise<void> };
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   getSnapshot = () => this.snapshot;
   getStatusSnapshot = () => this.statusSnapshot;
-  constructor(jobs: DownloadJob[], worker: Worker, changed: (jobs: DownloadJob[]) => void, removeFiles: (slug: string) => void, canRun = () => true, persisted = () => [] as DownloadJob[]) {
+  constructor(jobs: DownloadJob[], worker: Worker, changed: (jobs: DownloadJob[]) => void, removeFiles: (slug: string) => void, canRun = () => true, persisted = () => [] as DownloadJob[], stopPolicy?: { load: () => string[]; save: (slug: string, stopped: boolean) => void; pauseNative?: (slug: string) => Promise<void> }) {
     this.jobs = restoredDownloads(jobs);
     this.snapshot = this.jobs.map(job => ({ ...job }));
     this.statusSnapshot = this.snapshot;
     this.worker = worker; this.changed = changed; this.removeFiles = removeFiles; this.canRun = canRun; this.persisted = persisted;
+    this.stopPolicy = stopPolicy;
+    this.readerPrefetchStops = new Set(stopPolicy?.load() || []);
   }
   private recoverJobs() {
     let changed = false;
@@ -59,7 +68,8 @@ export class DownloadQueue {
     this.changed(this.snapshot); this.removed.clear(); this.listeners.forEach(listener => listener());
   }
   isBusy(slug?: string) { return slug ? this.running.has(slug) || this.cancelling.has(slug) : this.running.size > 0 || this.cancelling.size > 0; }
-  stopReaderPrefetch(slug: string) { this.readerPrefetchStops.add(slug); }
+  stopReaderPrefetch(slug: string) { this.readerPrefetchStops.add(slug); this.stopPolicy?.save(slug, true); }
+  allowReaderPrefetch(slug: string) { this.readerPrefetchStops.delete(slug); this.stopPolicy?.save(slug, false); }
   canPrefetchReader(slug: string): boolean {
     return !this.readerHolds && !this.readerPrefetchStops.has(slug) && !this.jobs.some(job => job.series.slug === slug && ["paused", "error", "cancelling"].includes(job.status));
   }
@@ -73,7 +83,7 @@ export class DownloadQueue {
   }
   enqueue(series: Series, selection: string, autoBookmark = false): boolean {
     if (this.jobs.some(job => job.series.slug === series.slug)) return false;
-    if (!autoBookmark) this.readerPrefetchStops.delete(series.slug);
+    if (!autoBookmark) this.allowReaderPrefetch(series.slug);
     this.jobs.push({ series, selection, autoBookmark, status: "queued", message: "Queued", progress: 0 }); this.publish(); this.pump(); return true;
   }
   pause(slug: string) {
@@ -86,26 +96,36 @@ export class DownloadQueue {
   resume(slug: string) {
     const job = this.jobs.find(job => job.series.slug === slug);
     if (!job || !["paused", "waiting", "error"].includes(job.status)) return;
-    this.readerPrefetchStops.delete(slug);
+    this.allowReaderPrefetch(slug);
     job.retryAt = undefined; job.retryCount = 0; job.readerHeld = false;
     if (job.native) this.nativeResumes.add(slug);
     job.status = "queued"; job.pauseRequested = false; job.resumeBlocked = false; job.automatic = false; job.message = "Queued to resume"; this.publish(); this.pump();
   }
-  reconcileNative(states: Record<string, {state: string; active: boolean; message: string; progress: number; hasPlan?: boolean; currentChapter?: string; chapterProgress?: number; completedChapters?: number; totalChapters?: number}>) {
+  reconcileNative(states: Record<string, {state: string; active: boolean; message: string; progress: number; hasPlan?: boolean; scheduled?: boolean; currentChapter?: string; chapterProgress?: number; completedChapters?: number; totalChapters?: number}>) {
     let changed = this.recoverJobs();
     this.jobs = this.jobs.filter(job => {
       const value = states[job.series.slug]; if (!value) return true;
       if (this.running.has(job.series.slug)) return true;
-      if (!job.native) { if (value.active && value.hasPlan) { job.native = true; changed = true; } else return true; }
+      // The process can die between native enqueue and persisting ownership.
+      if (!job.native) { if (value.hasPlan || (job.nativePending && value.state === "done")) { job.native = true; job.nativePending = false; changed = true; } else return true; }
       if (job.status === "cancelling" || job.readerHeld) return true;
       if (value.state === "done" && !value.active) { this.removed.add(job.series.slug); this.nativeResumes.delete(job.series.slug); changed = true; return false; }
-      if (job.pauseRequested && value.active) return true;
+      if (job.pauseRequested && (value.active || value.state !== "paused")) {
+        const pauseNative = this.stopPolicy?.pauseNative;
+        const slug = job.series.slug;
+        if (pauseNative && !this.nativePauses.has(slug)) {
+          this.nativePauses.add(slug);
+          void Promise.resolve().then(() => pauseNative(slug)).catch(() => {}).finally(() => this.nativePauses.delete(slug));
+        }
+        return true;
+      }
       if (job.resumeBlocked && value.state === "paused" && !value.active) return true;
       job.resumeBlocked = false;
       if (!value.active) job.pauseRequested = false;
-      const interrupted = value.state === "running" && !value.active && value.hasPlan;
-      const status = value.state === "paused" ? "paused" : value.state === "waiting" || interrupted ? "waiting" : value.state === "error" ? "error" : value.state === "queued" ? "queued" : "downloading";
-      const message = interrupted ? "Transfer interrupted · ready to resume" : value.message;
+      const scheduledWait = !value.active && value.hasPlan && value.scheduled === true && ["queued", "running", "waiting"].includes(value.state);
+      const interrupted = !value.active && value.hasPlan && !scheduledWait && (value.state === "running" || (value.state === "queued" && value.scheduled === false));
+      const status = value.state === "paused" ? "paused" : scheduledWait ? "queued" : value.state === "waiting" || interrupted ? "waiting" : value.state === "error" ? "error" : value.state === "queued" ? "queued" : "downloading";
+      const message = interrupted ? "Transfer interrupted · ready to resume" : scheduledWait && value.state !== "queued" ? "Waiting for Android to retry" : value.message;
       if (status !== job.status || job.message !== message || job.progress !== value.progress) changed = true;
       for (const key of ["currentChapter", "chapterProgress", "completedChapters", "totalChapters"] as const) if (job[key] !== value[key]) changed = true;
       job.currentChapter = value.currentChapter; job.chapterProgress = value.chapterProgress; job.completedChapters = value.completedChapters; job.totalChapters = value.totalChapters;
@@ -128,7 +148,7 @@ export class DownloadQueue {
     this.stopReaderPrefetch(slug);
     const existing = this.cancelling.get(slug); if (existing) return existing;
     const job = this.jobs.find(job => job.series.slug === slug); if (!job) return Promise.resolve();
-    job.readerHeld = false; job.status = "cancelling"; job.message = deleteFiles ? "Stopping and deleting saved chapters…" : "Cancelling…";
+    job.readerHeld = false; job.cancelDeleteFiles = deleteFiles; job.status = "cancelling"; job.message = deleteFiles ? "Stopping and deleting saved chapters…" : "Cancelling…";
     const run = this.running.get(slug); run?.controller.abort(); this.publish();
     const done = (async () => {
       try {
@@ -199,9 +219,13 @@ export class DownloadQueue {
           const result = await this.worker(job, controller.signal, (message, progress) => {
             if (controller.signal.aborted) return;
             job.message = message; job.progress = Math.max(0, Math.min(1, progress)); this.publish();
-          }, chapters => { throwIfAborted(controller.signal); job.chapters = chapters; this.publish(); });
+          }, chapters => { throwIfAborted(controller.signal); job.chapters = chapters; this.publish(); }, () => {
+            throwIfAborted(controller.signal);
+            // Commit before Android can finish, even if JS is killed during enqueue.
+            job.nativePending = true; this.publish();
+          });
           throwIfAborted(controller.signal);
-          if (result === "native") { job.native = true; job.status = "downloading"; job.message = "Android is saving chapters…"; }
+          if (result === "native") { job.native = true; job.nativePending = false; job.status = "downloading"; job.message = "Android is saving chapters…"; }
           else { this.removed.add(slug); this.jobs = this.jobs.filter(value => value !== job); }
         } catch (error) {
           if (!controller.signal.aborted) {

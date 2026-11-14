@@ -5,7 +5,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { chapterListCached, ContentMode, Series, selectChapters } from "./parser";
 import { browseCatalog, enrichCatalogIds, downloadChapters, repairSavedPanel, refreshSeries, searchCatalog, syncCatalog } from "./scraper";
 import type { BrowseCursor, BrowseOptions } from "./scraper";
-import { chapterIntact, deleteChapters, catalogMetadata, loadCatalogAsync, loadPreferences, Preferences, savedStories, mergeCatalog, savePreferences, readChapters, markChapterRead, localChapters, releaseUpdates, setChaptersRead, loadDownloads, saveDownloads } from "./storage";
+import { chapterIntact, deleteChapters, catalogMetadata, loadCatalogAsync, loadPreferences, Preferences, savedStories, mergeCatalog, savePreferences, readChapters, markChapterRead, localChapters, releaseUpdates, setChaptersRead, loadDownloads, saveDownloads, loadDownloadStops, saveDownloadStop } from "./storage";
 import { networkGuard, NetworkPaused } from "./network";
 import { automaticReleaseIds } from "./release-policy";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "./network-policy";
@@ -103,7 +103,7 @@ function useAppState() {
   const stoppingReaders = useRef(new Set<string>());
   const downloadIntents = useRef(new Map<string, number>());
   const lastQueueSave = useRef({ at: 0, state: "" });
-  const [queue] = useState(() => new DownloadQueue(restoredDownloads(loadDownloads()), async (job, signal, progress, plan) => {
+  const [queue] = useState(() => new DownloadQueue(restoredDownloads(loadDownloads()), async (job, signal, progress, plan, handoff) => {
     try {
       const item = (await loadCatalogAsync(signal)).find(item => item.slug === job.series.slug) || job.series;
       const current = transferStates(item.slug)[item.slug];
@@ -133,16 +133,20 @@ function useAppState() {
         return "native" as const;
       }
       if (backgroundTransfers) await backgroundTransfers.begin(item.slug, item.title);
-      await downloadChapters(item, job.selection, progress, guard, signal, job.chapters, plan, () => void refreshCatalog(), job.autoBookmark, Boolean(backgroundTransfers));
+      await downloadChapters(item, job.selection, progress, guard, signal, job.chapters, plan, () => void refreshCatalog(), job.autoBookmark, Boolean(backgroundTransfers), true, handoff);
       if (backgroundTransfers) return "native" as const;
     } finally { if (signal.aborted) await stopTransfer(job.series.slug); await backgroundTransfers?.endPreparation(job.series.slug).catch(() => {}); void refreshCatalog(); setPreferences(loadPreferences()); }
   }, jobs => {
-    const state = jobs.map(job => `${job.series.slug}:${job.status}:${Boolean(job.native)}:${Boolean(job.readerHeld)}:${job.chapters?.join(",")}`).join("|");
+    const state = jobs.map(job => `${job.series.slug}:${job.status}:${Boolean(job.native)}:${Boolean(job.nativePending)}:${Boolean(job.readerHeld)}:${job.chapters?.join(",")}`).join("|");
     if (state !== lastQueueSave.current.state || Date.now() - lastQueueSave.current.at >= 1000) {
       saveDownloads(jobs); backgroundTransfers?.syncQueue(JSON.stringify(jobs.map(job => ({ id: job.series.slug, native: Boolean(job.native), progress: job.progress }))));
       lastQueueSave.current = { at: Date.now(), state };
     }
-  }, slug => deleteChapters(slug, [], true), () => AppState.currentState === "active" || Boolean(backgroundTransfers?.serviceRunning()), loadDownloads));
+  }, slug => deleteChapters(slug, [], true), () => AppState.currentState === "active" || Boolean(backgroundTransfers?.serviceRunning()), loadDownloads, {
+    load: loadDownloadStops,
+    save: (slug, stopped) => { try { saveDownloadStop(slug, stopped); } catch (error) { showFailure(error); } },
+    pauseNative: async slug => { try { await backgroundTransfers?.pause(slug); } catch (error) { showFailure(error); } },
+  }));
   const queuedDownloadBusy = useCallback((slug?: string) => queue.isBusy(slug) || queue.jobs.some(job => job.readerHeld && (!slug || job.series.slug === slug)) || Object.entries(transferStates(slug)).some(([id, value]) => (value.active || (value.hasPlan && ["queued", "waiting", "running", "preparing"].includes(value.state))) && (!slug || id === slug)), [queue]);
   const downloadBusy = useCallback((slug?: string) => (slug ? readerFetches.current.has(slug) : readerFetches.current.size > 0) || queuedDownloadBusy(slug), [queuedDownloadBusy]);
   const pauseDownload = useCallback((slug: string) => { downloadIntents.current.set(slug, (downloadIntents.current.get(slug) || 0) + 1); queue.pause(slug); readerFetches.current.get(slug)?.abort(); cancelReaderTransfer(slug); const origin = noticeScope.current; void backgroundTransfers?.pause(slug).catch(error => showFailure(error, origin)); }, [queue, showFailure]);
@@ -363,10 +367,11 @@ function useAppState() {
     if (change.bookmarked === false || change.notifyReleases === false) invalidateNotificationIntents([slug]);
     try {
       setSaved(updateStoryOptions(slug, change));
+      if (change.autoDownload === true) queue.allowReaderPrefetch(slug);
       if (change.bookmarked !== undefined || change.autoDownload === true || change.notifyReleases === true) setUpdates(releaseUpdates());
       return true;
     } catch (error) { showFailure(error); return false; }
-  }, [invalidateNotificationIntents, showFailure]);
+  }, [invalidateNotificationIntents, showFailure, queue]);
   const setStoriesOptions = useCallback((slugs: string[], change: Partial<SavedStory>) => {
     if (change.bookmarked === false || change.notifyReleases === false) invalidateNotificationIntents(slugs);
     try {
@@ -507,7 +512,7 @@ function useAppState() {
 
   useEffect(() => {
     const states = transferStates();
-    const recovery = setTimeout(() => { for (const job of [...queue.jobs]) if (job.status === "cancelling") void cancelDownload(job.series.slug).catch(showFailure); }, 0);
+    const recovery = setTimeout(() => { for (const job of [...queue.jobs]) if (job.status === "cancelling") void cancelDownload(job.series.slug, Boolean(job.cancelDeleteFiles)).catch(showFailure); }, 0);
     queue.reconcileNative(states);
     queue.resumeWaiting();
     const timer = setInterval(() => { if (AppState.currentState === "active") void sync(true); }, 60_000);

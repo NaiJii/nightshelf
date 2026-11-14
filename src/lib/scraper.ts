@@ -338,7 +338,7 @@ export async function repairSavedPanel(series: Series, chapter: string, page: nu
   mergeCatalog([fresh]);
 }
 
-export async function downloadChapters(series: Series, selector: string, onProgress: (message: string, fraction: number) => void, guard: Guard, signal?: AbortSignal, planned?: string[], onPlan: (chapters: string[]) => void = () => {}, onChapterSaved: () => void = () => {}, automaticBookmark = false, detachAutomatic = false, nativeTransfer = true): Promise<void> {
+export async function downloadChapters(series: Series, selector: string, onProgress: (message: string, fraction: number) => void, guard: Guard, signal?: AbortSignal, planned?: string[], onPlan: (chapters: string[]) => void = () => {}, onChapterSaved: () => void = () => {}, automaticBookmark = false, detachAutomatic = false, nativeTransfer = true, onNativeHandoff: () => void = () => {}): Promise<void> {
   onProgress("Saving story details…", 0);
   const fresh = await refreshSeries(series, guard, signal);
   throwIfAborted(signal);
@@ -380,6 +380,7 @@ export async function downloadChapters(series: Series, selector: string, onProgr
     const settings = loadPreferences();
     const meteredNow = network.type !== "wifi" || Boolean(network.details?.isConnectionExpensive);
     const allowMetered = !automaticBookmark && settings.mobileData !== "never" && (settings.mobileData === "allow" || meteredNow);
+    onNativeHandoff();
     await backgroundTransfers.enqueue(JSON.stringify({ id: series.slug, title: series.title, chapters: batch, allowMetered, automatic: automaticBookmark, limitBytes: automaticBookmark ? settings.autoDownloadLimitMB * 1024 ** 2 : 0 }));
     if (detachAutomatic) {
       const jobs = loadDownloads();

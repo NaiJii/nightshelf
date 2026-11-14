@@ -41,14 +41,14 @@ class BackgroundDownloadsModule : Module() {
       if (selected != null) DownloadService.checkId(selected)
       val files = if (selected == null) DownloadService.directory(context).listFiles()?.filter { it.name.endsWith(".state") } ?: emptyList() else listOf(File(DownloadService.directory(context), "$selected.state"))
       files.forEach {
-        try { val id = it.name.removeSuffix(".state"); all.put(id, JSONObject(it.readText()).put("active", DownloadService.isActive(id)).put("hasPlan", File(DownloadService.directory(context), "$id.plan").exists())) } catch (_: Exception) {}
+        try { val id = it.name.removeSuffix(".state"); val saved = JSONObject(it.readText()); all.put(id, saved.put("scheduled", saved.optBoolean("scheduled")).put("active", DownloadService.isActive(id)).put("hasPlan", File(DownloadService.directory(context), "$id.plan").exists())) } catch (_: Exception) {}
       }
       all.toString()
     }
     AsyncFunction("begin") { id: String, title: String ->
       val context = appContext.reactContext ?: throw IllegalStateException("Download context unavailable")
       DownloadService.checkId(id)
-      DownloadService.clearPause(id)
+      DownloadService.clearPause(context, id)
       DownloadService.state(context, id, "preparing", "Preparing chapters…", 0.0)
       QueueProgress.register(context, id)
       val intent = Intent(context, DownloadService::class.java).putExtra("id", id).putExtra("title", title).setAction("prepare")
@@ -58,7 +58,7 @@ class BackgroundDownloadsModule : Module() {
     AsyncFunction("enqueue") { json: String ->
       val context = appContext.reactContext ?: throw IllegalStateException("Download context unavailable")
       val plan = JSONObject(json); val id = plan.getString("id"); DownloadService.checkId(id)
-      DownloadService.clearPause(id)
+      DownloadService.clearPause(context, id)
       DownloadService.atomic(File(DownloadService.directory(context), "$id.plan"), json)
       QueueProgress.register(context, id)
       if (plan.optBoolean("automatic")) {
@@ -72,14 +72,18 @@ class BackgroundDownloadsModule : Module() {
       Unit
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("pause") { id: String ->
-      DownloadService.checkId(id); DownloadService.pause(id)
-      appContext.reactContext?.let { context -> DownloadWorker.pause(context, id).get(); DownloadService.pause(id); if (!DownloadService.isActive(id)) DownloadService.state(context, id, "paused", "Paused", 0.0) }
+      DownloadService.checkId(id)
+      val context = appContext.reactContext ?: throw IllegalStateException("Download context unavailable")
+      DownloadService.pause(context, id)
+      DownloadWorker.pause(context, id).get(); DownloadService.pause(context, id)
+      if (!DownloadService.isActive(id)) DownloadService.state(context, id, "paused", "Paused", 0.0)
       Unit
     }
     AsyncFunction("resume") { id: String ->
       DownloadService.checkId(id)
-      DownloadService.clearPause(id)
       val context = appContext.reactContext ?: throw IllegalStateException("Download context unavailable")
+      DownloadService.clearPause(context, id)
+      DownloadService.state(context, id, "queued", "Queued to resume", 0.0)
       val intent = Intent(context, DownloadService::class.java).putExtra("id", id).setAction("download")
       if (DownloadService.serviceRunning()) context.startService(intent) else if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
       Unit

@@ -300,6 +300,7 @@ assert.equal(releaseLabel(base, now), "Release date unavailable");
 assert.ok(parseSeries(series + '&quot;published_at&quot;:[0,&quot;2026-10-01T00:00:00Z&quot;]', base.url).updatedAt);
 console.log("Self-test passed");
 await import("./download-queue-check.mjs");
+await import("./download-restart-check.mjs");
 await import("./storage-check.mjs");
 if (process.argv.includes("--live")) {
   const response = await fetch("https://asurascans.com/comics/sss-class-suicide-hunter-bd5bdaf8");

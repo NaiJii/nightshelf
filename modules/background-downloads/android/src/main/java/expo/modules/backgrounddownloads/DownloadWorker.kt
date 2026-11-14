@@ -14,6 +14,9 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
     val id = inputData.getString("id") ?: return Result.failure()
     DownloadService.checkId(id)
     if (!File(DownloadService.directory(applicationContext), "$id.plan").exists()) return Result.success()
+    val saved = try { JSONObject(File(DownloadService.directory(applicationContext), "$id.state").readText()).optString("state") } catch (_: Exception) { "" }
+    if (!TransferRecovery.canStart(true, saved, false)) return Result.success()
+    if (DownloadService.recoverPause(applicationContext, id)) return Result.success()
     val flag = DownloadService.acquire(id) ?: return Result.retry()
     applicationContext.getSystemService(android.app.NotificationManager::class.java).cancel(id.hashCode())
     cancelled = flag
@@ -44,7 +47,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
         try { preferences.exists() && JSONObject(preferences.readText()).optString("mobileData") == "never" } catch (_: Exception) { true }
       }
       val request = OneTimeWorkRequest.Builder(DownloadWorker::class.java).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS).setInputData(Data.Builder().putString("id", id).build()).setConstraints(Constraints.Builder().setRequiredNetworkType(if (metered) NetworkType.CONNECTED else NetworkType.UNMETERED).build()).build()
-      DownloadService.state(context, id, "queued", "Waiting for Android · Wi-Fi downloads", 0.0)
+      DownloadService.state(context, id, "queued", "Waiting for Android · Wi-Fi downloads", 0.0, scheduled = true)
       WorkManager.getInstance(context).enqueueUniqueWork("nightshelf-$id", ExistingWorkPolicy.KEEP, request)
     }
     fun pause(context: Context, id: String) = WorkManager.getInstance(context).cancelUniqueWork("nightshelf-$id").result
