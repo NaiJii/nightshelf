@@ -10,6 +10,7 @@ export type Series = {
   chapterUrls?: Record<string, string>;
   chapterTitles?: Record<string, string>;
   sourceRank?: number;
+  featuredRank?: number;
   url: string;
   slug: string;
   title: string;
@@ -283,6 +284,44 @@ export function parseTrending(source: string): string[] {
   return [...new Set(urls)].slice(0, 10);
 }
 
+export function parseAsuraFeatured(html: string): Series[] {
+  const heading = /<h1\b[^>]*>[\s\S]*?<\/h1>/i.exec(html);
+  if (!heading) return [];
+  const content = html.slice(heading.index + heading[0].length);
+  const nextHeading = [...content.matchAll(/<h[2-6]\b[^>]*>([\s\S]*?)<\/h[2-6]>/gi)]
+    .find(match => /^Trending Comics$/i.test(plainText(match[1])));
+  if (nextHeading?.index === undefined) return [];
+  const end = nextHeading.index;
+  const items = new Map<string, Series>();
+  const covers = new Map<string, string>();
+  for (const match of content.slice(0, end).matchAll(/(<a\b[^>]*>)([\s\S]*?)<\/a>/gi)) {
+    const href = attribute(match[1], "href");
+    if (!/^\/comics\/[a-z0-9_-]+\/?$/i.test(href)) continue;
+    const slug = href.split("/")[2];
+    const image = match[2].match(/<img\b[^>]*>/i)?.[0] ?? "";
+    const label = plainText(match[2]);
+    const rating = label.match(/^\d+(?:\.\d+)?(?=\s)/)?.[0] || "";
+    const title = (rating ? label.slice(rating.length).trim() : label) || attribute(image, "alt") || attribute(match[1], "aria-label");
+    const cover = asuraCoverUrl(attribute(image, "data-src") || attribute(image, "src") || attribute(image, "srcset").split(/\s+/)[0]);
+    if (cover) covers.set(slug, cover);
+    if (!title || items.has(slug)) continue;
+    items.set(slug, { slug, asuraSlug: slug.replace(/-[a-f\d]{8}$/i, ""), url: `https://asurascans.com/comics/${slug}`, title, summary: "", cover, rating, bookmarks: "", status: "", type: "Comic", kind: "comic", chapterCount: 0, latestChapter: "" });
+  }
+  return [...items.values()].map(item => ({ ...item, cover: item.cover || covers.get(item.slug) || "" }));
+}
+
+function asuraCoverUrl(value: unknown): string {
+  if (value && typeof value === "object") {
+    const image = value as Record<string, unknown>;
+    value = image.url || image.src;
+  }
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const url = new URL(decodeHtml(value.trim()), "https://asurascans.com");
+    return url.protocol === "https:" && !url.username && !url.password && !url.port ? url.href : "";
+  } catch { return ""; }
+}
+
 export function parseApiSeries(raw: unknown, kind: "comic" | "novel"): Series | null {
   if (!raw || typeof raw !== "object") return null;
   const data = raw as Record<string, unknown>;
@@ -296,7 +335,7 @@ export function parseApiSeries(raw: unknown, kind: "comic" | "novel"): Series | 
   const latest = data.latest_chapter_number ?? (recent.reduce((max, item) => Math.max(max, Number(item.number) || 0), 0) || data.chapter_count);
   return {
     url: url.toString(), slug, asuraSlug: data.slug, kind, title: data.title, alternativeTitles: parseAlternativeTitles(data.alternative_titles ?? data.alternativeTitles ?? data.alt_titles), summary: plainText(String(data.description || "")),
-    cover: String(data.cover_url || data.cover || ""), rating: String(data.rating || ""), bookmarks: String(data.bookmarks ?? data.bookmark_count ?? ""),
+    cover: asuraCoverUrl(data.cover_url) || asuraCoverUrl(data.cover) || asuraCoverUrl(data.thumbnail_url) || asuraCoverUrl(data.thumbnail), rating: String(data.rating || ""), bookmarks: String(data.bookmarks ?? data.bookmark_count ?? ""),
     status: String(data.status || "unknown"), type: kind === "novel" ? "Novel" : String(data.type || "Comic"),
     chapterCount: Number(data.chapter_count) || 0, latestChapter: String(latest || ""),
     updatedAt: typeof data.last_chapter_at === "string" && Number.isFinite(Date.parse(data.last_chapter_at)) ? data.last_chapter_at : undefined,

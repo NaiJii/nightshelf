@@ -13,6 +13,7 @@ import * as readingUx from "../src/lib/reading-ux.ts";
 import * as readRetention from "../src/lib/read-retention.ts";
 import * as requestControl from "../src/lib/request-control.ts";
 import * as appUpdatePolicy from "../src/lib/app-update-policy.ts";
+import { refreshProgress } from "../src/lib/refresh-progress.ts";
 
 function component(file, extraModules = {}, globals = {}, expose = []) {
   const slots = [], effects = []; let cursor = 0;
@@ -28,7 +29,7 @@ function component(file, extraModules = {}, globals = {}, expose = []) {
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
-    "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput", "ActivityIndicator", "Switch"].map(name => [name, name])),
+    "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "RefreshControl", "TextInput", "ActivityIndicator", "Switch"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "../lib/network-policy": networkPolicy,
     "../../lib/network": {networkGuard:()=>async()=>{}},
@@ -36,6 +37,8 @@ function component(file, extraModules = {}, globals = {}, expose = []) {
     "./network": {NetworkPaused:class extends Error{}},
     "./request-control": requestControl,
     "./download-display": downloadDisplay,
+    "./refresh-progress": { refreshProgress },
+    "../lib/refresh-progress": { refreshProgress },
     "./ui": { color: {}, ui: {}, Icon: "Icon" },
     "./reader-transfers": {cancelReaderTransfer:()=>false,beginReaderTransfer:()=>({progress(){},finish(){}})},
     ...extraModules,
@@ -91,6 +94,83 @@ assert.ok(touchButton.props.android_ripple,'Android touch feedback is native and
 assert.equal(touchButton.props.style({pressed:true})[0].minHeight,48,'touch feedback preserves button sizing');
 assert.equal(touchButton.props.style({pressed:true})[1].opacity,0.72);
 
+const refreshBar = component('../src/components/refresh-bar.tsx', {
+  'react-native':{Animated:{Value:class {},View:'Animated.View'}, StyleSheet:{create:styles=>styles}},
+}, {setTimeout:callback=>callback()}, ['ActiveBar']);
+refreshBar.render('ActiveBar',{percent:25});
+refreshBar.effects[0].callback();
+assert.equal(refreshBar.render('ActiveBar',{percent:75}).props.accessibilityValue.now,75);
+assert.equal(refreshBar.render('ActiveBar',{}).props.accessibilityValue.now,75,'measured progress stays visible while fetched results are applied');
+
+const homePageRequests = [], homeFocus = [], homeChecks = [];
+let finishHomeRankings;
+const homeStory = (slug, extras={}) => ({slug,title:slug,url:`https://asurascans.com/comics/${slug}`,status:'Ongoing',kind:'comic',updatedAt:'2026-11-23',...extras});
+const homeShelf = {
+  catalog:[homeStory('banner',{featuredRank:1}),homeStory('featured-next',{featuredRank:2}),homeStory('first'),homeStory('second')],
+  saved:{},read:{},preferences:{source:'asura',period:'week',contentMode:'all'},refreshing:false,
+  browseFeatured:async()=>[],sync:async(...args)=>homeChecks.push(args),
+  browse:async (options,cursor)=>{
+    homePageRequests.push({options,cursor});
+    if (options.sort==='trending') {
+      const rankings = {ids:[],cursor:{},hasMore:false};
+      return options.refresh ? new Promise(resolve=>{finishHomeRankings=()=>resolve(rankings);}) : rankings;
+    }
+    if (cursor.state?.comic===20) return {ids:['first'],cursor:{state:{comic:40}},hasMore:true};
+    if (cursor.state?.comic===40) return {ids:['second'],cursor:{},hasMore:false};
+    return {ids:['first'],cursor:{state:{comic:20}},hasMore:true};
+  },
+};
+const homeScreen = component('../src/app/(tabs)/index.tsx',{
+  'expo-linear-gradient':{LinearGradient:'LinearGradient'},
+  'expo-router':{useFocusEffect:callback=>homeFocus.push(callback)},
+  '../../lib/app-state':{useShelf:()=>homeShelf},'../../lib/storage':{readingHistory:()=>({})},
+  '../../lib/parser':parser,'../../lib/scraper':{FIRST_PAGE:{}},
+  '../../components/ui':{ui:{},color:{},PageHeading:'PageHeading',Cover:'Cover'},
+  '../../components/refresh-bar':{RefreshBar:'RefreshBar'},
+  '../../components/series-card':{openSeries(){}},
+  '../../components/discovery-controls':{DiscoveryControls:'DiscoveryControls',PopularPeriods:'PopularPeriods'},
+  '../../components/app-update-notice':{AppUpdateNotice:'AppUpdateNotice'},
+  '../../components/reading-shortcut':{ReadingShortcut:'ReadingShortcut'},
+  '../../components/release-feed':{ReleaseFeed:'ReleaseFeed'},
+  '../../components/story-row':{StoryRow:'StoryRow'},
+});
+const drawHome = () => homeScreen.render('default');
+const homeFeed = screen => nodes(screen).find(node=>node.type==='FlatList' && !node.props.horizontal);
+const homeProgress = screen => nodes(screen).find(node=>node.type==='RefreshBar').props.batchProgress;
+const latestStories = screen => Array.from(homeFeed(screen).props.data, row=>row.slug);
+drawHome(); const initialHomeFocus = homeFocus.splice(0); initialHomeFocus.forEach(effect=>effect());
+await new Promise(resolve=>setTimeout(resolve,0));
+let homePage = drawHome();
+const homeHeader = nodes(homeFeed(homePage).props.ListHeaderComponent);
+assert.ok(homeHeader.some(node=>node.props?.accessibilityLabel==='Hot today: banner'));
+assert.deepEqual(homeHeader.find(node=>node.type==='FlatList' && node.props.horizontal).props.data.map(row=>row.slug),['featured-next']);
+for (const heading of ['Trending comics','Trending novels','Latest updates'])
+  assert.ok(homeHeader.some(node=>node.props?.children===heading));
+assert.deepEqual(latestStories(homePage),['first']);
+assert.ok(nodes(homeFeed(homePage).props.renderItem({item:homeFeed(homePage).props.data[0]})).some(node=>node.type==='StoryRow'));
+assert.equal(homeHeader.filter(node=>node.type==='StoryRow').length,0,'Latest Updates rows are virtualized outside the header');
+homeFeed(homePage).props.onEndReached(); await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(latestStories(drawHome()),['first']);
+homeScreen.effects.at(-1).callback();
+await new Promise(resolve=>setTimeout(resolve,0));
+homePage = drawHome();
+assert.deepEqual(latestStories(homePage),['first','second']);
+assert.equal(homePageRequests.filter(request=>request.options.sort==='updated').length,3,'a page that adds no visible rows does not stall Home');
+homeFeed(homePage).props.onEndReached();
+assert.equal(homePageRequests.filter(request=>request.options.sort==='updated').length,3,'Home stops fetching once the provider is exhausted');
+homeFeed(homePage).props.refreshControl.props.onRefresh();
+homePage = drawHome();
+assert.equal(homeProgress(homePage),0,'Home shows determinate progress from the start of manual refresh');
+assert.deepEqual(latestStories(homePage),['first','second'],'cached rows remain visible during the request');
+assert.deepEqual(homeChecks[0].slice(0,2),[false,true],'Home checks saved stories without a full catalog scan');
+assert.equal(homePageRequests.filter(request=>request.options.refresh).length,2,'Home refresh reloads both rankings and latest updates');
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(homeProgress(drawHome()),75,'the bar stays determinate after chapter checks finish while rankings are pending');
+finishHomeRankings();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(homeProgress(drawHome()),undefined);
+console.log('Home feature banner, both trending sections and continuing Latest Updates passed');
+
 const browseRequests = [], exploreChecks = [];
 const exploreShelf = {
   catalog: [{slug:'first',title:'First'}], saved: {}, preferences: {source:'asura',sort:'title'},
@@ -105,6 +185,7 @@ const exploreModules = {
   '../../lib/scraper': {FIRST_PAGE:{page:1}},
   '../../lib/reading-ux': readingUx,
   '../../components/ui': {ui:{},color:{},Icon:'Icon',Chip:'Chip',PageHeading:'PageHeading'},
+  '../../components/refresh-bar': {RefreshBar:'RefreshBar'},
   '../../components/series-card': {SeriesCard:'SeriesCard'},
   '../../components/use-source-retry': {useSourceRetry:retry=>{retryExplore=retry;return ()=>{};}},
   '../../components/discovery-controls': {DiscoveryControls:'DiscoveryControls',PopularPeriods:'PopularPeriods'},
@@ -127,7 +208,7 @@ discovery.props.onScroll({nativeEvent:{contentOffset:{y:1900}}});
 discovery.props.onEndReached();
 discovery.props.onScroll({nativeEvent:{contentOffset:{y:1950}}});
 assert.equal(browseRequests.length,2,'approaching the bottom prefetches once, despite repeated scroll/end events');
-assert.ok(nodes(exploreList().props.ListFooterComponent).some(node=>node.type==='ActivityIndicator'),'pagination displays a loading indicator');
+assert.equal(nodes(explore.render('ExploreResults',{provider:'asura-test'})).find(node=>node.type==='RefreshBar').props.loading,true,'pagination displays the top loading bar');
 browseRequests[1].resolve({ids:[],cursor:{page:3},hasMore:true});
 await settleExplore();
 assert.equal(browseRequests.length,3,'pages hidden by filters keep advancing even without a content-size/end-reached event');
@@ -160,12 +241,13 @@ assert.equal(remembered.props.data[0].slug,'first');
 const restoredOffsets=[];remembered.props.ref.current={scrollToOffset:value=>restoredOffsets.push(value.offset)};
 remembered.props.onLayout({nativeEvent:{layout:{height:600}}});remembered.props.onContentSizeChange(400,2900);
 assert.deepEqual(restoredOffsets,[2100],'returning to a provider restores the previous scroll position');
-remembered.props.onRefresh();
+remembered.props.refreshControl.props.onRefresh();
 stopRevisited(); revisitedList(); const stopRefresh=revisited.effects[1].callback();
 await new Promise(resolve=>setTimeout(resolve,0));
 remembered=revisitedList();
 assert.equal(remembered.props.data[0].slug,'first','cached stories remain usable while refresh is pending');
-assert.equal(remembered.props.refreshing,true);
+assert.equal(remembered.props.refreshControl.props.refreshing,true);
+assert.equal(nodes(revisited.render('ExploreResults',{provider:'asura-test'})).find(node=>node.type==='RefreshBar').props.batchProgress,50,'Explore keeps determinate progress while results are pending after release checks');
 assert.equal(browseRequests.length,5);
 assert.deepEqual(exploreChecks[0].slice(0,2),[false,true],'refreshing Explore manually checks tracked releases');
 assert.equal(exploreChecks[0][2],browseRequests[4].access,'Explore results and chapter checks share metered consent');
@@ -173,7 +255,7 @@ browseRequests[4].reject(Error('Refresh offline'));
 await new Promise(resolve=>setTimeout(resolve,0));
 remembered=revisitedList();
 assert.equal(remembered.props.data[0].slug,'first','a failed refresh keeps the cached list');
-assert.equal(remembered.props.refreshing,false);
+assert.equal(remembered.props.refreshControl.props.refreshing,false);
 stopRefresh();
 remembered.props.ListHeaderComponent.props.children[1].props.children.find(node=>node.type==='TextInput').props.onChangeText(' remembered query ');
 assert.equal(exploreSessions.exploreQuery('asura-test'),' remembered query ','queries are remembered per provider');

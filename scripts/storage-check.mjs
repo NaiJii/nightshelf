@@ -782,8 +782,10 @@ export async function fetch(url,options={}){
     await assert.rejects(()=>refreshTrackedReleases(releaseGuard('Check releases?',true),message=>warnings.push(message)),{name:'NetworkPaused'});
     assert.deepEqual(refresher.attempted,[],'automatic release checks wait on metered data under Ask first');
     net.setNetwork({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}});
-    const fresh = await refreshTrackedReleases(releaseGuard('Check releases?',true),message=>warnings.push(message));
+    const progress = [];
+    const fresh = await refreshTrackedReleases(releaseGuard('Check releases?',true),message=>warnings.push(message),undefined,(checked,total)=>progress.push([checked,total]));
     assert.deepEqual(refresher.attempted,['bad','good'],'one broken story does not block tracked releases, and untracked stories are skipped');
+    assert.deepEqual(progress,[[0,2],[1,2],[2,2]],'the progress total counts tracked stories and advances after each attempt');
     assert.deepEqual(warnings,['404']);
     await notifyReleases(fresh);
     assert.deepEqual(storage.releaseUpdates().good,['2'],'an auto-download-only title records new releases for the foreground queue');

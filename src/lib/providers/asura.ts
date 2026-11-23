@@ -1,4 +1,4 @@
-import { chapterSort, kindOf, parseApiSeries, parseNovelChapters, parseNovelText, sourceOf } from "../parser";
+import { chapterSort, kindOf, parseApiSeries, parseAsuraFeatured, parseNovelChapters, parseNovelText, sourceOf } from "../parser";
 import type { Period, Series } from "../parser";
 import type { Provider } from "./types";
 import { cursorNumber, cursorObject } from "./types";
@@ -14,7 +14,7 @@ function siteSlug(item: Series): string {
   return kindOf(item) === "comic" ? route.replace(/-[a-f\d]{8}$/i, "") : route;
 }
 
-type ComicChapter = { number: number | string; series_slug?: string; title?: string; is_premium?: boolean; is_locked?: boolean; early_access_until?: string; access_gate?: string; pages?: { url?: unknown }[]; page_count?: number };
+type ComicChapter = { published_at?: string; released_at?: string; created_at?: string; number: number | string; series_slug?: string; title?: string; is_premium?: boolean; is_locked?: boolean; early_access_until?: string; access_gate?: string; pages?: { url?: unknown }[]; page_count?: number };
 function comicChapter(raw: unknown, slug: string): ComicChapter {
   if (!raw || typeof raw !== "object") throw new Error("Asura returned invalid chapter details.");
   const chapter = raw as ComicChapter;
@@ -32,7 +32,7 @@ export function mergeAsuraListing(fresh: Series, previous?: Series): Series {
     slug: previous?.slug || fresh.slug,
     genres: fresh.genres?.length ? fresh.genres : previous?.genres || fresh.genres,
     summary: previous?.detailsCached || previous?.metadataSyncedAt ? previous.summary || fresh.summary : fresh.summary || previous?.summary || "",
-    localCover: previous?.localCover, syncedAt: previous?.syncedAt,
+    cover: fresh.cover || previous?.cover || "", localCover: previous?.localCover, syncedAt: previous?.syncedAt,
     rank: fresh.rank ?? previous?.rank,
     popularRanks: fresh.popularRanks ? { ...previous?.popularRanks, ...fresh.popularRanks } : previous?.popularRanks,
   };
@@ -45,7 +45,7 @@ export const asura: Provider<Cursor> = {
     for (const key of ["comicDone", "novelDone"]) if (data[key] !== undefined && typeof data[key] !== "boolean") throw new Error("Invalid Asura cursor.");
     return { comic: cursorNumber(data.comic, 0), novel: cursorNumber(data.novel, 0), comicDone: data.comicDone === true, novelDone: data.novelDone === true };
   },
-  matches: (previous, fresh) => sourceOf(previous) === "asura" && kindOf(previous) === kindOf(fresh) && (previous.url === fresh.url || previous.title.toLowerCase() === fresh.title.toLowerCase()),
+  matches: (previous, fresh) => sourceOf(previous) === "asura" && kindOf(previous) === kindOf(fresh) && (previous.url === fresh.url || (previous.asuraSlug && previous.asuraSlug === fresh.asuraSlug) || previous.title.toLowerCase() === fresh.title.toLowerCase()),
   merge: mergeAsuraListing,
   async browse(options, cursor, context) {
     const next = { ...cursor }, items: Series[] = [];
@@ -92,7 +92,10 @@ export const asura: Provider<Cursor> = {
       fresh = { ...parsed, chapterIds: chapters.filter(chapter => !chapter.locked).map(chapter => chapter.id), chapterUrls: Object.fromEntries(chapters.filter(chapter => !chapter.locked).map(chapter => [chapter.id, chapter.url])), lockedChapterIds: chapters.filter(chapter => chapter.locked).map(chapter => chapter.id), chapterCount: chapters.length || parsed.chapterCount, latestChapter: chapters.at(-1)?.id || parsed.latestChapter };
     } else {
       const result = await context.json(`${API}/series/${encodeURIComponent(siteSlug(item))}`) as { series?: unknown };
-      const parsed = parseApiSeries(result?.series, "comic");
+      const parsed = parseApiSeries(result?.series, "comic")
+        || parseApiSeries((result as { data?: { series?: unknown } })?.data?.series, "comic")
+        || parseApiSeries((result as { data?: unknown })?.data, "comic")
+        || parseApiSeries(result, "comic");
       if (!parsed) throw new Error("Story details are unavailable.");
       fresh = parsed;
     }
@@ -108,7 +111,11 @@ export const asura: Provider<Cursor> = {
       if (new Set(ids).size !== ids.length || ids.length < item.chapterCount) throw new Error("Asura returned an incomplete chapter list. Pull down to retry.");
       const publicChapters = chapters.filter(chapter => !restricted(chapter));
       const chapterIds = publicChapters.map(chapter => String(chapter.number)).sort(chapterSort);
-      return { ...item, chapterIds, chapterUrls: Object.fromEntries(publicChapters.map(chapter => [String(chapter.number), `${item.url}/chapter/${chapter.number}`])), chapterTitles: Object.fromEntries(chapters.map(chapter => [String(chapter.number), `Chapter ${chapter.number}${chapter.title ? ` · ${chapter.title}` : ""}`])), lockedChapterIds: chapters.filter(restricted).map(chapter => String(chapter.number)).sort(chapterSort), chapterCount: chapters.length, latestChapter: [...ids].sort(chapterSort).at(-1) || "", chapterListComplete: true, detailsCached: true, syncedAt: new Date().toISOString() };
+      const latestRelease = publicChapters.reduce((latest, chapter) =>
+        Math.max(latest, Date.parse(chapter.published_at || chapter.released_at || chapter.created_at || "") || 0),
+      Date.parse(item.updatedAt || "") || 0);
+      const updatedAt = latestRelease ? new Date(latestRelease).toISOString() : item.updatedAt;
+      return { ...item, updatedAt, sourceDates: Boolean(updatedAt) || item.sourceDates, chapterIds, chapterUrls: Object.fromEntries(publicChapters.map(chapter => [String(chapter.number), `${item.url}/chapter/${chapter.number}`])), chapterTitles: Object.fromEntries(chapters.map(chapter => [String(chapter.number), `Chapter ${chapter.number}${chapter.title ? ` · ${chapter.title}` : ""}`])), lockedChapterIds: chapters.filter(restricted).map(chapter => String(chapter.number)).sort(chapterSort), chapterCount: chapters.length, latestChapter: [...ids].sort(chapterSort).at(-1) || "", chapterListComplete: true, detailsCached: true, syncedAt: new Date().toISOString() };
     }
     const chapterIds = [...(item.chapterIds || [])].sort(chapterSort);
     return { ...item, chapterIds, detailsCached: true, syncedAt: new Date().toISOString() };
@@ -131,6 +138,7 @@ export const asura: Provider<Cursor> = {
     });
     return { kind: "images", assets: urls.map(url => ({ url, referer: chapter.url, agent: MOBILE_AGENT })) };
   },
+  async featured(context) { return parseAsuraFeatured(await context.text("https://asurascans.com/")); },
   async rankings(kind, period, context) {
     const url = kind === "comic" ? `${API}/trending/${period}?limit=10` : `${API}/novel-series?limit=10&sort=popular&period=${period}`;
     const result = await context.json(url) as { data?: unknown };

@@ -1,6 +1,6 @@
 import { Pressable } from "./pressable";
 import { ComponentProps, ReactNode, useState } from "react";
-import { ActivityIndicator, ColorValue, Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ColorValue, Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Series } from "../lib/parser";
@@ -43,7 +43,7 @@ export function DownloadIndicator() {
 export function PageHeading({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
   const shelf = useShelf();
   const tint = shelf.connection.warning ? "#d6b782" : color.muted;
-  return <><View style={ui.header}><View style={{ flex: 1 }}><Text style={ui.eyebrow}>{subtitle}</Text><Text style={ui.pageTitle}>{title}</Text></View><View style={{ alignItems: "flex-end", gap: 5 }}><DownloadIndicator/><View accessible accessibilityLabel={`Connection: ${shelf.connection.label}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Icon name={shelf.connection.icon} size={12} tint={tint} /><Text style={{ color: tint, fontSize: 10 }}>{shelf.connection.label}</Text></View>{shelf.syncing && <ActivityIndicator size="small" color={color.lilac} accessibilityLabel="Syncing in background" />}</View>{action}</View>{shelf.notice && !/offline|waiting for.*wi.fi|connect.*internet/i.test(shelf.notice) ? <Pressable accessibilityRole="button" accessibilityLabel={`${shelf.notice} Tap to dismiss`} onPress={shelf.dismissNotice} style={ui.notice}><Text style={[ui.muted, { flex: 1 }]}>{shelf.notice}</Text><Icon name="close" size={16} /></Pressable> : null}</>;
+  return <><View style={ui.header}><View style={{ flex: 1 }}><Text style={ui.eyebrow}>{subtitle}</Text><Text style={ui.pageTitle}>{title}</Text></View><View style={{ alignItems: "flex-end", gap: 5 }}><DownloadIndicator/><View accessible accessibilityLabel={`Connection: ${shelf.connection.label}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Icon name={shelf.connection.icon} size={12} tint={tint} /><Text style={{ color: tint, fontSize: 10 }}>{shelf.connection.label}</Text></View></View>{action}</View>{shelf.notice && !/offline|waiting for.*wi.fi|connect.*internet/i.test(shelf.notice) ? <Pressable accessibilityRole="button" accessibilityLabel={`${shelf.notice} Tap to dismiss`} onPress={shelf.dismissNotice} style={ui.notice}><Text style={[ui.muted, { flex: 1 }]}>{shelf.notice}</Text><Icon name="close" size={16} /></Pressable> : null}</>;
 }
 export function Chip({ text, active, onPress }: { text: string; active?: boolean; onPress: () => void }) { return <Pressable accessibilityRole="button" accessibilityState={{ selected: Boolean(active) }} onPress={onPress} style={[ui.chip, active && ui.activeChip]}><Text style={[ui.chipText, active && { color: color.text }]}>{text}</Text></Pressable>; }
 export const ui = StyleSheet.create({

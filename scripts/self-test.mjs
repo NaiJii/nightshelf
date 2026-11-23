@@ -3,7 +3,7 @@ import './app-update-check.mjs';
 import { unreadFromHere, libraryScopeCounts, unavailableChapter, matchesStoryQuery, readingActionLabel } from "../src/lib/reading-ux.ts";
 import './reader-stream-check.mjs';
 import assert from "node:assert/strict";
-import { filterDiscovery, kindOf, nextUnread, resumeTarget, parseApiSeries, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, parseTrending, publicationState, releaseLabel, selectChapters, sortExplore } from "../src/lib/parser.ts";
+import { filterDiscovery, kindOf, nextUnread, resumeTarget, parseApiSeries, parseAsuraFeatured, parseChapters, parseDiscovery, parseNovelChapters, parseNovelText, parsePageImages, parseSeries, parseTrending, publicationState, releaseLabel, selectChapters, sortExplore } from "../src/lib/parser.ts";
 import { readerHtml } from "../src/lib/reader-html.ts";
 import { connectionAccess, connectionPauseMessage, connectionLabel } from "../src/lib/network-policy.ts";
 import { automaticReleaseIds, newReleases, unreadReleases } from "../src/lib/release-policy.ts";
@@ -125,6 +125,17 @@ assert.equal(nextUnread(['2'],undefined,{'1':'read'}),'2','continuation survives
 assert.equal(nextUnread(['1'],{chapter:'1'},{'1':'read'}),undefined);
 assert.deepEqual(unreadReleases(["2", "2", "3", "4"], {"2":"read"}, ["1","2","3"]), ["3"]);
 assert.deepEqual(unreadReleases(["2"], {"2":"read"}), []);
+const banner = parseAsuraFeatured(`<header><a href="/comics/not-featured">Nav</a></header><h1>Read on Asura</h1>
+<a href="/comics/invincible-mumu-7de80a82"><img src="/images/mumu.webp" alt="Invincible Mumu"><span>9.5</span> Invincible Mumu</a>
+<a href="/comics/the-genius-knight-of-a-fallen-race-7de80a82"><img srcset="//cdn.asurascans.com/knight.webp 1x"></a>
+<a href="/comics/the-genius-knight-of-a-fallen-race-7de80a82"><span>9.0</span> The Genius Knight of a Fallen Race</a>
+<a href="https://example.com/comics/fake">External</a>
+<h2><span>Trending</span> Comics</h2><a href="/comics/ranking-only">Trending only</a>`);
+assert.deepEqual(banner.map(item=>item.title),['Invincible Mumu','The Genius Knight of a Fallen Race']);
+assert.equal(banner[0].cover,'https://asurascans.com/images/mumu.webp');
+assert.equal(banner[1].cover,'https://cdn.asurascans.com/knight.webp');
+assert.equal(banner[0].asuraSlug,'invincible-mumu');
+assert.equal(parseApiSeries({slug:'player',title:'Player',thumbnail:{url:'//cdn.asurascans.com/player.webp'}},'comic').cover,'https://cdn.asurascans.com/player.webp');
 const activity = execFileSync("tar", ["-xOf", "node_modules/expo/template.tgz", "package/android/app/src/main/java/com/helloworld/MainActivity.kt"], {encoding:"utf8"});
 const pluginConfig = readerControlsPlugin({name:"NightShelf",slug:"nightshelf"});
 const applyActivity = (contents, language = "kt") => pluginConfig.mods.android.mainActivity({modResults:{contents,language},modRequest:{}});
@@ -136,7 +147,7 @@ await assert.rejects(()=>applyActivity(activity,"java"), /Kotlin/);
 await assert.rejects(()=>applyActivity("class UnknownActivity {}"), /locate MainActivity/);
 // Execute the actual WebView script: a near-end scroll, zoom, failed image or
 // background timer must never falsely mark a chapter as read.
-function readerSession(novel = false, imageCount = 2) {
+function readerSession(novel = false, imageCount = 2, canvasPreview = false) {
   let now = 1000, rect = { top: 400, bottom: 850, left: 0, right: 400 };
   let tick, timerId = 0, firstBottom = -10;
   const events = {}, timers = new Map();
@@ -146,7 +157,9 @@ function readerSession(novel = false, imageCount = 2) {
     hidden: ['reader-scrubber','scrub-preview','scrub-text'].includes(id), value: '0', style: {}, offsetHeight: 68, clientHeight: 152, attributes: {}, listeners: {},
     addEventListener(type, callback) { this.listeners[type] = callback; }, setAttribute(name,value) { this.attributes[name] = value; }, closest:()=>true,
   }]));
-  const image = { src:'file:///last.webp',textContent:'A preview of the last paragraph.',complete: true, naturalWidth: 1000, getBoundingClientRect: () => rect };
+  const draws = [];
+  if (canvasPreview) elements['scrub-crop'].querySelector = () => ({height:152,getContext:()=>({clearRect(){},drawImage: (...args)=>draws.push(args)})});
+  const image = { naturalHeight: 2000, src:'file:///last.webp',textContent:'A preview of the last paragraph.',complete: true, naturalWidth: 1000, getBoundingClientRect: () => rect };
   const window = { readerActive: false, visualViewport: { offsetTop: 0, offsetLeft: 0, height: 800, width: 400, scale: 1, addEventListener(type, callback) { events[`viewport-${type}`] = callback; } }, ReactNativeWebView: { postMessage: data => messages.push(JSON.parse(data)) } };
   const firstImage = {src:"file:///first.webp",complete:true,naturalWidth:1000,getBoundingClientRect:()=>({top:-500,bottom:firstBottom,left:0,right:400})};
   const document = { getElementById:id=>elements[id], querySelectorAll:()=>novel ? [image] : [], hidden: false, images: novel ? [] : imageCount === 1 ? [image] : [firstImage,image], documentElement: { scrollHeight: 1600 }, querySelector: () => novel ? image : null };
@@ -157,7 +170,7 @@ function readerSession(novel = false, imageCount = 2) {
   const context = { window, document, Date: { now: () => now }, innerHeight: 800, innerWidth: 400, scrollY: 800, scrollTo(x,y) { seeks.push(y); if(loaded)context.scrollY=y; }, addEventListener: (type, callback) => { events[type] = callback; }, setInterval: callback => { tick = callback; }, setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id; }, clearTimeout(id) { timers.delete(id); } };
   vm.runInNewContext((novel ? readerHtml([], 0, {title:"Chapter",paragraphs:["Last paragraph"]}) : reader).match(/<script>([\s\S]*?)<\/script>/)[1], context);
   events.load(); loaded = true; window.readerActive = true;
-  return { image, window, document, messages, seeks, elements, advance, getScroll:()=>context.scrollY,
+  return { image, window, document, messages, seeks, elements, advance, draws, getScroll:()=>context.scrollY,
     setPanels(panels) { document.images.forEach((image,index)=>{const panel=panels[index];image.getBoundingClientRect=()=>({top:panel.top-context.scrollY,bottom:panel.top+panel.height-context.scrollY,left:0,right:panel.width});}); },
     input(type,value) { if(value!==undefined)elements['scrub-range'].value=String(value); elements['scrub-range'].listeners[type]({target:elements['scrub-range']}); },
     emit(type, event = {}) { events[type](event); }, setBottom(value) { rect.bottom = value; }, setFirstBottom(value) { firstBottom = value; }, setScroll(value) { context.scrollY = value; }, tick(ms = 250) { advance(ms); tick(); } };
@@ -384,6 +397,17 @@ revealed.emit('touchstart',{touches:[revealFinger]}); revealed.emit('touchend',{
 const beforeRevealSeek = revealed.getScroll();
 revealed.input('change',7500);
 assert.equal(revealed.getScroll(),beforeRevealSeek,'the tap that reveals controls cannot seek');
+const canvasScrub = readerSession(false, 2, true);
+canvasScrub.setScroll(0);
+canvasScrub.document.documentElement.scrollHeight = 5000;
+canvasScrub.setPanels([{top:0,height:1000,width:400},{top:1000,height:4000,width:400}]);
+canvasScrub.window.readerChromeVisible = true;
+canvasScrub.window.readerUpdateControls();
+canvasScrub.input('input',9000);
+assert.equal(canvasScrub.draws[0]?.[0],canvasScrub.image,'preview draws the already loaded panel');
+canvasScrub.input('input',9001);
+assert.equal(canvasScrub.draws.length,1,'subpixel movement does not redraw an already decoded preview crop');
+assert.equal(canvasScrub.elements['scrub-crop'].style.backgroundImage,undefined,'canvas preview does not load a second full-size background');
 const beforePreview=scrub.messages.length, seeksBefore=scrub.seeks.length;
 scrub.input('input',5000);
 assert.equal(scrub.elements['scrub-preview'].hidden,false);

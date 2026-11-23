@@ -5,7 +5,13 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
+        "gradleCommand": ":background-downloads:testReleaseUnitTest :app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
+      }
+    },
+    "preview-arm32": {
+      "extends": "preview",
+      "android": {
+        "gradleCommand": ":background-downloads:testReleaseUnitTest :app:assembleRelease -PreactNativeArchitectures=armeabi-v7a"
       }
     },
     "production": {

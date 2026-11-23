@@ -34,6 +34,7 @@ export interface Provider<Cursor> {
   matches(previous: Series, fresh: Series): boolean;
   merge(fresh: Series, previous?: Series): Series;
   rankings?(kind: "comic" | "novel", period: Period, context: RequestContext): Promise<Series[]>;
+  featured?(context: RequestContext): Promise<Series[]>;
   discover?(context: RequestContext): Promise<Series[]>;
   verify?(url: string, context: RequestContext): Promise<void>;
 }

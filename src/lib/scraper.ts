@@ -1,6 +1,6 @@
 import { fetch } from "expo/fetch";
 import { Directory, File } from "expo-file-system";
-import { kindOf, sourceOf, selectChapters } from "./parser";
+import { kindOf, parseSeries, sourceOf, selectChapters } from "./parser";
 import type { Chapter, ContentMode, Series, SourceId } from "./parser";
 import { getProvider, storyProvider } from "./providers/registry";
 import { MOBILE_AGENT } from "./providers/assets";
@@ -90,7 +90,8 @@ async function cacheCover(series: Series, guard: Guard, signal?: AbortSignal): P
   }
   if (!file.exists) {
     const bytes = await request(series.cover, guard, async response => {
-      if (!response.headers.get("content-type")?.startsWith("image/")) throw new Error("Cover request did not return an image.");
+      const type = response.headers.get("content-type");
+      if (type && !type.startsWith("image/") && !type.startsWith("application/octet-stream")) throw new Error("Cover request did not return an image.");
       const bytes = await response.bytes();
       if (!imageHeader(bytes)) throw new Error("Cover image is invalid.");
       return bytes;
@@ -102,6 +103,20 @@ async function cacheCover(series: Series, guard: Guard, signal?: AbortSignal): P
   }
   return file.uri;
 }
+async function cacheStoryCover(item: Series, guard: Guard, signal?: AbortSignal): Promise<string | undefined> {
+  try {
+    const cached = await cacheCover(item, guard, signal);
+    if (cached) return cached;
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof NetworkPaused || sourceOf(item) !== "asura") throw error;
+  }
+  if (sourceOf(item) !== "asura" || kindOf(item) !== "comic") return item.localCover;
+  const cover = parseSeries(await getText(item.url, guard, undefined, signal), item.url, []).cover;
+  if (!cover || cover === item.cover) return item.localCover;
+  return await cacheCover({ ...item, cover }, guard, signal) || item.localCover;
+}
+
 async function getJson(url: string, guard: Guard, signal?: AbortSignal): Promise<unknown> {
   const text = await getText(url, guard, undefined, signal);
   try { return JSON.parse(text); }
@@ -139,7 +154,15 @@ function requestContext(source: SourceId, guard: Guard, signal?: AbortSignal): R
 export async function refreshSeries(item: Series, guard: Guard, signal?: AbortSignal, loadChapters = true): Promise<Series> {
   const provider = storyProvider(item), info = providerInfo(provider.id);
   const context = requestContext(provider.id, guard, signal);
-  let fresh = await provider.details(item, context);
+  let fresh = item;
+  try { fresh = await provider.details(item, context); }
+  catch (error) {
+    throwIfAborted(signal);
+    // A public chapter list can still be valid when the optional story detail
+    // response is missing. Actual connection and access errors still propagate.
+    if (!(loadChapters && provider.id === "asura" && kindOf(item) === "comic"
+      && error instanceof Error && error.message === "Story details are unavailable.")) throw error;
+  }
   if (loadChapters) fresh = await provider.chapters(fresh, context);
   else if (info.chapterCache === "inline") {
     delete fresh.chapterIds; delete fresh.chapterUrls; delete fresh.chapterTitles; delete fresh.lockedChapterIds;
@@ -178,12 +201,47 @@ async function enrichDiscovery(items: Series[], guard: Guard, signal?: AbortSign
       try {
         if (!item.summary || !Array.isArray(item.genres) || getProvider(sourceOf(item)).needsDetails?.(item) || !(Date.now() - Date.parse(item.metadataSyncedAt || "") <= 6 * 3600_000)) fresh = await refreshSeries(item, guard, signal, false);
       } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
-      try { fresh.localCover = await cacheCover(fresh, guard, signal); } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
+      try { fresh.localCover = await cacheStoryCover(fresh, guard, signal) || fresh.localCover; } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
       throwIfAborted(signal);
       return fresh;
     }));
     throwIfAborted(signal);
     items.splice(start, batch.length, ...batch); mergeCatalog(batch); changed();
+  }
+}
+
+export async function loadFeaturedStories(guard: Guard, signal?: AbortSignal, changed = () => {}): Promise<string[]> {
+  const provider = getProvider("asura");
+  const featured = await provider.featured?.(requestContext("asura", guard, signal)) ?? [];
+  throwIfAborted(signal);
+  const stored = catalogMetadata();
+  const items = featured.map((item, index) => {
+    const previous = stored.find(value => provider.matches(value, item));
+    return { ...(previous ?? item), cover: previous?.cover || item.cover, featuredRank: index + 1 };
+  });
+  if (items.length) {
+    const ids = new Set(items.map(item => item.slug));
+    mergeCatalog([...stored.filter(item => item.featuredRank && !ids.has(item.slug)).map(item => ({ ...item, featuredRank: undefined })), ...items]);
+    changed();
+  }
+  return items.map(item => item.slug);
+}
+
+export async function cacheFeaturedCovers(ids: string[], guard: Guard, signal?: AbortSignal, changed = () => {}) {
+  const stored = new Map(catalogMetadata().map(item => [item.slug, item]));
+  for (let i = 0; i < ids.length; i += 3) {
+    await yieldToForeground(signal);
+    const batch = await Promise.all(ids.slice(i, i + 3).map(async id => {
+      const item = stored.get(id);
+      if (!item || item.localCover) return undefined;
+      try {
+        const localCover = await cacheStoryCover(item, guard, signal);
+        return localCover ? { ...item, localCover } : undefined;
+      } catch (error) { if (error instanceof NetworkPaused) throw error; return undefined; }
+    }));
+    throwIfAborted(signal);
+    const covered = batch.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    if (covered.length) { mergeCatalog(covered); changed(); }
   }
 }
 

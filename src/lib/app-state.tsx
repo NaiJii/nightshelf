@@ -3,7 +3,7 @@ import { Alert, AppState } from "react-native";
 import { usePathname } from "expo-router";
 import NetInfo from "@react-native-community/netinfo";
 import { chapterListCached, ContentMode, Series, selectChapters } from "./parser";
-import { browseCatalog, enrichCatalogIds, downloadChapters, repairSavedPanel, refreshSeries, searchCatalog, syncCatalog } from "./scraper";
+import { browseCatalog, enrichCatalogIds, cacheFeaturedCovers, loadFeaturedStories, downloadChapters, repairSavedPanel, refreshSeries, searchCatalog, syncCatalog } from "./scraper";
 import type { BrowseCursor, BrowseOptions } from "./scraper";
 import { chapterIntact, deleteChapters, catalogMetadata, loadCatalogAsync, loadPreferences, Preferences, savedStories, mergeCatalog, savePreferences, readChapters, markChapterRead, localChapters, releaseUpdates, setChaptersRead, loadDownloads, saveDownloads, loadDownloadStops, saveDownloadStop } from "./storage";
 import { networkGuard, NetworkPaused } from "./network";
@@ -17,6 +17,7 @@ import { throwIfAborted, withAbort, withLinkedAbort, withForeground } from "./re
 import { backgroundTransfers, DownloadPaused, transferStates, stopTransfer } from "./background-downloads";
 import { freeBytes, libraryBytesAsync, updateStoryOptions, updateStoriesOptions, cleanupReadDownloads } from "./library-tools";
 import { readDeletionDue } from "./read-retention";
+import { refreshProgress } from "./refresh-progress";
 import type { SavedStory } from "./parser";
 
 function sameMetadata(previous: unknown, next: unknown): boolean {
@@ -30,6 +31,11 @@ function sameMetadata(previous: unknown, next: unknown): boolean {
   const keys = Object.keys(before).filter(key => before[key] !== undefined);
   return keys.length === Object.keys(after).filter(key => after[key] !== undefined).length
     && keys.every(key => sameMetadata(before[key], after[key]));
+}
+
+function afterControlFeedback(action: () => void) {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => setTimeout(action, 0));
+  else action();
 }
 
 function useAppState() {
@@ -55,8 +61,9 @@ function useAppState() {
     return catalogScan.current.running;
   }, []);
   const [preferences, setPreferences] = useState(loadPreferences);
+  const pendingPreferences = useRef<Preferences | null>(null);
+  const reloadPreferences = useCallback(() => setPreferences(pendingPreferences.current ?? loadPreferences()), []);
   const [saved, setSaved] = useState(savedStories);
-  const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState("");
   const [networkNotice, setNetworkNotice] = useState("");
@@ -148,7 +155,7 @@ function useAppState() {
       if (backgroundTransfers) await backgroundTransfers.begin(item.slug, item.title);
       await downloadChapters(item, job.selection, progress, Object.assign(guard, { allowsMetered: access.allowsMetered }), signal, job.chapters, plan, () => void refreshCatalog(), job.autoBookmark, Boolean(backgroundTransfers), true, handoff);
       if (backgroundTransfers) return "native" as const;
-    } finally { if (signal.aborted) await stopTransfer(job.series.slug); await backgroundTransfers?.endPreparation(job.series.slug).catch(() => {}); void refreshCatalog(); setPreferences(loadPreferences()); }
+    } finally { if (signal.aborted) await stopTransfer(job.series.slug); await backgroundTransfers?.endPreparation(job.series.slug).catch(() => {}); void refreshCatalog(); reloadPreferences(); }
   }, jobs => {
     const state = jobs.map(job => `${job.series.slug}:${job.status}:${Boolean(job.native)}:${Boolean(job.nativePending)}:${Boolean(job.readerHeld)}:${job.chapters?.join(",")}`).join("|");
     if (state !== lastQueueSave.current.state || Date.now() - lastQueueSave.current.at >= 1000) {
@@ -211,6 +218,13 @@ function useAppState() {
     } catch (error) { if (!signal.aborted && !providerSignal.aborted && error instanceof NetworkPaused) showFailure(error); throw error; }
   }, [showFailure, refreshCatalog]);
 
+  const browseFeatured = useCallback(async (signal: AbortSignal, refreshAccess?: () => Promise<void>) => {
+    const access = refreshAccess ?? networkGuard("Load featured stories?", true);
+    const ids = await loadFeaturedStories(access, signal, () => void refreshCatalog());
+    void cacheFeaturedCovers(ids, access, signal, () => void refreshCatalog()).catch(() => {});
+    return ids;
+  }, [refreshCatalog]);
+
   const removeDownloads = useCallback(async (item: Series, chapters: string[], all = false) => {
     if (deleteLock.current) return false;
     const reader = readerFetches.current.get(item.slug);
@@ -236,6 +250,8 @@ function useAppState() {
   const autoDownload = useCallback(async () => {
     const network = await NetInfo.fetch();
     if (deleteLock.current || AppState.currentState !== "active" || !isUnmeteredWifi(network)) return;
+    const pending = releaseUpdates();
+    if (!Object.entries(savedStories()).some(([slug, story]) => story.autoDownload && pending[slug]?.length)) return;
     const items = await loadCatalogAsync();
     if (deleteLock.current || AppState.currentState !== "active") return;
     const options = savedStories(), ledger = readChapters(), releases = releaseUpdates();
@@ -344,17 +360,9 @@ function useAppState() {
     return promise;
   }, [queue, refreshCatalog, queuedDownloadBusy]);
 
-  const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
-    if (field === "bookmarked") invalidateNotificationIntents([slug]);
-    try {
-      setSaved(updateStoryOptions(slug, field === "bookmarked" ? { bookmarked: !savedStories()[slug]?.bookmarked, list: undefined } : { liked: !savedStories()[slug]?.liked }));
-      if (field === "bookmarked") setUpdates(releaseUpdates());
-    } catch (error) { showFailure(error); }
-  }, [invalidateNotificationIntents, showFailure]);
-
   const providerViews = useRef<Partial<Record<string, Partial<Preferences>>>>({});
   const updatePreferences = useCallback((change: Partial<Preferences>) => {
-    const previous = loadPreferences();
+    const previous = pendingPreferences.current ?? loadPreferences();
     if (change.source && change.source !== previous.source) {
       const { sort, period, contentMode, hideDownloaded, hideLiked, hideBookmarked } = previous;
       providerViews.current[previous.source || "asura"] = { sort, period, contentMode, hideDownloaded, hideLiked, hideBookmarked };
@@ -363,41 +371,84 @@ function useAppState() {
     if ((["source", "webtoonLanguage", "webtoonCollection"] as const).some(key => value[key] !== previous[key])) {
       cancelDetails(); providerRequests.current.abort(); providerRequests.current = new AbortController();
     }
-    savePreferences(value);
-    if (previous.mobileData !== value.mobileData) backgroundTransfers?.setNetworkPolicy(value.mobileData === "never");
+    pendingPreferences.current = value;
     setPreferences(value);
-  }, [cancelDetails]);
+    if (previous.mobileData !== value.mobileData) backgroundTransfers?.setNetworkPolicy(value.mobileData === "never");
+    const persist = () => {
+      if (pendingPreferences.current !== value) return;
+      try { savePreferences(value); }
+      catch (error) {
+        const restored = loadPreferences();
+        backgroundTransfers?.setNetworkPolicy(restored.mobileData === "never");
+        setPreferences(restored);
+        showFailure(error);
+      } finally { pendingPreferences.current = null; }
+    };
+    if (previous.mobileData !== value.mobileData) persist(); else afterControlFeedback(persist);
+  }, [cancelDetails, showFailure]);
 
   const rememberSearch = useCallback((provider: string, query: string | null) => {
-    const history = loadPreferences().searchHistory || {};
+    const history = (pendingPreferences.current ?? loadPreferences()).searchHistory || {};
     const term = query?.trim().slice(0, 100);
     if (term && (term.length < 2 || history[provider]?.[0] === term)) return;
     if (!term && !history[provider]?.length) return;
     updatePreferences({searchHistory: {...history, [provider]: term ? [term, ...(history[provider] || []).filter(value => value.toLowerCase() !== term.toLowerCase())].slice(0,8) : []}});
   }, [updatePreferences]);
 
-  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) => {
-    if (change.bookmarked === false || change.notifyReleases === false) invalidateNotificationIntents([slug]);
-    try {
-      setSaved(updateStoryOptions(slug, change));
-      if (change.autoDownload === true) queue.allowReaderPrefetch(slug);
-      if (change.bookmarked !== undefined || change.autoDownload === true || change.notifyReleases === true) setUpdates(releaseUpdates());
-      return true;
-    } catch (error) { showFailure(error); return false; }
-  }, [invalidateNotificationIntents, showFailure, queue]);
+  const pendingStories = useRef(new Map<string, Partial<SavedStory>>());
   const setStoriesOptions = useCallback((slugs: string[], change: Partial<SavedStory>) => {
     if (change.bookmarked === false || change.notifyReleases === false) invalidateNotificationIntents(slugs);
-    try {
-      setSaved(updateStoriesOptions(slugs, change));
-      if (change.bookmarked !== undefined || change.autoDownload === true || change.notifyReleases === true) setUpdates(releaseUpdates());
-    } catch (error) { showFailure(error); }
-  }, [invalidateNotificationIntents, showFailure]);
+    const paintFirst = typeof requestAnimationFrame === "function";
+    const apply = (state: Record<string, SavedStory>) => {
+      const next = { ...state };
+      for (const [slug, pending] of pendingStories.current) {
+        const story = { ...next[slug], ...pending };
+        if (pending.list || pending.liked || pending.notifyReleases) story.bookmarked = true;
+        if (!story.bookmarked) { story.list = undefined; story.notifyReleases = false; }
+        next[slug] = story;
+      }
+      return next;
+    };
+    const intents = new Map<string, Partial<SavedStory>>();
+    if (paintFirst) {
+      for (const slug of slugs) {
+        const pending = { ...pendingStories.current.get(slug), ...change };
+        intents.set(slug, pending);
+        pendingStories.current.set(slug, pending);
+      }
+      setSaved(apply);
+    }
+    let accepted = true;
+    afterControlFeedback(() => {
+      for (const slug of slugs) if (pendingStories.current.get(slug) === intents.get(slug)) pendingStories.current.delete(slug);
+      try {
+        const saved = slugs.length === 1 ? updateStoryOptions(slugs[0], change) : updateStoriesOptions(slugs, change);
+        setSaved(apply(saved));
+        if (change.autoDownload === true) for (const slug of slugs) queue.allowReaderPrefetch(slug);
+        if (change.bookmarked !== undefined || change.autoDownload !== undefined || change.notifyReleases === true) setUpdates(releaseUpdates());
+        if (paintFirst && change.autoDownload === true) void autoDownload().catch(showFailure);
+      } catch (error) {
+        accepted = false;
+        if (paintFirst) setSaved(apply(savedStories()));
+        showFailure(error);
+      }
+    });
+    return accepted;
+  }, [autoDownload, invalidateNotificationIntents, showFailure, queue]);
+  const setStoryOptions = useCallback((slug: string, change: Partial<SavedStory>) =>
+    setStoriesOptions([slug], change), [setStoriesOptions]);
+  const toggleStory = useCallback((slug: string, field: "liked" | "bookmarked") => {
+    const current = pendingStories.current.get(slug);
+    const stored = savedStories()[slug];
+    setStoryOptions(slug, field === "bookmarked"
+      ? { bookmarked: !(current?.bookmarked ?? stored?.bookmarked), list: undefined }
+      : { liked: !(current?.liked ?? stored?.liked) });
+  }, [setStoryOptions]);
   const toggleAutoDownload = useCallback((slug: string) => {
-    const story = savedStories()[slug];
-    const enabled = !Boolean(story?.autoDownload);
+    const enabled = !(pendingStories.current.get(slug)?.autoDownload ?? savedStories()[slug]?.autoDownload);
     return setStoryOptions(slug, { autoDownload: enabled }) ? enabled : false;
   }, [setStoryOptions]);
-  const reloadLocal = useCallback(() => { void refreshCatalog(); setRead(readChapters()); setSaved(savedStories()); setPreferences(loadPreferences()); }, [refreshCatalog]);
+  const reloadLocal = useCallback(() => { void refreshCatalog(); setRead(readChapters()); setSaved(savedStories()); reloadPreferences(); }, [refreshCatalog, reloadPreferences]);
 
   const automaticStories = useMemo(() => Object.entries(saved).filter(([, story]) => story.autoDownload).map(([slug]) => slug).sort().join("\n"), [saved]);
   useEffect(() => { void autoDownload().catch(showFailure); }, [autoDownload, automaticStories, showFailure]);
@@ -446,18 +497,19 @@ function useAppState() {
     notificationTargets.current.set(slug, true);
     setPendingNotifications(Object.fromEntries(notificationTargets.current));
     try {
-      if (!await setReleaseNotifications(true) || notificationIntents.current.get(slug) !== version) return;
+      if (typeof requestAnimationFrame === "function") await new Promise<void>(resolve => afterControlFeedback(resolve));
+      if (notificationIntents.current.get(slug) !== version || !await setReleaseNotifications(true) || notificationIntents.current.get(slug) !== version) return;
       setStoryOptions(slug, { notifyReleases: true });
     } finally { if (notificationIntents.current.get(slug) === version) clearPendingNotifications([slug]); }
   }, [setReleaseNotifications, setStoryOptions, clearPendingNotifications]);
   const toggleStoryNotifications = useCallback((slug: string) => {
     const story = savedStories()[slug];
-    const enabled = notificationTargets.current.get(slug) ?? Boolean(story?.bookmarked && loadPreferences().releaseNotifications && story.notifyReleases !== false);
+    const enabled = notificationTargets.current.get(slug) ?? pendingStories.current.get(slug)?.notifyReleases ?? Boolean(story?.bookmarked && (pendingPreferences.current ?? loadPreferences()).releaseNotifications && story.notifyReleases !== false);
     return setStoryNotifications(slug, !enabled);
   }, [setStoryNotifications]);
 
   const sync = useCallback(async function check(automatic = false, releasesOnly = automatic, refreshAccess?: () => Promise<void>): Promise<void> {
-    if (AppState.currentState !== "active" || (automatic && !loadPreferences().autoSync)) return;
+    if (AppState.currentState !== "active" || (automatic && !(pendingPreferences.current ?? loadPreferences()).autoSync)) return;
     const running = syncWork.current;
     if (running) {
       if (running.controller.signal.aborted || (!automatic && running.automatic)) {
@@ -472,7 +524,7 @@ function useAppState() {
     providerSignal.addEventListener("abort", abort, { once: true });
     const { signal } = controller;
     const origin = noticeScope.current;
-    setSyncing(true);
+    refreshProgress.set("pending");
     if (!automatic) { setNetworkNotice(""); setRefreshing(true); }
     const work = { controller, done: Promise.resolve(), automatic };
     syncWork.current = work;
@@ -483,30 +535,32 @@ function useAppState() {
         const access = refreshAccess ?? networkGuard("Check for new chapters and refresh stories?", automatic);
         const guard = async () => { throwIfAborted(signal); await access(); throwIfAborted(signal); };
         const fresh = releasesOnly
-          ? await refreshTrackedReleases(guard, warn, signal)
+          ? await refreshTrackedReleases(guard, warn, signal, (checked, total) => {
+            refreshProgress.set(Math.round(checked / total * 100));
+          })
           : await syncCatalog(() => {}, guard, true, warn, signal);
         throwIfAborted(signal);
         await refreshCatalog();
         throwIfAborted(signal);
         await notifyReleases(fresh).catch(error => warn(error instanceof Error ? error.message : String(error)));
         await autoDownload();
-        if (!signal.aborted && origin === noticeScope.current) setNotice(warnings.join(" "));
+        if (!automatic && !signal.aborted && origin === noticeScope.current) setNotice(warnings.length ? "Some stories could not refresh. Saved results are still available." : "");
       } catch (error) {
         if (!signal.aborted) {
           void refreshCatalog();
-          if (!automatic || !(error instanceof NetworkPaused)) showFailure(error, origin);
+          if (!automatic) showFailure(error, origin);
         }
       } finally {
         providerSignal.removeEventListener("abort", abort);
         syncWork.current = null;
-        setSyncing(false);
+        refreshProgress.set(null);
         setRefreshing(false);
-        setPreferences(loadPreferences());
+        reloadPreferences();
         setUpdates(releaseUpdates());
       }
     })();
     return work.done;
-  }, [showFailure, autoDownload, refreshCatalog]);
+  }, [showFailure, autoDownload, refreshCatalog, reloadPreferences]);
 
   const startDownload = useCallback((item: Series, selection: string) => {
     if (deleteLock.current || stoppingReaders.current.has(item.slug) || readerFetches.current.has(item.slug)) { setNotice("Wait for the reader’s download or deletion to finish before adding another download for this story."); return false; }
@@ -556,7 +610,7 @@ function useAppState() {
       void refreshCatalog();
       setRead(readChapters());
       setUpdates(releaseUpdates());
-      setPreferences(loadPreferences());
+      reloadPreferences();
       queue.reconcileNative(transferStates());
       queue.resumeWaiting();
       queue.pump();
@@ -565,7 +619,7 @@ function useAppState() {
     const unsubscribe = NetInfo.addEventListener(state => {
       const next = connectionLabel(state);
       setConnection(current => current.label === next.label ? current : next);
-      const access = connectionAccess(state, loadPreferences().mobileData, false);
+      const access = connectionAccess(state, (pendingPreferences.current ?? loadPreferences()).mobileData, false);
       const unmetered = isUnmeteredWifi(state);
       const reconnected = (access === "allow" && lastAccess.current !== "allow") || (unmetered && !lastUnmetered.current);
       lastUnmetered.current = unmetered;
@@ -574,7 +628,7 @@ function useAppState() {
       if (reconnected && AppState.currentState === "active") { queue.reconcileNative(transferStates()); queue.resumeWaiting(); void autoDownload().catch(showFailure); void sync(true); }
     });
     return () => { clearTimeout(recovery); syncWork.current?.controller.abort(); app.remove(); unsubscribe(); };
-  }, [sync, queue, showFailure, cancelDownload, refreshCatalog, autoDownload]);
+  }, [sync, queue, showFailure, cancelDownload, refreshCatalog, autoDownload, reloadPreferences]);
 
   const cleanupPath = useRef(pathname), cleanupRunning = useRef(false);
   useEffect(() => { cleanupPath.current = pathname; }, [pathname]);
@@ -609,7 +663,7 @@ function useAppState() {
     return () => { mounted = false; listener.remove(); };
   }, [updatePreferences]);
 
-  return { rememberSearch, fetchReaderChapter, catalogReady, connection, setStoryNotifications, toggleStoryNotifications, toggleAutoDownload, pendingNotifications, setStoryOptions, setStoriesOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, cancelDetails, removeDownloads, search, browse, preferences, updatePreferences, syncing, refreshing, downloadQueue: queue, downloadBusy, moveDownload, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
+  return { rememberSearch, fetchReaderChapter, catalogReady, connection, setStoryNotifications, toggleStoryNotifications, toggleAutoDownload, pendingNotifications, setStoryOptions, setStoriesOptions, reloadLocal, sourceSessionRevision, sourceSessionChanged, catalog, saved, read, updates, completeChapter, setReadStatus, leaveChapter, detailsLoading, detailsErrors, notificationBusy, deleting, setReleaseNotifications, toggleStory, loadDetails, cancelDetails, removeDownloads, search, browse, browseFeatured, preferences, updatePreferences, refreshing, downloadQueue: queue, downloadBusy, moveDownload, pauseDownload, resumeDownload, cancelDownload, notice: networkNotice || notice, dismissNotice: () => { setNotice(""); setNetworkNotice(""); }, sync, startDownload };
 }
 const AppContext = createContext<ReturnType<typeof useAppState> | null>(null);
 const DownloadQueueContext = createContext<DownloadQueue | null>(null);

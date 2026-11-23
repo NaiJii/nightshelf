@@ -27,6 +27,7 @@ const modules = {
   "../../components/reading-action": {ReadingAction:"ReadingAction"},
   "../../lib/release-policy": { unreadReleases: () => [] },
   "../../components/ui": { PageHeading: "PageHeading", Chip: "Chip", Cover: "Cover", Icon: "Icon", color: {}, ui: {} },
+  "../../components/refresh-bar": { RefreshBar: "RefreshBar" },
   "../../components/series-card": { openSeries: () => {} },
   "../../components/story-row": { PublicationStatus: "PublicationStatus" },
   "../../components/download-list": { DownloadList: "DownloadList" },

@@ -1,6 +1,6 @@
 import { Pressable } from "../../components/pressable";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, ScrollView, Text, TextInput, View } from "react-native";
+import { FlatList, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useSourceRetry } from "../../components/use-source-retry";
 import { useShelf } from "../../lib/app-state";
@@ -15,6 +15,7 @@ import type { BrowseOptions } from "../../lib/scraper";
 import { Chip, color, Icon, PageHeading, ui } from "../../components/ui";
 import { SeriesCard } from "../../components/series-card";
 import { DiscoveryControls, PopularPeriods } from "../../components/discovery-controls";
+import { RefreshBar } from "../../components/refresh-bar";
 
 export default function Explore() {
   const { preferences } = useShelf();
@@ -23,6 +24,7 @@ export default function Explore() {
 }
 export function ExploreResults({ provider }: { provider: string }) {
   const { catalog, preferences, saved, browse, updatePreferences, rememberSearch, sync, refreshing: checkingReleases } = useShelf();
+  const [manualCheckPending, setManualCheckPending] = useState(false);
   const [query, setQuery] = useState(() => exploreQuery(provider));
   const [debounced, setDebounced] = useState(() => exploreQuery(provider).trim());
   const [reload, setReload] = useState(0);
@@ -52,6 +54,7 @@ export function ExploreResults({ provider }: { provider: string }) {
   const sessionKey = JSON.stringify([provider, preferences.contentMode, effectiveSort, preferences.period, debounced]);
   const shortQuery = debounced.length === 1;
   const catalogIds = useMemo(() => new Set(catalog.map(item => item.slug)), [catalog]);
+  const waitingForCatalog = useMemo(() => Boolean(ids?.some(id => !catalogIds.has(id))), [ids, catalogIds]);
   const saveSession = useCallback(() => {
     if (loadedIds.current.length) rememberExplore(sessionKey, { ids: loadedIds.current, cursor: { ...cursor.current }, hasMore: more.current, offset: viewport.current.offset });
   }, [sessionKey]);
@@ -81,8 +84,8 @@ export function ExploreResults({ provider }: { provider: string }) {
   const verify = useSourceRetry(() => { void loadMore(true); }, preferences.source);
   const prefetch = useCallback(() => {
     const { height, content, offset } = viewport.current;
-    if (!failed.current && !loadedIds.current.some(id => !catalogIds.has(id)) && height > 0 && content > 0 && content - offset - height <= height) void loadMore();
-  }, [loadMore, catalogIds]);
+    if (!busy.current && !failed.current && !waitingForCatalog && height > 0 && content > 0 && content - offset - height <= height) void loadMore();
+  }, [loadMore, waitingForCatalog]);
   useEffect(() => {
     const version = ++generation.current; controller.current?.abort(); busy.current = true;
     const cached = exploreSession(sessionKey);
@@ -117,8 +120,7 @@ export function ExploreResults({ provider }: { provider: string }) {
     if (!debounced) sorted.sort((a, b) => libraryPriority(a, saved[a.slug]) - libraryPriority(b, saved[b.slug]));
     return sorted;
   }, [alternate, catalog, debounced, ids, preferences, saved]);
-  const waitingForCatalog = Boolean(ids?.length && ids.some(id => !catalogIds.has(id)));
-  return <SafeAreaView style={ui.safe} edges={["top"]}><FlatList ref={list}
+  return <SafeAreaView style={ui.safe} edges={["top"]}><View style={{flex:1}}><FlatList ref={list}
     data={visible} numColumns={2} keyExtractor={item => item.slug} renderItem={({ item }) => <SeriesCard item={item} grid />}
     columnWrapperStyle={{ paddingHorizontal: 22, justifyContent: "space-between" }} contentContainerStyle={{ paddingBottom: 26 }}
     initialNumToRender={8} maxToRenderPerBatch={8} windowSize={5} keyboardShouldPersistTaps="handled"
@@ -133,16 +135,17 @@ export function ExploreResults({ provider }: { provider: string }) {
     }}
     onScroll={event => { if (restoreOffset.current === null) { viewport.current.offset = event.nativeEvent.contentOffset.y; saveSession(); } prefetch(); }} scrollEventThrottle={100}
     onEndReached={prefetch} onEndReachedThreshold={1}
-    refreshing={Boolean(refreshing || checkingReleases)} onRefresh={() => {
+    refreshControl={<RefreshControl refreshing={refreshing || manualCheckPending} colors={["transparent"]} tintColor="transparent" progressBackgroundColor="transparent" onRefresh={() => {
       const access = networkGuard("Refresh Explore and check for new chapters?");
       refreshAccess.current = access;
       saveSession();
       setRefreshing(true);
+      setManualCheckPending(true);
       setReload(value => value + 1);
-      void sync(false, true, access);
-    }}
+      void Promise.resolve(sync(false, true, access)).finally(() => setManualCheckPending(false));
+    }} />}
     ListHeaderComponent={<><PageHeading title="Explore" subtitle="FIND SOMETHING TO READ" />
-      <View style={[ui.row, { marginHorizontal: 22, paddingHorizontal: 15, backgroundColor: color.surface, borderRadius: 13, marginBottom: 12 }]}><Icon name="search-outline" tint={color.muted} /><TextInput accessibilityLabel="Search selected source" placeholder={alternate ? "Search this source" : "Search comics and novels"} returnKeyType="search" onSubmitEditing={() => { setDebounced(query.trim()); setReload(value => value + 1); }} placeholderTextColor={color.muted} value={query} onChangeText={value => { setQuery(value); rememberExploreQuery(provider, value); }} style={{ flex: 1, height: 50, color: color.text }} />{query ? <Pressable accessibilityLabel="Clear search" onPress={() => { setQuery(""); setDebounced(""); rememberExploreQuery(provider, ""); }} style={{padding:12}}><Icon name="close" size={18} tint={color.muted}/></Pressable> : null}{(loading || query.trim() !== debounced) && <ActivityIndicator accessibilityLabel="Loading titles" size="small" color={color.lilac} />}</View>
+      <View style={[ui.row, { marginHorizontal: 22, paddingHorizontal: 15, backgroundColor: color.surface, borderRadius: 13, marginBottom: 12 }]}><Icon name="search-outline" tint={color.muted} /><TextInput accessibilityLabel="Search selected source" placeholder={alternate ? "Search this source" : "Search comics and novels"} returnKeyType="search" onSubmitEditing={() => { setDebounced(query.trim()); setReload(value => value + 1); }} placeholderTextColor={color.muted} value={query} onChangeText={value => { setQuery(value); rememberExploreQuery(provider, value); }} style={{ flex: 1, height: 50, color: color.text }} />{query ? <Pressable accessibilityLabel="Clear search" onPress={() => { setQuery(""); setDebounced(""); rememberExploreQuery(provider, ""); }} style={{padding:12}}><Icon name="close" size={18} tint={color.muted}/></Pressable> : null}</View>
       {!query && Boolean(preferences.searchHistory?.[provider]?.length) && <View style={{paddingHorizontal:22,marginBottom:12}}><View style={[ui.row,{justifyContent:"space-between"}]}><Text style={ui.muted}>Recent searches</Text><Pressable accessibilityLabel="Clear recent searches for this provider" onPress={()=>rememberSearch(provider,null)} style={{padding:10}}><Icon name="trash-outline" size={16} tint={color.muted}/></Pressable></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:7}}>{preferences.searchHistory![provider].map(term=><Chip key={term} text={term} active={false} onPress={()=>{setQuery(term);setDebounced(term);rememberExploreQuery(provider,term);}}/>)}</ScrollView></View>}
       {shortQuery && <Text style={[ui.muted, {marginHorizontal:22, marginBottom:8}]}>Type at least 2 characters to search this source.</Text>}
       <DiscoveryControls /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ui.chips}>{providerSorts(info, preferences.webtoonCollection).map(([value, label]) => <Chip key={value} text={label} active={effectiveSort === value} onPress={() => updatePreferences({ sort: value })} />)}</ScrollView>
@@ -152,13 +155,14 @@ export function ExploreResults({ provider }: { provider: string }) {
     </>}
     ListEmptyComponent={loading || waitingForCatalog ? <View accessibilityLabel="Loading story previews" style={{ padding: 22, gap: 18 }}>{[0, 1, 2].map(index => <View key={index} style={{ height: 160, backgroundColor: color.surface, borderRadius: 16 }} />)}</View> : !hasMore ? <Text style={[ui.empty, { paddingHorizontal: 22 }]}>Nothing matches these filters. Try adjusting them.</Text> : null}
     ListFooterComponent={<View style={{ paddingHorizontal: 22, paddingVertical: 20, alignItems: "center", gap: 10 }}>
-      {loading || waitingForCatalog ? <View accessibilityLiveRegion="polite" style={ui.row}><ActivityIndicator color={color.lilac} /><Text style={ui.muted}>{waitingForCatalog ? "Loading previews…" : ids === null ? "Finding stories…" : "Loading more stories…"}</Text></View> : <>
+      {!loading && !waitingForCatalog && <>
         {error ? <Text style={[ui.muted, { textAlign: "center" }]}>{error}</Text> : null}
         {info.verification && needsVerification(error) && <Pressable onPress={verify} style={[ui.primary, { minWidth: 160 }]}><Text style={ui.primaryText}>Verify and retry</Text></Pressable>}
         {error && hasMore ? <Pressable accessibilityLabel="Retry loading titles" onPress={() => void loadMore(true)} style={[ui.chip, { minWidth: 160, alignItems: "center" }]}><Text style={{ color: color.lilac }}>Retry</Text></Pressable> : !hasMore ? <Text style={ui.muted}>{preferences.sort === "trending" && !debounced ? "End of this ranking" : "You’ve reached the end"}</Text> : null}
       </>}
     </View>}
-  />{Boolean(ids?.length) && (loading || waitingForCatalog) && <View pointerEvents="none" accessibilityLiveRegion="polite" style={[ui.row,{position:"absolute",bottom:14,alignSelf:"center",backgroundColor:color.surface,borderWidth:1,borderColor:color.line,borderRadius:18,paddingHorizontal:14,paddingVertical:10,gap:8}]}><ActivityIndicator size="small" color={color.lilac}/><Text style={[ui.muted,{fontSize:12}]}>{waitingForCatalog ? "Loading previews…" : "Loading more…"}</Text></View>}</SafeAreaView>;
+  /><RefreshBar loading={loading || waitingForCatalog || checkingReleases}
+    batchProgress={refreshing || manualCheckPending ? (refreshing === manualCheckPending ? 0 : 50) : undefined} /></View></SafeAreaView>;
 }
 
 

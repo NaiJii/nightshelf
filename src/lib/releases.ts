@@ -74,12 +74,18 @@ TaskManager.defineTask(TASK, async () => {
   return BackgroundTask.BackgroundTaskResult.Success;
 });
 
-export async function refreshTrackedReleases(guard: () => Promise<void>, warn: (message: string) => void, signal?: AbortSignal): Promise<Series[]> {
+export async function refreshTrackedReleases(
+  guard: () => Promise<void>,
+  warn: (message: string) => void,
+  signal?: AbortSignal,
+  onProgress?: (checked: number, total: number) => void,
+): Promise<Series[]> {
   const saved = savedStories();
+  const tracked = catalogMetadata().filter(item => saved[item.slug]?.bookmarked || saved[item.slug]?.autoDownload);
   const fresh: Series[] = [];
+  if (tracked.length) onProgress?.(0, tracked.length);
   try {
-    for (const item of catalogMetadata()) {
-      if (!saved[item.slug]?.bookmarked && !saved[item.slug]?.autoDownload) continue;
+    for (const [index, item] of tracked.entries()) {
       throwIfAborted(signal);
       await guard();
       try {
@@ -91,6 +97,7 @@ export async function refreshTrackedReleases(guard: () => Promise<void>, warn: (
         if (error instanceof NetworkPaused) throw error;
         warn(error instanceof Error ? error.message : `Could not check ${item.title} for releases.`);
       }
+      onProgress?.(index + 1, tracked.length);
     }
   } finally {
     if (fresh.length) mergeCatalog(fresh);

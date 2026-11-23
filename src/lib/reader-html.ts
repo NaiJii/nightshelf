@@ -21,10 +21,15 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 .download-tail{width:100%;min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;border:0;background:#111117;color:#c9a7ff;font:13px sans-serif;padding:28px;box-sizing:border-box}.download-tail[hidden],.end[hidden]{display:none}.download-tail small{color:#8b8494;font-size:11px}.download-ring{position:relative;display:grid;place-items:center;width:38px;height:38px;font-size:24px}.download-ring:before{content:'';position:absolute;inset:0;border:2px solid #c9a7ff30;border-top-color:#c9a7ff;border-radius:50%;animation:download-spin 1s linear infinite}@keyframes download-spin{to{transform:rotate(360deg)}}
 .reader-chapter[data-complete="false"]{min-height:100vh}
 .download-tail[data-state="paused"] .download-ring:before,.download-tail[data-state="error"] .download-ring:before,.download-tail[data-state="stopped"] .download-ring:before{animation:none;border-top-color:#c9a7ff30}
-#reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;width:36px;display:grid;place-items:center;background:#17171fd9;color:#d9c6f7;border-radius:18px;transform-origin:top left;font:10px/1.4 sans-serif;touch-action:none}
+#reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;width:36px;display:grid;place-items:center;background:#111117de;color:#e5d7fa;border:1px solid #ffffff22;border-radius:18px;transform-origin:top left;font:10px/1.4 sans-serif;touch-action:none}
 #reader-scrubber[hidden],#scrub-preview[hidden],#scrub-crop[hidden],#scrub-text[hidden]{display:none}
 #scrub-range{display:block;writing-mode:vertical-lr;direction:ltr;inline-size:calc(100% - 34px);block-size:28px;margin:0;accent-color:#c9a7ff;touch-action:none}
-#scrub-position{display:block;text-align:center}
+#scrub-range{-webkit-appearance:none;appearance:none;background:transparent}
+#scrub-range::-webkit-slider-runnable-track{inline-size:100%;block-size:3px;border-radius:3px;background:#8f7ca84f}
+#scrub-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;margin-left:-4.5px;border:2px solid #ead9ff;border-radius:50%;background:#9977cb}
+#scrub-range:focus-visible{outline:1px solid #c9a7ff;border-radius:12px}
+#scrub-position{display:block;text-align:center;font-variant-numeric:tabular-nums;font-weight:700}
+#scrub-crop canvas{display:block;width:100%;height:100%}
 #scrub-preview{position:absolute;top:50%;right:calc(100% + 8px);transform:translateY(-50%);width:132px;background:#17171f;border:1px solid #ffffff24;border-radius:10px;overflow:hidden;box-shadow:0 3px 12px #0008;pointer-events:none}
 #scrub-crop{height:152px;background-repeat:no-repeat;background-color:#08080b}
 #scrub-text{padding:12px;color:#f7f4fb;font:13px/1.5 Georgia,serif;max-height:140px;overflow:hidden}
@@ -39,7 +44,7 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 #reader-ending button{font:12px sans-serif;border:1px solid #9385aa55;border-radius:12px;padding:12px;margin:4px;background:transparent;color:inherit}
 </style>
 <aside id="reader-scrubber" hidden aria-label="Chapter navigation">
-  <div id="scrub-preview" hidden aria-hidden="true"><div id="scrub-crop"></div><div id="scrub-text" hidden></div><span id="scrub-label"></span></div>
+  <div id="scrub-preview" hidden aria-hidden="true"><div id="scrub-crop"><canvas width="132" height="152"></canvas></div><div id="scrub-text" hidden></div><span id="scrub-label"></span></div>
   <input id="scrub-range" type="range" min="0" max="10000" step="1" value="0" aria-label="Chapter position">
   <output id="scrub-position" for="scrub-range"></output>
 </aside><script>
@@ -59,7 +64,10 @@ let touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
 const scrubber = document.getElementById('reader-scrubber'), range = document.getElementById('scrub-range');
 const preview = document.getElementById('scrub-preview'), crop = document.getElementById('scrub-crop'), snippet = document.getElementById('scrub-text');
 const scrubLabel = document.getElementById('scrub-label'), scrubPosition = document.getElementById('scrub-position');
+const previewCanvas = crop.querySelector?.('canvas');
+const previewContext = previewCanvas?.getContext?.('2d');
 let scrubbing = false, previewFrame = 0, scrubLockedUntil = 0;
+let previewRegion, previewHeight = 152;
 function scrubFraction(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : 0; }
 function scrubTarget(fraction) {
   const bounds = chapterBounds();
@@ -85,11 +93,33 @@ function showScrubPreview() {
   preview.hidden = false; scrubLabel.textContent = target.label;
   crop.hidden = !images.length; snippet.hidden = Boolean(images.length);
   if (images.length && target.node && target.rect) {
-    const ratio = 132 / Math.max(1, target.rect.right - target.rect.left);
-    const offset = Math.min(target.within * ratio, Math.max(0, (target.rect.bottom - target.rect.top) * ratio - crop.clientHeight));
-    const image = 'url(' + JSON.stringify(target.node.src) + ')';
-    if (crop.style.backgroundImage !== image) crop.style.backgroundImage = image;
-    crop.style.backgroundSize = '132px auto'; crop.style.backgroundPosition = 'center -' + offset + 'px';
+    const {node, rect, within} = target;
+    const ratio = 132 / Math.max(1, rect.right - rect.left);
+    const panelHeight = rect.bottom - rect.top;
+    const height = previewHeight;
+    const maxOffset = Math.max(0, panelHeight * ratio - height);
+    const offset = Math.min(within * ratio, maxOffset);
+    if (previewContext && node.complete && node.naturalWidth > 0 && node.naturalHeight > 0 && panelHeight > 0) {
+      // Use a four-pixel step in the preview. Seeking still uses the exact drag position.
+      const previewOffset = Math.min(Math.round(offset / 4) * 4, maxOffset);
+      const region = node.src + '/' + previewOffset + '/' + height;
+      if (previewRegion !== region) {
+        previewRegion = region;
+        if (previewCanvas.height !== height) previewCanvas.height = height;
+        const sourceScale = node.naturalHeight / (panelHeight * ratio);
+        const sourceHeight = Math.min(node.naturalHeight, height * sourceScale);
+        const sourceTop = Math.min(node.naturalHeight - sourceHeight, previewOffset * sourceScale);
+        previewContext.clearRect(0, 0, 132, height);
+        previewContext.drawImage(node, 0, sourceTop, node.naturalWidth, sourceHeight, 0, 0, 132, sourceHeight / sourceScale);
+      }
+    } else if (!previewContext) {
+      const image = 'url(' + JSON.stringify(node.src) + ')';
+      if (crop.style.backgroundImage !== image) crop.style.backgroundImage = image;
+      crop.style.backgroundSize = '132px auto'; crop.style.backgroundPosition = 'center -' + Math.round(offset) + 'px';
+    } else if (previewRegion !== undefined) {
+      previewRegion = undefined;
+      previewContext.clearRect(0, 0, 132, previewCanvas.height);
+    }
   } else snippet.textContent = (target.node?.textContent || '').slice(0, 180);
   range.setAttribute('aria-valuetext', target.label); scrubPosition.textContent = Math.round(Number(range.value) / 100) + '%';
 }
@@ -107,7 +137,8 @@ window.readerUpdateControls = () => {
   scrubber.style.left = ((viewport?.offsetLeft || 0) + width - 44 / scale) + 'px';
   scrubber.style.top = ((viewport?.offsetTop || 0) + (height - railHeight / scale) / 2) + 'px';
   scrubber.style.transform = 'scale(' + 1 / scale + ')';
-  crop.style.height = Math.min(152, Math.max(64, height * scale * 0.3)) + 'px';
+  previewHeight = Math.round(Math.min(152, Math.max(64, height * scale * 0.3)));
+  crop.style.height = previewHeight + 'px';
   const bounds = chapterBounds();
   range.disabled = bounds.end - bounds.start <= innerHeight;
   if (!scrubbing) {
