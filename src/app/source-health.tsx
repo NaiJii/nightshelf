@@ -29,7 +29,14 @@ export default function SourceStatus() {
       if (!result.ids.length) recordSourceHealth(source, "parser", "Website opened, but no catalog entries were recognized.");
       else recordSourceHealth(source, "ok", "Public catalog is working");
       reloadLocal();
-    } catch (error) { if (!controller.signal.aborted) { if (error instanceof NetworkPaused) recordSourceHealth(source, "network", error.message); else if (!sourceHealth()[source] || sourceHealth()[source]?.state === "ok") recordSourceHealth(source, "parser", error instanceof Error ? error.message : "Catalog parsing failed"); } }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof NetworkPaused) recordSourceHealth(source, "network", error.message);
+      else {
+        const prior = sourceHealth()[source];
+        if (!prior || prior.state === "ok") recordSourceHealth(source, "parser", error instanceof Error ? error.message : "Catalog parsing failed");
+      }
+    }
     finally { if (request.current === controller) { request.current = null; setHealth(sourceHealth()); setBusy(null); } }
   }
   const verificationSource = useRef(SOURCES.find(info => info.verification)?.id || SOURCES[0].id);

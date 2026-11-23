@@ -21,11 +21,11 @@ export function readerHtml(files: string[], fraction = 0, novel?: NovelText | nu
 .download-tail{width:100%;min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;border:0;background:#111117;color:#c9a7ff;font:13px sans-serif;padding:28px;box-sizing:border-box}.download-tail[hidden],.end[hidden]{display:none}.download-tail small{color:#8b8494;font-size:11px}.download-ring{position:relative;display:grid;place-items:center;width:38px;height:38px;font-size:24px}.download-ring:before{content:'';position:absolute;inset:0;border:2px solid #c9a7ff30;border-top-color:#c9a7ff;border-radius:50%;animation:download-spin 1s linear infinite}@keyframes download-spin{to{transform:rotate(360deg)}}
 .reader-chapter[data-complete="false"]{min-height:100vh}
 .download-tail[data-state="paused"] .download-ring:before,.download-tail[data-state="error"] .download-ring:before,.download-tail[data-state="stopped"] .download-ring:before{animation:none;border-top-color:#c9a7ff30}
-#reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;padding:4px 20px 8px;background:#17171ff2;color:#aaa6b3;border-radius:16px;transform-origin:top left;font:11px/1.4 sans-serif;touch-action:none}
+#reader-scrubber{position:fixed;z-index:2;box-sizing:border-box;width:36px;display:grid;place-items:center;background:#17171fd9;color:#d9c6f7;border-radius:18px;transform-origin:top left;font:10px/1.4 sans-serif;touch-action:none}
 #reader-scrubber[hidden],#scrub-preview[hidden],#scrub-crop[hidden],#scrub-text[hidden]{display:none}
-#scrub-range{display:block;width:100%;height:44px;margin:0;accent-color:#c9a7ff;touch-action:none}
+#scrub-range{display:block;writing-mode:vertical-lr;direction:ltr;inline-size:calc(100% - 34px);block-size:28px;margin:0;accent-color:#c9a7ff;touch-action:none}
 #scrub-position{display:block;text-align:center}
-#scrub-preview{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);width:132px;background:#17171f;border:1px solid #ffffff24;border-radius:10px;overflow:hidden;box-shadow:0 3px 12px #0008;pointer-events:none}
+#scrub-preview{position:absolute;top:50%;right:calc(100% + 8px);transform:translateY(-50%);width:132px;background:#17171f;border:1px solid #ffffff24;border-radius:10px;overflow:hidden;box-shadow:0 3px 12px #0008;pointer-events:none}
 #scrub-crop{height:152px;background-repeat:no-repeat;background-color:#08080b}
 #scrub-text{padding:12px;color:#f7f4fb;font:13px/1.5 Georgia,serif;max-height:140px;overflow:hidden}
 #scrub-label{display:block;padding:7px;text-align:center;color:#c9a7ff}
@@ -59,14 +59,19 @@ let touch, lastTouchEnd = -Infinity, chromeSettlesUntil = 0, scrolling = false;
 const scrubber = document.getElementById('reader-scrubber'), range = document.getElementById('scrub-range');
 const preview = document.getElementById('scrub-preview'), crop = document.getElementById('scrub-crop'), snippet = document.getElementById('scrub-text');
 const scrubLabel = document.getElementById('scrub-label'), scrubPosition = document.getElementById('scrub-position');
-let scrubbing = false;
+let scrubbing = false, previewFrame = 0, scrubLockedUntil = 0;
 function scrubFraction(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : 0; }
 function scrubTarget(fraction) {
   const bounds = chapterBounds();
   const y = bounds.start + fraction * Math.max(0, bounds.end - bounds.start - innerHeight);
   const nodes = images.length ? images : chapterNodes('.novel p');
-  let index = nodes.findIndex(node => node.getBoundingClientRect().bottom + scrollY > y);
-  if (index < 0) index = Math.max(0, nodes.length - 1);
+  let low = 0, high = Math.max(0, nodes.length - 1);
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (nodes[middle].getBoundingClientRect().bottom + scrollY > y) high = middle;
+    else low = middle + 1;
+  }
+  const index = low;
   const node = nodes[index], rect = node?.getBoundingClientRect();
   const within = rect ? Math.max(0, y - rect.top - scrollY) : 0;
   const percent = Math.round(fraction * 100);
@@ -74,8 +79,8 @@ function scrubTarget(fraction) {
   return {y, node, rect, within, label};
 }
 function showScrubPreview() {
-  if (scrubber.hidden) return;
-  scrubbing = true;
+  previewFrame = 0;
+  if (!scrubbing || scrubber.hidden) return;
   const target = scrubTarget(scrubFraction(Number(range.value) / 10000));
   preview.hidden = false; scrubLabel.textContent = target.label;
   crop.hidden = !images.length; snippet.hidden = Boolean(images.length);
@@ -86,7 +91,7 @@ function showScrubPreview() {
     if (crop.style.backgroundImage !== image) crop.style.backgroundImage = image;
     crop.style.backgroundSize = '132px auto'; crop.style.backgroundPosition = 'center -' + offset + 'px';
   } else snippet.textContent = (target.node?.textContent || '').slice(0, 180);
-  range.setAttribute('aria-valuetext', target.label); scrubPosition.textContent = target.label;
+  range.setAttribute('aria-valuetext', target.label); scrubPosition.textContent = Math.round(Number(range.value) / 100) + '%';
 }
 function cancelScrub() { scrubbing = false; preview.hidden = true; window.readerUpdateControls(); }
 window.readerUpdateControls = () => {
@@ -95,23 +100,34 @@ window.readerUpdateControls = () => {
   scrubber.hidden = !restored || !window.readerActive || !window.readerChromeVisible || document.hidden;
   if (scrubber.hidden) { scrubbing = false; preview.hidden = true; return; }
   const viewport = window.visualViewport, scale = viewport?.scale || 1;
-  scrubber.style.width = (viewport ? viewport.width * scale : innerWidth) + 'px';
-  scrubber.style.left = (viewport?.offsetLeft || 0) + 'px';
-  scrubber.style.top = Math.max(0, (viewport?.offsetTop || 0) + (viewport?.height || innerHeight) - ((window.readerScrubberBottom || 96) + scrubber.offsetHeight) / scale) + 'px';
+  const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
+  const railHeight = Math.min(250, Math.max(96, height * scale * 0.42));
+  scrubber.style.width = '36px';
+  scrubber.style.height = railHeight + 'px';
+  scrubber.style.left = ((viewport?.offsetLeft || 0) + width - 44 / scale) + 'px';
+  scrubber.style.top = ((viewport?.offsetTop || 0) + (height - railHeight / scale) / 2) + 'px';
   scrubber.style.transform = 'scale(' + 1 / scale + ')';
-  crop.style.height = Math.max(40, Math.min(152, (viewport?.height || innerHeight) * scale - (window.readerScrubberBottom || 96) - scrubber.offsetHeight - 60)) + 'px';
+  crop.style.height = Math.min(152, Math.max(64, height * scale * 0.3)) + 'px';
   const bounds = chapterBounds();
   range.disabled = bounds.end - bounds.start <= innerHeight;
   if (!scrubbing) {
     const fraction = scrubFraction((scrollY + (viewport?.offsetTop || 0) - bounds.start) / Math.max(1, bounds.end - bounds.start - innerHeight));
     range.value = String(Math.round(fraction * 10000));
     const label = scrubTarget(fraction).label;
-    scrubPosition.textContent = label; range.setAttribute('aria-valuetext', label);
+    scrubPosition.textContent = Math.round(fraction * 100) + '%'; range.setAttribute('aria-valuetext', label);
   }
 };
-range.addEventListener('input', showScrubPreview);
+range.addEventListener('pointerdown', () => { scrubLockedUntil = 0; });
+range.addEventListener('input', () => {
+  if (scrubber.hidden || Date.now() < scrubLockedUntil) { cancelScrub(); return; }
+  scrubbing = true;
+  if (!previewFrame) {
+    if (typeof requestAnimationFrame === 'function') previewFrame = requestAnimationFrame(showScrubPreview);
+    else showScrubPreview();
+  }
+});
 range.addEventListener('change', () => {
-  if (scrubber.hidden || range.disabled) { cancelScrub(); return; }
+  if (scrubber.hidden || range.disabled || Date.now() < scrubLockedUntil) { cancelScrub(); return; }
   const target = scrubTarget(scrubFraction(Number(range.value) / 10000));
   scrubbing = false; preview.hidden = true; chromeSettlesUntil = Date.now() + 600;
   scrollTo(0, target.y); report(); window.readerUpdateControls();
@@ -177,7 +193,7 @@ addEventListener('touchend', event => {
   lastTouchEnd = Date.now();
   if (scrubEvent(event)) return;
   if (swipe && !event.touches.length && window.readerContinuous && window.readerActive && !document.hidden && !window.readerChromeVisible && Math.abs(swipe.dy) > 60 && Math.abs(swipe.dy) > Math.abs(swipe.dx) * 1.5) {
-    if (swipe.bottom && swipe.dy < 0 && finished) window.ReactNativeWebView.postMessage(JSON.stringify({boundary:'next',chapter:readerChapter}));
+    if (swipe.bottom && swipe.dy < 0 && (finished || checkCompletion())) window.ReactNativeWebView.postMessage(JSON.stringify({boundary:'next',chapter:readerChapter}));
     else if (swipe.top && swipe.dy > 0) window.ReactNativeWebView.postMessage(JSON.stringify({boundary:'previous',chapter:readerChapter}));
   }
   swipe = null;
@@ -185,6 +201,7 @@ addEventListener('touchend', event => {
     if (window.readerActive) {
       chromeSettlesUntil = Date.now() + 400;
       window.readerChromeVisible = !window.readerChromeVisible;
+      if (window.readerChromeVisible) scrubLockedUntil = Date.now() + 400;
       window.readerUpdateControls();
       window.ReactNativeWebView.postMessage(JSON.stringify({controls:window.readerChromeVisible ? 'show' : 'hide'}));
     }
@@ -197,6 +214,7 @@ addEventListener('click', event => {
   if (Date.now() - lastTouchEnd > 600 && window.readerActive) {
     chromeSettlesUntil = Date.now() + 400;
     window.readerChromeVisible = !window.readerChromeVisible;
+    if (window.readerChromeVisible) scrubLockedUntil = Date.now() + 400;
     window.readerUpdateControls();
     window.ReactNativeWebView.postMessage(JSON.stringify({controls:window.readerChromeVisible ? 'show' : 'hide'}));
   }
@@ -209,10 +227,14 @@ function checkCompletion() {
   const last = images.at(-1) || (chapterRoot || document).querySelector('.novel p:last-child');
   const viewport = window.visualViewport;
   const top = viewport ? viewport.offsetTop : 0, left = viewport ? viewport.offsetLeft : 0;
-  const visibleBottom = top + (viewport ? viewport.height : innerHeight) - (window.readerChromeVisible ? (window.readerScrubberBottom || 96) + scrubber.offsetHeight : 0);
-  // Opening a short chapter or remaining on its first page is not a completed read.
-  const firstPage = images.length > 1 && images[0].getBoundingClientRect().bottom > top;
-  if (scrollY + top - chapterBounds().start <= 1 || firstPage || !last || !finalPanelVisible(last.getBoundingClientRect(), {top, left, bottom:visibleBottom, right:left + (viewport ? viewport.width : innerWidth)}) || !images.every(image => image.complete && image.naturalWidth > 0)) return false;
+  const visibleBottom = top + (viewport ? viewport.height : innerHeight) - (window.readerChromeVisible ? (window.readerScrubberBottom || 96) : 0);
+  if (!last) return false;
+  const rect = last.getBoundingClientRect();
+  const reachedEnd = finalPanelVisible(rect, {top, left, bottom:visibleBottom, right:left + (viewport ? viewport.width : innerWidth)})
+    || (rect.bottom <= top && (viewport?.scale || 1) <= 1.05);
+  // A short chapter can end while page one is still on screen. Require reading
+  // movement before marking it complete, including an end swipe on a short page.
+  if ((scrollY + top - chapterBounds().start <= 1 && !userScrolled) || !reachedEnd || !images.every(image => image.complete && image.naturalWidth > 0)) return false;
   finished = true; completedChapters.add(readerChapter);
   window.ReactNativeWebView.postMessage(JSON.stringify({complete:true, fraction:1,chapter:readerChapter}));
   return true;
@@ -220,7 +242,7 @@ function checkCompletion() {
 function report(snapshot = false) {
   window.readerUpdateControls();
   if (!restored || (!snapshot && (!window.readerActive || document.hidden))) return;
-  if (!snapshot && checkCompletion()) return;
+  if (checkCompletion() && !snapshot) return;
   const viewport = window.visualViewport;
   const top = viewport ? viewport.offsetTop : 0;
   const bounds = chapterBounds();
@@ -230,15 +252,23 @@ function report(snapshot = false) {
   const atStart = scrollY + top - bounds.start <= 1;
   const imageRect = images[page]?.getBoundingClientRect();
   const panel = imageRect ? {index:page,offset:Math.max(0,Math.min(1,(top-imageRect.top)/Math.max(1,imageRect.bottom-imageRect.top)))} : undefined;
-  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(chapterRoot?.dataset?.complete === 'false' ? 0.99 : 1, (scrollY + top - bounds.start) / max)), page: page + 1,panel,chapter:readerChapter,snapshot,complete:snapshot && finished ? true : undefined}));
+  window.ReactNativeWebView.postMessage(JSON.stringify({fraction: finished ? 1 : atStart ? 0 : Math.max(0, Math.min(0.99, (scrollY + top - bounds.start) / max)), page: page + 1,panel,chapter:readerChapter,snapshot,complete:snapshot && finished ? true : undefined}));
 }
 addEventListener('load', () => { const bounds = chapterBounds(); scrollTo(0, bounds.start + ${safeFraction} * Math.max(0, bounds.end - bounds.start - innerHeight)); restored = true; report(); });
+let scrollFrame = 0;
 function onScroll() {
-  window.readerUpdateControls();
-  // Momentum is not finger movement. Preserve intentional taps, including the viewport resize when chrome appears.
+  // Chrome responds immediately, while geometry and chapter tracking run once per frame.
   if (!scrubbing && !touch && Date.now() >= chromeSettlesUntil && !scrolling) hideControls();
-  checkCompletion();
-  window.readerTrackChapter?.();
+  const update = () => {
+    scrollFrame = 0;
+    window.readerUpdateControls();
+    checkCompletion();
+    window.readerTrackChapter?.();
+  };
+  if (!scrollFrame) {
+    if (typeof requestAnimationFrame === 'function') scrollFrame = requestAnimationFrame(update);
+    else update();
+  }
   scrolling = true;
   clearTimeout(timer); timer = setTimeout(() => { scrolling = false; window.readerTrimChapters?.(); if (restored) report(); }, 400);
 }
@@ -303,6 +333,7 @@ window.readerUpdateChapter = (id, content, complete, total) => {
     };
     if (node === chapterRoot) change(); else keepReaderAnchor(change);
     if (node === chapterRoot) { images = [...node.querySelectorAll('img')]; window.readerUpdateControls(); }
+    window.readerRefreshEnding?.();
     if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, pendingPanelRestore.panel);
   };
   // Decode additions before changing a preceding section's height. Keeping the
@@ -431,6 +462,7 @@ window.readerAttachChapter = (id, content, complete = true, total = 0) => {
     keepReaderAnchor(() => window.readerNeighbors[0] === id ? chapterHost.prepend(node) : chapterHost.append(node));
     lastStreamY = scrollY; renderEnding();
     if (restoreTarget?.id === id) window.readerRestorePosition(id, restoreTarget.fraction);
+    window.readerRefreshEnding?.();
     if (pendingPanelRestore?.id === id) window.readerRestorePanel(id, pendingPanelRestore.panel);
     window.ReactNativeWebView.postMessage(JSON.stringify({attachedChapter:id}));
     window.readerUpdateControls();
@@ -464,7 +496,8 @@ function renderEnding() {
   const ending = document.getElementById('reader-ending');
   if (!ending) return;
   const wasHidden = ending.hidden;
-  ending.hidden = !endingConfig || !sectionFor(endingConfig.chapter);
+  const lastChapter = endingConfig && sectionFor(endingConfig.chapter);
+  ending.hidden = !lastChapter || lastChapter.dataset.complete === 'false';
   if (ending.hidden) return;
   const key = JSON.stringify(endingConfig);
   if (!wasHidden && ending.dataset.config === key) return;
@@ -485,6 +518,7 @@ function renderEnding() {
     ending.append(button);
   }
 }
-window.readerSetEnding = config => { endingConfig = config; if (chapterHost) keepReaderAnchor(renderEnding); };
+window.readerRefreshEnding = () => { if (chapterHost) keepReaderAnchor(renderEnding); };
+window.readerSetEnding = config => { endingConfig = config; window.readerRefreshEnding(); };
 
 `;

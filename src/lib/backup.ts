@@ -1,6 +1,6 @@
 import { readJson, writeJson } from "./json-store";
 import { File, Paths } from "expo-file-system";
-import { DEFAULT_PREFERENCES, ROOT, catalogMetadata, loadCatalog, loadPreferences, mergeCatalog, readingHistory, readChapters, savedStories, savePreferences } from "./storage";
+import { DEFAULT_PREFERENCES, ROOT, catalogMetadata, loadCatalog, loadCatalogAsync, loadPreferences, mergeCatalog, readingHistory, readChapters, savedStories, savePreferences } from "./storage";
 import type { Preferences } from "./storage";
 import { parseAlternativeTitles } from "./parser";
 import type { SavedStory, Series } from "./parser";
@@ -8,9 +8,9 @@ import { PROVIDERS, sourceIdForUrl } from "./provider-info";
 
 const part = (value: string) => /^[a-zA-Z0-9_.-]+$/.test(value) && value !== "." && value !== ".." && !["__proto__", "constructor", "prototype"].includes(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
-export function createBackup(): string {
+export function createBackup(items = loadCatalog()): string {
   const saved = savedStories(), read = readChapters(), history = readingHistory();
-  const catalog = loadCatalog().filter(item => item.hasLocalFiles || saved[item.slug]?.liked || saved[item.slug]?.bookmarked || saved[item.slug]?.list || history[item.slug] || Object.keys(read[item.slug] || {}).length);
+  const catalog = items.filter(item => item.hasLocalFiles || saved[item.slug]?.liked || saved[item.slug]?.bookmarked || saved[item.slug]?.list || history[item.slug] || Object.keys(read[item.slug] || {}).length);
   return JSON.stringify({ app: "NightShelf", version: 1, createdAt: new Date().toISOString(), catalog: catalog.map(({localCover: _, localChapters: __, hasLocalFiles: ___, ...item}) => item), preferences: loadPreferences(), saved, read, history });
 }
 export function validateBackup(text: string) {
@@ -52,14 +52,14 @@ export function validateBackup(text: string) {
     if (typeof data.preferences.readerBrightness === "number" && Number.isFinite(data.preferences.readerBrightness)) preferences.readerBrightness = Math.max(-1, Math.min(1, data.preferences.readerBrightness));
     const enums: Record<string, readonly string[]> = { source: PROVIDERS.map(info => info.id), webtoonLanguage: PROVIDERS.flatMap(info => info.languages?.map(([id]) => id) || []), webtoonCollection: ["originals", "canvas"], contentMode: ["all", "comics", "novels"], sort: ["smart", "trending", "rating", "updated", "title", "chapters"], period: ["week", "month", "all"], mobileData: ["ask", "never", "allow"] };
     for (const [key, allowed] of Object.entries(enums)) if (allowed.includes(String(data.preferences[key]))) Object.assign(preferences, { [key]: data.preferences[key] });
-    if (data.preferences.releaseCheckInterval === 60 || data.preferences.releaseCheckInterval === 120) preferences.releaseCheckInterval = data.preferences.releaseCheckInterval;
-    if (data.preferences.interval === 5 || data.preferences.interval === 10) preferences.interval = data.preferences.interval;
     if (typeof data.preferences.autoDownloadLimitMB === "number" && Number.isFinite(data.preferences.autoDownloadLimitMB)) preferences.autoDownloadLimitMB = Math.max(128, Math.min(100_000, data.preferences.autoDownloadLimitMB));
   }
   return { catalog, saved, read, history, preferences };
 }
 export function restoreBackup(text: string): number {
-  const imported = validateBackup(text);
+  return restoreValidatedBackup(validateBackup(text));
+}
+export function restoreValidatedBackup(imported: ReturnType<typeof validateBackup>): number {
   const existingSlugs = new Set(catalogMetadata().map(item => item.slug));
   const saved = savedStories(), read = readChapters(), history = readingHistory();
   for (const [slug, value] of Object.entries(imported.saved)) saved[slug] = { ...value, ...saved[slug], liked: Boolean(saved[slug]?.liked || value.liked), bookmarked: Boolean(saved[slug]?.bookmarked || value.bookmarked), list: saved[slug]?.list || value.list, autoDownload: saved[slug]?.autoDownload || false };
@@ -98,6 +98,6 @@ export function restoreBackup(text: string): number {
   } catch (error) { names.forEach((name, index) => { const file = new File(ROOT, name); if (before[index] !== null) writeJson(file, before[index]!); else if (file.exists) file.delete(); }); throw error; }
   return imported.catalog.length;
 }
-export function backupFile(): File {
-  const file = new File(Paths.cache, `NightShelf-${new Date().toISOString().slice(0, 10)}.json`); file.write(createBackup()); return file;
+export async function backupFile(): Promise<File> {
+  const file = new File(Paths.cache, `NightShelf-${new Date().toISOString().slice(0, 10)}.json`); file.write(createBackup(await loadCatalogAsync())); return file;
 }

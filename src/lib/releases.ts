@@ -1,15 +1,13 @@
 import * as Notifications from "expo-notifications";
 import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
-import NetInfo from "@react-native-community/netinfo";
-import { AppState } from "react-native";
-import { chapterListCached } from "./parser";
-import type { Series } from "./parser";
-import { refreshSeries, downloadChapters } from "./scraper";
-import { loadCatalog, loadPreferences, releaseSnapshots, savedStories, mergeCatalog, saveReleaseSnapshot, addReleaseUpdates, readChapters, releaseUpdates, loadDownloads, saveDownloads } from "./storage";
-import { newReleases, automaticReleaseIds, unreadReleases } from "./release-policy";
-import { backgroundTransfers, transferStates } from "./background-downloads";
-import { freeBytes, libraryBytes, updateStoryOptions, cleanupReadDownloads } from "./library-tools";
+import { chapterListCached, type Series } from "./parser";
+import { refreshSeries } from "./scraper";
+import { loadPreferences, catalogMetadata, releaseSnapshots, savedStories, mergeCatalog, saveReleaseSnapshot, addReleaseUpdates, readChapters } from "./storage";
+import { newReleases, unreadReleases } from "./release-policy";
+import { updateStoryOptions } from "./library-tools";
+import { NetworkPaused } from "./network";
+import { throwIfAborted } from "./request-control";
 
 const TASK = "nightshelf-bookmarked-releases";
 const CHANNEL = "bookmarked-releases";
@@ -43,7 +41,7 @@ async function publishReleases(items: Series[]): Promise<void> {
   for (const item of items) {
     try {
       const story = savedStories()[item.slug];
-      if (!story?.bookmarked || !chapterListCached(item)) continue;
+      if (!(story?.bookmarked || story?.autoDownload) || !chapterListCached(item)) continue;
       if (story.autoDownload && !Array.isArray(story.autoDownloadBaseline)) updateStoryOptions(item.slug, { autoDownloadBaseline: [...item.chapterIds!] });
       const previous = releaseSnapshots()[item.slug];
       const added = newReleases(previous, item.chapterIds!);
@@ -66,47 +64,36 @@ async function publishReleases(items: Series[]): Promise<void> {
   if (failures.length) throw failures[0];
 }
 
-function releaseChecksEnabled(): boolean {
-  const preferences = loadPreferences();
-  return preferences.deleteAfterReading || Object.values(savedStories()).some(story => story.bookmarked && (story.autoDownload || (preferences.releaseNotifications && story.notifyReleases !== false)));
-}
-let configuration = Promise.resolve();
-export function configureReleaseChecks(): Promise<void> {
-  configuration = configuration.catch(() => {}).then(async () => {
-    const enabled = releaseChecksEnabled(), interval = loadPreferences().releaseCheckInterval;
-    if (enabled && loadPreferences().releaseNotifications) await ensureReleaseChannel();
-    const registered = await TaskManager.isTaskRegisteredAsync(TASK);
-    const options = registered ? await TaskManager.getTaskOptionsAsync<{ minimumInterval?: number }>(TASK) : undefined;
-    if (registered && (!enabled || options?.minimumInterval !== interval)) await BackgroundTask.unregisterTaskAsync(TASK);
-    if (enabled && (!registered || options?.minimumInterval !== interval)) await BackgroundTask.registerTaskAsync(TASK, { minimumInterval: interval });
-  });
-  return configuration;
+export async function removeLegacyReleaseSchedule(): Promise<void> {
+  if (await TaskManager.isTaskRegisteredAsync(TASK)) await BackgroundTask.unregisterTaskAsync(TASK);
 }
 
+// An existing installation may wake once before the app is opened after updating.
 TaskManager.defineTask(TASK, async () => {
-  const enabled = releaseChecksEnabled;
-  if (!enabled() || AppState.currentState === "active") return BackgroundTask.BackgroundTaskResult.Success;
-  await cleanupReadDownloads(slug => AppState.currentState === "active" || loadDownloads().some(job => job.series.slug === slug) || Boolean(transferStates(slug)[slug]?.active || transferStates(slug)[slug]?.hasPlan));
-  if (backgroundTransfers) { const states = transferStates(); saveDownloads(loadDownloads().filter(job => states[job.series.slug]?.state !== "done")); }
-  // Background work never opens a consent dialog or silently uses cellular data.
-  const guard = async () => {
-    const state = await NetInfo.fetch();
-    if (AppState.currentState === "active" || !enabled() || state.type !== "wifi" || !state.isConnected || state.isInternetReachable === false || state.details?.isConnectionExpensive) throw new Error("Background check paused.");
-  };
+  await removeLegacyReleaseSchedule().catch(() => {});
+  return BackgroundTask.BackgroundTaskResult.Success;
+});
+
+export async function refreshTrackedReleases(guard: () => Promise<void>, warn: (message: string) => void, signal?: AbortSignal): Promise<Series[]> {
+  const saved = savedStories();
+  const fresh: Series[] = [];
   try {
-    for (const item of loadCatalog().filter(item => { const story = savedStories()[item.slug]; return story?.bookmarked && (story.autoDownload || (loadPreferences().releaseNotifications && story.notifyReleases !== false)); })) {
+    for (const item of catalogMetadata()) {
+      if (!saved[item.slug]?.bookmarked && !saved[item.slug]?.autoDownload) continue;
+      throwIfAborted(signal);
       await guard();
       try {
-        const fresh = await refreshSeries(item, guard);
-        await guard();
-        mergeCatalog([fresh]);
-        await notifyReleases([fresh]).catch(() => {});
-        if (backgroundTransfers && savedStories()[fresh.slug]?.autoDownload && !loadDownloads().some(job => job.series.slug === fresh.slug) && !["running", "preparing", "queued"].includes(transferStates(fresh.slug)[fresh.slug]?.state) && libraryBytes(true) < loadPreferences().autoDownloadLimitMB * 1024 ** 2 && freeBytes() >= 64 * 1024 ** 2) {
-          const ids = automaticReleaseIds(savedStories()[fresh.slug], fresh, releaseUpdates()[fresh.slug], readChapters()[fresh.slug]).slice(0, 20);
-          if (ids.length) await downloadChapters(fresh, ids.join(","), () => {}, guard, undefined, ids, undefined, undefined, true, true);
-        }
-      } catch { await guard(); /* One unavailable story must not block the other bookmarks. */ }
+        const details = await refreshSeries(item, guard, signal);
+        throwIfAborted(signal);
+        fresh.push(details);
+      } catch (error) {
+        throwIfAborted(signal);
+        if (error instanceof NetworkPaused) throw error;
+        warn(error instanceof Error ? error.message : `Could not check ${item.title} for releases.`);
+      }
     }
-    return BackgroundTask.BackgroundTaskResult.Success;
-  } catch { return BackgroundTask.BackgroundTaskResult.Failed; }
-});
+  } finally {
+    if (fresh.length) mergeCatalog(fresh);
+  }
+  return fresh;
+}

@@ -8,17 +8,22 @@ export const READING_LISTS: [ReadingList, string][] = [["reading", "Reading"], [
 export function ReadingListAction({ item, iconsOnly = false }: { item: Series; iconsOnly?: boolean }) {
   const { saved, setStoryOptions } = useShelf();
   const showSheet = useActionSheet();
-  const list = saved[item.slug]?.list;
-  return <Pressable accessibilityRole="button" accessibilityLabel={`Reading list: ${READING_LISTS.find(([key]) => key === list)?.[1] || "None"}. Choose reading list`} onPress={() => showSheet("Reading list", item.title, [
-    ...READING_LISTS.map(([value, text]) => ({ text, selected: list === value, onPress: () => setStoryOptions(item.slug, { list: value }) })),
-    { text: "No list", selected: !list, onPress: () => setStoryOptions(item.slug, { list: undefined }) },
+  const story = saved[item.slug];
+  const list = story?.list;
+  const savedToList = Boolean(story?.bookmarked);
+  const label = READING_LISTS.find(([key]) => key === list)?.[1] || (savedToList ? "Saved" : "Reading list");
+  const choose = () => showSheet("Reading list", item.title, [
+    { text: "Save without a status", selected: savedToList && !list, onPress: () => setStoryOptions(item.slug, { bookmarked: true, list: undefined }) },
+    ...READING_LISTS.map(([value, text]) => ({ text, selected: list === value, onPress: () => setStoryOptions(item.slug, { bookmarked: true, list: value }) })),
+    ...(savedToList ? [{ text: "Remove from reading list", onPress: () => setStoryOptions(item.slug, { bookmarked: false, list: undefined }) }] : []),
     { text: "Cancel", style: "cancel" },
-  ])} style={iconsOnly ? ui.storyAction : { flex: 1, minWidth: 48, minHeight: 60, paddingVertical: 10, alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name={list ? "list" : "list-outline"} size={20} tint={list ? color.lilac : color.muted} />{!iconsOnly && <Text numberOfLines={1} style={{ color: list ? color.lilac : color.muted, fontSize: 11 }}>{READING_LISTS.find(([key]) => key === list)?.[1] || "Reading list"}</Text>}</Pressable>;
+  ]);
+  return <Pressable accessibilityRole="button" accessibilityLabel={savedToList ? `Reading list, ${label}` : "Save to reading list"} accessibilityHint="Choose a reading status" onPress={choose} style={iconsOnly ? ui.storyAction : { minWidth: 48, minHeight: 48, alignItems: "center", justifyContent: "center" }}><Icon name={savedToList ? "bookmark" : "bookmark-outline"} size={20} tint={savedToList ? color.lilac : color.muted} />{!iconsOnly && list && <Text style={{ color: color.muted, fontSize: 10 }}>{label}</Text>}</Pressable>;
 }
 export function ReleaseActions({ item }: { item: Series }) {
   const { saved, preferences, toggleAutoDownload, setStoryNotifications, toggleStoryNotifications, pendingNotifications } = useShelf();
   const showSheet = useActionSheet();
-  const story = saved[item.slug], automatic = Boolean(story?.bookmarked && story.autoDownload);
+  const story = saved[item.slug], automatic = Boolean(story?.autoDownload);
   const alerts = pendingNotifications[item.slug] ?? Boolean(story?.bookmarked && preferences.releaseNotifications && story.notifyReleases !== false);
   const style = ui.storyAction;
   return <>

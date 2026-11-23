@@ -5,7 +5,7 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { Page, ui, color, Icon } from "../components/ui";
 import { useDownloads, useShelf } from "../lib/app-state";
-import { formatBytes, storageSummaryAsync, verifyChapterFiles } from "../lib/library-tools";
+import { formatBytes, storageSummaryAsync, verifyChapterFilesAsync } from "../lib/library-tools";
 import type { Series } from "../lib/parser";
 import { downloadConflicts } from "../lib/download-display";
 
@@ -14,17 +14,29 @@ export default function StorageManager() {
   const { read, removeDownloads, downloadBusy, startDownload, deleting, catalog } = useShelf();
   const downloads = useDownloads(true);
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof storageSummaryAsync>> | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState("");
   const [report, setReport] = useState("");
   const summaryRequest = useRef<AbortController | null>(null), operation = useRef<AbortController | null>(null);
   const focused = useRef(false);
-  const refresh = useCallback(() => { summaryRequest.current?.abort(); const controller = new AbortController(); summaryRequest.current = controller; void storageSummaryAsync(controller.signal).then(value => { if (!controller.signal.aborted) setSummary(value); }).catch(error => { if (!controller.signal.aborted) setReport(error instanceof Error ? error.message : String(error)); }); return () => controller.abort(); }, []);
+  const refresh = useCallback(() => {
+    summaryRequest.current?.abort();
+    const controller = new AbortController();
+    summaryRequest.current = controller;
+    setRefreshing(true);
+    void storageSummaryAsync(controller.signal)
+      .then(value => { if (!controller.signal.aborted) setSummary(value); })
+      .catch(error => { if (!controller.signal.aborted) setReport(error instanceof Error ? error.message : String(error)); })
+      .finally(() => { if (summaryRequest.current === controller) setRefreshing(false); });
+    return () => controller.abort();
+  }, []);
   useFocusEffect(useCallback(() => {
     focused.current = true; setBusy(""); const stop = refresh();
     return () => { focused.current = false; stop(); summaryRequest.current?.abort(); operation.current?.abort(); };
   }, [refresh]));
   async function scan(item: Series) {
     if (operation.current && !operation.current.signal.aborted) return;
+    if (downloadBusy(item.slug)) { setReport("Wait for this story’s download to finish before checking files."); return; }
     const controller = new AbortController(); operation.current = controller;
     setBusy(item.slug); setReport("");
     const bad: string[] = []; let legacy = 0, checked = 0;
@@ -32,7 +44,7 @@ export default function StorageManager() {
       for (const id of item.localChapters || []) {
         await new Promise(resolve => setTimeout(resolve, 0));
         if (controller.signal.aborted) return;
-        try { const value = verifyChapterFiles(item.slug, id); checked += value.checked; if (value.legacy) legacy++; if (value.damaged) bad.push(id); } catch { bad.push(id); }
+        try { const value = await verifyChapterFilesAsync(item.slug, id, controller.signal); checked += value.checked; if (value.legacy) legacy++; if (value.damaged) bad.push(id); } catch { if (controller.signal.aborted) return; bad.push(id); }
         if (checked && checked % 20 === 0) setReport(`${checked} files checked…`);
       }
       if (controller.signal.aborted || !focused.current) return;
@@ -58,12 +70,13 @@ export default function StorageManager() {
           } if (focused.current) { refresh(); setReport(`${removed} stories cleaned${skipped ? ` · ${skipped} stories have protected chapters` : ""}`); } }
           finally { setBusy(""); } })().catch(error => setReport(String(error))); } }]);
   }
-  return <Page title="Storage" subtitle="ON THIS PHONE" action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>}><View style={{ paddingHorizontal: 22 }}>
+  const downloadIds = new Set(downloads.map(job => job.series.slug));
+  return <Page title="Storage" subtitle="ON THIS PHONE" onRefresh={() => { refresh(); }} refreshing={refreshing} action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{ padding: 12 }}><Icon name="arrow-back" /></Pressable>}><View style={{ paddingHorizontal: 22 }}>
     {!summary ? <ActivityIndicator color={color.lilac} /> : <><Text style={ui.title}>{formatBytes(summary.stories.reduce((sum, row) => sum + row.bytes, 0))} of chapters</Text><Text style={[ui.muted, { marginVertical: 10 }]}>{formatBytes(summary.free)} free on phone · {formatBytes(summary.covers)} cached covers</Text></>}
     <Pressable disabled={deleting || Boolean(busy)} onPress={clearAllRead} style={{ paddingVertical: 16 }}><Text style={{ color: "#f08080" }}>{deleting ? "Deleting…" : "Delete all read chapters"}</Text></Pressable>
     {report ? <Text accessibilityLiveRegion="polite" style={[ui.muted, { marginVertical: 12 }]}>{report}</Text> : null}
     {summary?.stories.map(({ item, bytes }) => {
-      const blocked = downloadBusy(item.slug) || downloads.some(job => job.series.slug === item.slug) || deleting || Boolean(busy);
+      const blocked = downloadIds.has(item.slug) || deleting || Boolean(busy);
       const readBlocked = deleting || Boolean(busy);
       const readCount = item.localChapters?.filter(id => read[item.slug]?.[id]).length || 0;
       return <View key={item.slug} style={{ paddingVertical: 18, borderBottomWidth: 1, borderColor: color.line }}>

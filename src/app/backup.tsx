@@ -6,7 +6,7 @@ import { router } from "expo-router";
 import { File } from "expo-file-system";
 import * as DocumentPicker from "expo-document-picker";
 import * as Sharing from "expo-sharing";
-import { backupFile, restoreBackup, validateBackup } from "../lib/backup";
+import { backupFile, restoreValidatedBackup, validateBackup } from "../lib/backup";
 import { useShelf } from "../lib/app-state";
 import { Page, ui, Icon, color } from "../components/ui";
 
@@ -17,7 +17,7 @@ export default function Backups() {
   const [message, setMessage] = useState("");
   async function exportFile() {
     setBusy("Preparing backup…");
-    try { await new Promise(resolve => setTimeout(resolve, 20)); const file = backupFile(); if (!await Sharing.isAvailableAsync()) throw new Error("File sharing is unavailable on this device."); await Sharing.shareAsync(file.uri, { mimeType: "application/json", dialogTitle: "Save NightShelf backup" }); setMessage("Backup prepared. Keep the exported file somewhere you can access on your next phone."); }
+    try { await new Promise(resolve => setTimeout(resolve, 20)); const file = await backupFile(); if (!await Sharing.isAvailableAsync()) throw new Error("File sharing is unavailable on this device."); await Sharing.shareAsync(file.uri, { mimeType: "application/json", dialogTitle: "Save NightShelf backup" }); setMessage("Backup prepared. Keep the exported file somewhere you can access on your next phone."); }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(""); }
   }
@@ -30,7 +30,7 @@ export default function Backups() {
       const file = new File(picked.assets[0].uri);
       if (file.size > 20 * 1024 ** 2) throw new Error("Metadata backups must be smaller than 20 MB.");
       const text = await file.text(); const data = validateBackup(text);
-      showSheet("Merge this backup?", `${data.catalog.length} stories and ${Object.values(data.read).reduce((n, chapters) => n + Object.keys(chapters).length, 0)} read chapters. Existing downloads stay. Newer local reading positions are preserved.`, [{ text: "Cancel", style: "cancel" }, { text: "Import", onPress: () => { void (async () => { setBusy("Restoring…"); try { if (downloadBusy() || deleting) throw new Error("Wait for active transfers to finish."); await new Promise(resolve => setTimeout(resolve, 20)); const count = restoreBackup(text); reloadLocal(); setMessage(`Imported ${count} stories. Bookmarks, lists and read history are ready.`); } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); } finally { setBusy(""); } })(); } }]);
+      showSheet("Merge this backup?", `${data.catalog.length} stories and ${Object.values(data.read).reduce((n, chapters) => n + Object.keys(chapters).length, 0)} read chapters. Existing downloads stay. Newer local reading positions are preserved.`, [{ text: "Cancel", style: "cancel" }, { text: "Import", onPress: () => { void (async () => { setBusy("Restoring…"); try { if (downloadBusy() || deleting) throw new Error("Wait for active transfers to finish."); await new Promise(resolve => setTimeout(resolve, 20)); const count = restoreValidatedBackup(data); reloadLocal(); setMessage(`Imported ${count} stories. Bookmarks, lists and read history are ready.`); } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); } finally { setBusy(""); } })(); } }]);
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(""); }
   }

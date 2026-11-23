@@ -6,8 +6,9 @@ import { useSourceRetry } from "../../components/use-source-retry";
 import { useShelf } from "../../lib/app-state";
 import { filterDiscovery, sortExplore } from "../../lib/parser";
 import { exploreQuery, rememberExploreQuery, exploreSession, rememberExplore } from "../../lib/explore-session";
+import { networkGuard } from "../../lib/network";
 import { FIRST_PAGE } from "../../lib/scraper";
-import { matchesStoryQuery } from "../../lib/reading-ux";
+import { libraryPriority, matchesStoryQuery } from "../../lib/reading-ux";
 import { effectiveProviderSort, providerInfo, providerSorts } from "../../lib/provider-info";
 import { needsVerification } from "../../lib/provider-errors";
 import type { BrowseOptions } from "../../lib/scraper";
@@ -21,7 +22,7 @@ export default function Explore() {
   return <ExploreResults key={provider} provider={provider} />;
 }
 export function ExploreResults({ provider }: { provider: string }) {
-  const { catalog, preferences, saved, browse, updatePreferences, rememberSearch } = useShelf();
+  const { catalog, preferences, saved, browse, updatePreferences, rememberSearch, sync, refreshing: checkingReleases } = useShelf();
   const [query, setQuery] = useState(() => exploreQuery(provider));
   const [debounced, setDebounced] = useState(() => exploreQuery(provider).trim());
   const [reload, setReload] = useState(0);
@@ -33,6 +34,7 @@ export function ExploreResults({ provider }: { provider: string }) {
   const list = useRef<FlatList>(null);
   const restoreOffset = useRef<number | null>(null);
   const refreshingFirst = useRef(false);
+  const refreshAccess = useRef<(() => Promise<void>) | undefined>(undefined);
   const generation = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const busy = useRef(false);
@@ -41,7 +43,7 @@ export function ExploreResults({ provider }: { provider: string }) {
   const more = useRef(true);
   const failed = useRef(false);
   const viewport = useRef({ height: 0, content: 0, offset: 0 });
-  useEffect(() => { const timer = setTimeout(() => setDebounced(query.trim()), 450); return () => clearTimeout(timer); }, [query]);
+  useEffect(() => { const timer = setTimeout(() => setDebounced(query.trim()), 280); return () => clearTimeout(timer); }, [query]);
   const info = providerInfo(preferences.source);
   const webtoon = Boolean(info.languages?.length);
   const alternate = info.rankOrder === "source";
@@ -59,7 +61,9 @@ export function ExploreResults({ provider }: { provider: string }) {
     const abort = new AbortController(); controller.current = abort;
     busy.current = true; failed.current = false; setLoading(true); setError("");
     try {
-      const page = await browse(options, cursor.current, abort.signal, manual);
+      const access = manual ? refreshAccess.current : undefined;
+      if (manual) refreshAccess.current = undefined;
+      const page = await browse(options, cursor.current, abort.signal, manual, access);
       if (version !== generation.current) return;
       if (options.query && loadedIds.current.length === 0) rememberSearch(provider, options.query);
       cursor.current = page.cursor; more.current = page.hasMore;
@@ -93,7 +97,7 @@ export function ExploreResults({ provider }: { provider: string }) {
     const timer = setTimeout(() => {
       if (version !== generation.current) return;
       busy.current = false; setIds(cached?.ids || null); setHasMore(more.current); setError("");
-      if (shortQuery) { more.current = false; setHasMore(false); setRefreshing(false); }
+      if (shortQuery) { refreshAccess.current = undefined; more.current = false; setHasMore(false); setRefreshing(false); }
       else if (!cached || refresh) void loadMore(refresh);
       else { setLoading(false); setRefreshing(false); }
     }, 0);
@@ -101,14 +105,18 @@ export function ExploreResults({ provider }: { provider: string }) {
   }, [loadMore, reload, sessionKey, saveSession, shortQuery]);
   // A filtered page may add no rows, so FlatList won't emit another end-reached event.
   useEffect(() => { if (!loading && ids !== null) prefetch(); }, [loading, ids, prefetch]);
-  const allowed = ids === null ? null : new Set(ids);
-  const filtered = filterDiscovery(catalog, preferences, saved).filter(item => (!allowed || allowed.has(item.slug)) && (allowed || matchesStoryQuery(item, debounced)));
-  const sourceOrder = new Map((ids || []).map((id, index) => [id, index]));
-  const visible = alternate && preferences.sort !== "title"
-    ? filtered.sort((a, b) => (sourceOrder.get(a.slug) ?? a.sourceRank ?? 9999) - (sourceOrder.get(b.slug) ?? b.sourceRank ?? 9999))
-    : preferences.sort === "trending" && !debounced
-    ? filtered.filter(item => item.popularRanks?.[preferences.period]).sort((a, b) => a.popularRanks![preferences.period]! - b.popularRanks![preferences.period]!)
-    : sortExplore(filtered, preferences.sort);
+  const visible = useMemo(() => {
+    const allowed = ids === null ? null : new Set(ids);
+    const filtered = filterDiscovery(catalog, preferences, saved).filter(item => allowed ? allowed.has(item.slug) : matchesStoryQuery(item, debounced));
+    const sourceOrder = new Map((ids || []).map((id, index) => [id, index]));
+    const sorted = alternate && preferences.sort !== "title"
+      ? filtered.sort((a, b) => (sourceOrder.get(a.slug) ?? a.sourceRank ?? 9999) - (sourceOrder.get(b.slug) ?? b.sourceRank ?? 9999))
+      : preferences.sort === "trending" && !debounced
+      ? filtered.filter(item => item.popularRanks?.[preferences.period]).sort((a, b) => a.popularRanks![preferences.period]! - b.popularRanks![preferences.period]!)
+      : sortExplore(filtered, preferences.sort);
+    if (!debounced) sorted.sort((a, b) => libraryPriority(a, saved[a.slug]) - libraryPriority(b, saved[b.slug]));
+    return sorted;
+  }, [alternate, catalog, debounced, ids, preferences, saved]);
   const waitingForCatalog = Boolean(ids?.length && ids.some(id => !catalogIds.has(id)));
   return <SafeAreaView style={ui.safe} edges={["top"]}><FlatList ref={list}
     data={visible} numColumns={2} keyExtractor={item => item.slug} renderItem={({ item }) => <SeriesCard item={item} grid />}
@@ -125,7 +133,14 @@ export function ExploreResults({ provider }: { provider: string }) {
     }}
     onScroll={event => { if (restoreOffset.current === null) { viewport.current.offset = event.nativeEvent.contentOffset.y; saveSession(); } prefetch(); }} scrollEventThrottle={100}
     onEndReached={prefetch} onEndReachedThreshold={1}
-    refreshing={refreshing} onRefresh={() => { saveSession(); setRefreshing(true); setReload(value => value + 1); }}
+    refreshing={Boolean(refreshing || checkingReleases)} onRefresh={() => {
+      const access = networkGuard("Refresh Explore and check for new chapters?");
+      refreshAccess.current = access;
+      saveSession();
+      setRefreshing(true);
+      setReload(value => value + 1);
+      void sync(false, true, access);
+    }}
     ListHeaderComponent={<><PageHeading title="Explore" subtitle="FIND SOMETHING TO READ" />
       <View style={[ui.row, { marginHorizontal: 22, paddingHorizontal: 15, backgroundColor: color.surface, borderRadius: 13, marginBottom: 12 }]}><Icon name="search-outline" tint={color.muted} /><TextInput accessibilityLabel="Search selected source" placeholder={alternate ? "Search this source" : "Search comics and novels"} returnKeyType="search" onSubmitEditing={() => { setDebounced(query.trim()); setReload(value => value + 1); }} placeholderTextColor={color.muted} value={query} onChangeText={value => { setQuery(value); rememberExploreQuery(provider, value); }} style={{ flex: 1, height: 50, color: color.text }} />{query ? <Pressable accessibilityLabel="Clear search" onPress={() => { setQuery(""); setDebounced(""); rememberExploreQuery(provider, ""); }} style={{padding:12}}><Icon name="close" size={18} tint={color.muted}/></Pressable> : null}{(loading || query.trim() !== debounced) && <ActivityIndicator accessibilityLabel="Loading titles" size="small" color={color.lilac} />}</View>
       {!query && Boolean(preferences.searchHistory?.[provider]?.length) && <View style={{paddingHorizontal:22,marginBottom:12}}><View style={[ui.row,{justifyContent:"space-between"}]}><Text style={ui.muted}>Recent searches</Text><Pressable accessibilityLabel="Clear recent searches for this provider" onPress={()=>rememberSearch(provider,null)} style={{padding:10}}><Icon name="trash-outline" size={16} tint={color.muted}/></Pressable></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:7}}>{preferences.searchHistory![provider].map(term=><Chip key={term} text={term} active={false} onPress={()=>{setQuery(term);setDebounced(term);rememberExploreQuery(provider,term);}}/>)}</ScrollView></View>}

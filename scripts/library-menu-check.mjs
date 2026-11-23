@@ -8,10 +8,10 @@ import * as readingUx from "../src/lib/reading-ux.ts";
 // Click the real component's handlers with native presentation stubbed out.
 const alerts = [], routes = [], deletions = [];
 let busy = false, cursor = 0; const slots=[];
-const story = { slug: "example", title: "Example", hasLocalFiles: true, localChapters: ["1"] };
+const story = { status: "Ongoing", slug: "example", title: "Example", hasLocalFiles: true, localChapters: ["1"] };
 const edits=[];
 const bulkEdits=[];
-const shelf = { catalogReady:true, setStoriesOptions:(slugs,change)=>{bulkEdits.push([slugs,change]);edits.push(...slugs.map(slug=>[slug,change]));},setStoryOptions:(...args)=>edits.push(args),pauseDownload:()=>{}, catalog: [story], saved: {}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
+const shelf = { catalogReady:true, setStoriesOptions:(slugs,change)=>{bulkEdits.push([slugs,change]);edits.push(...slugs.map(slug=>[slug,change]));},setStoryOptions:(...args)=>edits.push(args),pauseDownload:()=>{}, catalog: [story], saved: {example:{bookmarked:true}}, read: {}, updates: {}, deleting: false, downloadBusy: () => busy, removeDownloads: async (...args) => deletions.push(args) };
 const element = (type, props) => ({ type, props });
 const modules = {
   "react/jsx-runtime": { jsx: element, jsxs: element },
@@ -42,15 +42,15 @@ const list = nodes(root).find(node => node.type === "FlatList");
 assert.ok(list, "library uses a virtualized list");
 assert.equal(list.props.data.length, 1);
 const libraryTabs=nodes(list.props.ListHeaderComponent).filter(node=>node.props?.accessibilityRole==='tab');
-assert.equal(libraryTabs.length,5);
+assert.equal(libraryTabs.length,3);
 const countedTab=libraryTabs.find(node=>node.props.accessibilityLabel==='Downloads, 1 story');
 assert.ok(countedTab,'icon tab exposes its name and actual count to accessibility');
-assert.ok(nodes(countedTab).some(node=>node.type==='Text'&&node.props.children===1),'Downloads displays its actual story count');
-assert.equal(countedTab.props.accessibilityState.selected,true);
+assert.ok(nodes(countedTab).some(node=>node.type==='Text'&&node.props.children.join?.("")==="Downloads · 1"),'Downloads displays its actual story count');
+assert.equal(countedTab.props.accessibilityState.selected,false);
 assert.equal(libraryTabs.every(tab=>nodes(tab).some(node=>node.type==='Icon')),true,'all library tabs use compact icons');
-const bookmarkTab=libraryTabs.find(node=>node.props.accessibilityLabel.startsWith('Bookmarks,'));
+const bookmarkTab=libraryTabs.find(node=>node.props.accessibilityLabel.startsWith('Reading list,'));
 bookmarkTab.props.onPress();
-assert.ok(nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).some(node=>node.props?.accessibilityRole==='tab'&&node.props.accessibilityLabel.startsWith('Bookmarks,')&&node.props.accessibilityState.selected),'icon tabs still switch library scope');
+assert.ok(nodes(nodes(render()).find(node=>node.type==='FlatList').props.ListHeaderComponent).some(node=>node.props?.accessibilityRole==='tab'&&node.props.accessibilityLabel.startsWith('Reading list,')&&node.props.accessibilityState.selected),'icon tabs still switch library scope');
 countedTab.props.onPress();
 let activeList=nodes(render()).find(node=>node.type==='FlatList');
 nodes(activeList.props.ListHeaderComponent).find(node=>node.props?.accessibilityLabel==='Filter: All stories').props.onPress();
@@ -102,9 +102,9 @@ libraryHeader().find(node=>node.props?.accessibilityLabel==='Search your library
 assert.deepEqual(findList().props.data.map(item=>item.slug),['automatic'],'alternate provider titles find the canonical library entry');
 libraryHeader().find(node=>node.props?.accessibilityLabel==='Clear library search').props.onPress();
 assert.equal(findList().props.data.length,2);
-libraryHeader().find(node=>node.type==='PageHeading').props.action.props.onPress();
-let selectable=findList();
-nodes(selectable.props.renderItem({item:story})).find(node=>node.props?.accessibilityLabel==='Select Example').props.onPress();
+assert.equal(libraryHeader().find(node=>node.type==='PageHeading').props.action,undefined);
+nodes(findList().props.renderItem({item:story})).find(node=>node.props?.onLongPress).props.onLongPress();
+assert.equal(nodes(findList().props.renderItem({item:story})).find(node=>node.props?.accessibilityLabel==='Select Example').props.accessibilityState.checked,true);
 let selectionNodes=nodes(render());
 selectionNodes.find(node=>node.props?.accessibilityLabel==='Select all stories').props.onPress();
 nodes(render()).find(node=>node.props?.accessibilityLabel==='Bulk library actions').props.onPress();
@@ -112,4 +112,13 @@ alerts.at(-1)[2].find(action=>action.text==='Move to Reading').onPress();
 assert.equal(bulkEdits.length,1,'a bulk selection dispatches one storage mutation');
 assert.deepEqual(edits.map(([slug,change])=>[slug,change.list]),[['example','reading'],['automatic','reading']]);
 assert.ok(!nodes(render()).some(node=>node.props?.accessibilityLabel==='Bulk library actions'),'bulk list changes exit selection mode');
-console.log('Library search, selection and bulk list changes passed');
+libraryHeader().find(node=>node.props?.accessibilityLabel?.startsWith('Downloads,')).props.onPress();
+shelf.catalog = [
+  {...story, slug:'finished', status:'Completed'},
+  {...story, slug:'hiatus', status:'On hiatus'},
+  {...story, slug:'active-hiatus', status:'On hiatus'},
+  story,
+];
+shelf.saved = {'active-hiatus':{bookmarked:true,list:'reading'}};
+assert.deepEqual(findList().props.data.map(item=>item.slug),['active-hiatus','example','hiatus','finished']);
+console.log('Library search, long-press selection, status ordering and bulk changes passed');

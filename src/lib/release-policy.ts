@@ -12,7 +12,7 @@ export function unreadReleases(updates: string[] = [], read: Record<string, stri
 }
 
 export function automaticReleaseIds(story: SavedStory | undefined, item: Series, updates: string[] = [], read: Record<string, string> = {}): string[] {
-  if (!story?.bookmarked || !story.autoDownload || !Array.isArray(story.autoDownloadBaseline)) return [];
+  if (!story?.autoDownload || !Array.isArray(story.autoDownloadBaseline)) return [];
   const baseline = new Set(story.autoDownloadBaseline), saved = new Set(item.localChapters || []);
   return unreadReleases(updates, read, item.chapterIds).filter(id => !baseline.has(id) && !saved.has(id));
 }

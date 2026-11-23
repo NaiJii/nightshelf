@@ -1,3 +1,4 @@
+import * as networkPolicy from "../src/lib/network-policy.ts";
 import * as downloadDisplay from "../src/lib/download-display.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -23,11 +24,18 @@ function component(file, extraModules = {}, globals = {}, expose = []) {
       useMemo(fn, deps) { const at=cursor++, previous=slots[at]; if(!previous || deps.some((value,index)=>!Object.is(value,previous.deps[index]))) slots[at]={value:fn(),deps}; return slots[at].value; },
       useEffect: (callback, deps) => effects.push({callback,deps}),
       useLayoutEffect: callback=>callback(),
+      useDeferredValue: value=>value,
       useState(initial) { const at = cursor++; if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial; return [slots[at], value => { slots[at] = typeof value === "function" ? value(slots[at]) : value; }]; },
       useRef(initial) { const at = cursor++; return slots[at] ||= { current: initial }; },
     },
     "react-native": Object.fromEntries(["Modal", "Pressable", "ScrollView", "Text", "View", "FlatList", "TextInput", "ActivityIndicator", "Switch"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
+    "../lib/network-policy": networkPolicy,
+    "../../lib/network": {networkGuard:()=>async()=>{}},
+    "./network-policy": networkPolicy,
+    "./network": {NetworkPaused:class extends Error{}},
+    "./request-control": requestControl,
+    "./download-display": downloadDisplay,
     "./ui": { color: {}, ui: {}, Icon: "Icon" },
     "./reader-transfers": {cancelReaderTransfer:()=>false,beginReaderTransfer:()=>({progress(){},finish(){}})},
     ...extraModules,
@@ -41,7 +49,7 @@ assert.ok(modules[name], name); return modules[name]; } });
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : []; }
 {
   let requests = 0;
-  let connection = {type:'wifi',isConnected:true,isInternetReachable:true,details:{}};
+  let connection = {type:'wifi',isConnected:true,isInternetReachable:true,details:{isConnectionExpensive:false}};
   const preferences = {autoAppUpdates:true};
   const makeUpdates = () => component('../src/components/app-updates-provider.tsx', {
     'react-native': {AppState:{currentState:'active'}},
@@ -83,10 +91,10 @@ assert.ok(touchButton.props.android_ripple,'Android touch feedback is native and
 assert.equal(touchButton.props.style({pressed:true})[0].minHeight,48,'touch feedback preserves button sizing');
 assert.equal(touchButton.props.style({pressed:true})[1].opacity,0.72);
 
-const browseRequests = [];
+const browseRequests = [], exploreChecks = [];
 const exploreShelf = {
   catalog: [{slug:'first',title:'First'}], saved: {}, preferences: {source:'asura',sort:'title'},
-  rememberSearch:()=>{},browse: (options, cursor, signal, manual) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,resolve,reject})),
+  rememberSearch:()=>{},sync:(...args)=>exploreChecks.push(args),browse: (options, cursor, signal, manual, access) => new Promise((resolve,reject) => browseRequests.push({options,cursor,signal,manual,access,resolve,reject})),
 };
 let retryExplore;
 const exploreModules = {
@@ -159,6 +167,8 @@ remembered=revisitedList();
 assert.equal(remembered.props.data[0].slug,'first','cached stories remain usable while refresh is pending');
 assert.equal(remembered.props.refreshing,true);
 assert.equal(browseRequests.length,5);
+assert.deepEqual(exploreChecks[0].slice(0,2),[false,true],'refreshing Explore manually checks tracked releases');
+assert.equal(exploreChecks[0][2],browseRequests[4].access,'Explore results and chapter checks share metered consent');
 browseRequests[4].reject(Error('Refresh offline'));
 await new Promise(resolve=>setTimeout(resolve,0));
 remembered=revisitedList();
@@ -213,7 +223,7 @@ const story = { url: 'https://asurascans.com/comics/example', slug: 'example', t
 const requested = [];
 const estimateCalls = [];
 const positions = {example:{chapter:"2",fraction:0.6,chapters:{"1":{fraction:0.4},"2":{fraction:0.6}}}};
-const shelf = { catalog: [story], read: {example:{}}, saved: {}, preferences: {}, downloads: [], detailsLoading: [], notice: '', downloadBusy: () => false, startDownload: (_, selection) => {requested.push(selection);return true;}, setReadStatus(slug, ids, value) {for (const id of ids) {if(value) shelf.read[slug][id]='read';else {delete shelf.read[slug][id];positions[slug].chapters[id].fraction=0;}}} };
+const shelf = { catalog: [story], read: {example:{}}, saved: {}, preferences: {}, downloads: [], detailsLoading: [], notice: '', downloadBusy: () => false, startDownload: (_, selection) => {requested.push(selection);return true;}, setReadStatus(slug, ids, value) {const ledger={...shelf.read[slug]};for (const id of ids) {if(value) ledger[id]='read';else {delete ledger[id];positions[slug].chapters[id].fraction=0;}}shelf.read={...shelf.read,[slug]:ledger};} };
 const chapterSheets = [], readNowChoices = [];
 const details = component('../src/app/series/[slug].tsx', {
   'expo-router': {useLocalSearchParams: () => ({slug:'example'}), useFocusEffect: () => {}, router: {}},
@@ -273,11 +283,11 @@ assert.deepEqual(readNowChoices,['2'],'Read now uses the priority reader downloa
 shelf.connection={label:'Offline'};
 row('2').find(node=>node.props?.onLongPress).props.onPress();
 assert.equal(chapterSheets.at(-1)[0],'Internet required','an unavailable unsaved chapter explains the connection requirement');
-shelf.connection={label:'Wi-Fi'};story.lockedChapterIds=['3'];
+shelf.connection={label:'Wi-Fi'};shelf.catalog=[{...story,lockedChapterIds:['3']}];
 row('3').find(node=>node.props?.onLongPress).props.onPress();
 assert.equal(chapterSheets.at(-1)[0],'Provider access required');
 assert.ok(!chapterSheets.at(-1)[2].some(action=>action.text==='Read now'),'restricted chapters never offer an unavailable download');
-delete story.lockedChapterIds;
+shelf.catalog=[story];
 console.log('Chapter long-press range selection, Read now and contextual unavailable actions passed');
 
 
@@ -303,8 +313,8 @@ const provider = component('../src/lib/app-state.tsx', {
   './storage': {catalogMetadata:()=>[story],loadCatalogAsync:async()=>{catalogHydrations++;return [story];},loadCatalog:()=>[story],loadPreferences:()=>settings,savePreferences:value=>{settings=value;},savedStories:()=>({example:{bookmarked:true,autoDownload:true,autoDownloadBaseline:['1']}}),readChapters:()=>({}),releaseUpdates:()=>({example:['2']}),loadDownloads:()=>[],deleteChapters:(...args)=>localDeletions.push(args)},
   './scraper': {refreshSeries:(_item,_guard,signal)=>{detailsSignal=signal;return new Promise((_,reject)=>{rejectDetails=reject;});},syncCatalog:()=>new Promise((_,reject)=>{rejectSync=reject;})},
   './network': {networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
-  './network-policy': {connectionLabel:()=>({label:'Offline'})},
-  './releases': {configureReleaseChecks:async()=>{}},
+  './network-policy': {...networkPolicy,connectionLabel:()=>({label:'Offline'})},
+  './releases': {removeLegacyReleaseSchedule:async()=>{}},
   './download-queue': {restoredDownloads:()=>[],DownloadQueue:class {jobs=[];isBusy(){return false;}pause(){}enqueue(...args){automaticQueued.push(args);} }},
   './request-control': requestControl,
   './background-downloads': nativeControls,
@@ -353,7 +363,7 @@ assert.equal(app().notice,'Could not stop Android transfer','native resume failu
 nativeControls.transferStates=()=>({});
 app();provider.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').callback();
 const deletionPending=app().removeDownloads(story,['1']);
-resolveNetwork({type:'wifi',isConnected:true});
+resolveNetwork({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}});
 await deletionPending;
 assert.equal(localDeletions.length,1);
 app().downloadQueue.jobs.push({series:story,selection:'2',chapters:['2'],status:'downloading'});
@@ -363,7 +373,7 @@ assert.equal(await app().removeDownloads(story,[],true),false,'whole-series dele
 assert.equal(await app().removeDownloads({...story,slug:'other'},['1']),true,'another series download never blocks deletion');
 app().downloadQueue.jobs.length=0;
 assert.equal(automaticQueued.length,0,'automatic transfers cannot start writing while files are being deleted');
-app();provider.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').callback();resolveNetwork({type:'wifi',isConnected:true});
+app();provider.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').callback();resolveNetwork({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(automaticQueued.length,1,'automatic transfers work again once deletion finishes');
 console.log('Screen-scoped chapter errors, navigation cleanup and late-sync warning checks passed');
@@ -471,7 +481,7 @@ const readerProvider=component('../src/lib/app-state.tsx',{
   './storage':{catalogMetadata:()=>[readerStory],loadCatalogAsync:async()=>[readerStory],loadPreferences:()=>({source:'asura',deleteAfterReading:true,autoDownloadLimitMB:2048}),savedStories:()=>({}),readChapters:()=>({example:{'1':new Date(Date.now()-25*3600_000).toISOString()}}),releaseUpdates:()=>({}),loadDownloads:()=>[],localChapters:()=>['1'],chapterIntact:(_,chapter)=>intactReaderChapters.has(chapter),deleteChapters:(...args)=>readerDeletions.push(args)},
   './scraper':{downloadChapters:async(...args)=>{await args[3]();directReaderCalls.push(args);await new Promise(resolve=>{closeReaderWriter=resolve;});requestControl.throwIfAborted(args[4]);intactReaderChapters.add(args[1]);}},
   './network':{networkGuard:()=>async()=>{},NetworkPaused:class extends Error{}},
-  './network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
+  './network-policy':{...networkPolicy,connectionLabel:()=>({label:'Wi-Fi'})},
   './releases':{requestReleasePermission:async()=>true},'./download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];blocked=false;stopReaderPrefetch(){this.blocked=true;}canPrefetchReader(){return !this.blocked;}pause(){this.blocked=true;this.jobs.forEach(job=>job.status='paused');}isBusy(){return false;}async holdForReader(){readerPriority.push('hold');return ()=>readerPriority.push('release');}}},
   './request-control':requestControl,'./background-downloads':{transferStates:()=>({}),stopTransfer:async()=>{if(readerStopError)throw readerStopError;}},
   './library-tools':{freeBytes:()=>1024**3,libraryBytesAsync:async()=>0},
@@ -517,7 +527,7 @@ closeReaderWriter();await replacementReader;
 console.log('Reader writer locks, deletion safety and Wi-Fi prefetch policy checks passed');
 
 // Chapter-number jumps locate exact decimals and never select restricted rows.
-story.chapterIds=['1','2','125.5'];story.lockedChapterIds=['126'];story.chapterCount=4;
+shelf.catalog=[{...story,chapterIds:['1','2','125.5'],lockedChapterIds:['126'],chapterCount:4}];
 const chapterScrolls=[];
 list().props.ref.current={scrollToIndex:options=>chapterScrolls.push(options),scrollToOffset:()=>{}};
 header().find(node=>node.props?.accessibilityLabel==='Jump to chapter number').props.onPress();
@@ -539,6 +549,7 @@ const drawer=component('../src/components/download-drawer.tsx',{
 });
 const draw=()=>drawer.render('DownloadDrawerProvider',{children:'screen'});
 assert.equal(nodes(draw()).find(node=>node.type==='Modal').props.visible,false);
+assert.ok(!nodes(draw()).some(node=>node.type==='DownloadList'),'a closed drawer does not mount download progress consumers');
 draw().props.value();assert.equal(nodes(draw()).find(node=>node.type==='Modal').props.visible,true);
 nodes(draw()).find(node=>node.type==='DownloadList').props.onOpenStory();
 assert.equal(nodes(draw()).find(node=>node.type==='Modal').props.visible,false,'opening a story dismisses the download drawer');
@@ -686,7 +697,7 @@ const fakeUpdater={verify:async(...args)=>{verifiedUpdates.push(args);if(badUpda
 const installerModules={
  'react-native':{ActivityIndicator:'ActivityIndicator',Text:'Text',View:'View',AppState:{currentState:'active',addEventListener:(_,callback)=>{appStateCallback=callback;return {remove(){}};}}},
  'expo-router':{router:{},useFocusEffect:callback=>{updateFocus=callback;}},
- '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>({type:'wifi',isConnected:true}),addEventListener:()=>()=>{}}},
+ '@react-native-community/netinfo':{__esModule:true,default:{fetch:async()=>({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}}),addEventListener:()=>()=>{}}},
  'expo-file-system/legacy':{cacheDirectory:'file:///cache/',makeDirectoryAsync:async()=>{},deleteAsync:async uri=>{apkFile=false;deletedUpdates.push(uri);},getInfoAsync:async()=>({exists:apkFile,size:apkSize}),getContentUriAsync:async()=> 'content://com.ji.nightshelf.FileSystemFileProvider/cache/update.apk',createDownloadResumable:()=>({downloadAsync:async()=>{if(waitForApk)await new Promise(resolve=>{finishApk=resolve;});apkFile=true;return {status:200};},cancelAsync:async()=>{}})},
  '../components/app-updates-provider':{useAppUpdates:()=>({installed:installedUpdate,update:publishedUpdate,check(){}})},
  '../components/ui':{color:{},Icon:'Icon',Page:'Page',ui:{}},
@@ -750,7 +761,7 @@ console.log('Failed prefetch cooldown and connection recovery passed');
 
 const deletedRead=[];
 shelf.removeDownloads=async(...args)=>{deletedRead.push(args);return true;};
-shelf.read.example={'1':'read','2':'read'};
+shelf.read={...shelf.read,example:{'1':'read','2':'read'}};
 header().find(node=>node.props?.accessibilityLabel==='Chapter actions').props.onPress();
 chapterSheets.at(-1)[2].find(action=>action.text==='Delete read chapters (1)').onPress();
 assert.equal(deletedRead.length,0,'per-story read deletion requires confirmation');
@@ -907,7 +918,7 @@ const storageView=component('../src/app/storage.tsx',{
   '../components/action-sheet':{useActionSheet:()=>(...args)=>storageSheets.push(args)},
   '../components/ui':{Page:'Page',ui:{},color:{},Icon:'Icon'},
   '../lib/app-state':{useDownloads:()=>storageJobs,useShelf:()=>({read:{example:{'1':'read','2':'read','3':'read'}},catalog:[storageStory],deleting:false,downloadBusy:()=>Boolean(storageJobs.length),startDownload(){},removeDownloads:async(...args)=>{storageDeletes.push(args);return true;}})},
-  '../lib/library-tools':{formatBytes:value=>String(value),storageSummaryAsync:signal=>new Promise(resolve=>summaries.push({signal,resolve})),verifyChapterFiles:()=>{scannedFiles++;return {checked:1,damaged:1};}},
+  '../lib/library-tools':{formatBytes:value=>String(value),storageSummaryAsync:signal=>new Promise(resolve=>summaries.push({signal,resolve})),verifyChapterFilesAsync:async()=>{scannedFiles++;return {checked:1,damaged:1};}},
 });
 const storageNodes=()=>nodes(storageView.render('default',{}));
 storageNodes();const blurStorage=storageFocus();
@@ -1006,8 +1017,8 @@ const alertState=component('../src/lib/app-state.tsx',{
   'expo-router':{usePathname:()=>'/series/example'},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})},Alert:{alert:(...args)=>permissionAlerts.push(args)}},
   '@react-native-community/netinfo':{},'./parser':parser,'./release-policy':releasePolicy,
   './storage':{catalogMetadata:()=>[story],loadPreferences:()=>alertPrefs,savePreferences:value=>{alertPrefs=value;},savedStories:()=>alertFlags,readChapters:()=>({}),releaseUpdates:()=>({}),loadDownloads:()=>[]},
-  './scraper':{},'./network':{NetworkPaused:class extends Error{}},'./network-policy':{connectionLabel:()=>({label:'Wi-Fi'})},
-  './releases':{releasePermissionGranted:async()=>permissionAllowed,requestReleasePermission:async()=>{notificationPermissionCalls++;return permissionAllowed=await alertPermission();},configureReleaseChecks:async()=>{schedulerCalls++;throw Error('Android scheduler unavailable');}},
+  './scraper':{},'./network':{NetworkPaused:class extends Error{}},'./network-policy':{...networkPolicy,connectionLabel:()=>({label:'Wi-Fi'})},
+  './releases':{releasePermissionGranted:async()=>permissionAllowed,requestReleasePermission:async()=>{notificationPermissionCalls++;return permissionAllowed=await alertPermission();},removeLegacyReleaseSchedule:async()=>{schedulerCalls++;throw Error('Android scheduler unavailable');}},
   './download-queue':{restoredDownloads:()=>[],DownloadQueue:class{jobs=[];}},
   './request-control':requestControl,'./background-downloads':{},
   './library-tools':{updateStoryOptions:(slug,change)=>{
@@ -1032,8 +1043,7 @@ autoButton.props.onPress();assert.equal(notificationState().saved.example.autoDo
 await firstAlertEnable;
 assert.equal(notificationState().saved.example.notifyReleases,true);
 assert.equal(schedulerCalls,0,'the bell handler never waits for Android background scheduling');
-notificationState();alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[0]==='boolean').callback();await new Promise(resolve=>setTimeout(resolve,0));
-assert.equal(schedulerCalls,1);assert.match(notificationState().notice,/Background checks are unavailable/);
+
 await notificationState().setStoryNotifications('example',false);
 const beforeFastEnable=notificationPermissionCalls;
 const fastEnable=notificationState().setStoryNotifications('example',true);
@@ -1043,10 +1053,8 @@ const bellButton=releaseButtonNodes().find(node=>node.props?.accessibilityLabel=
 await bellButton.props.onPress();assert.equal(notificationState().saved.example.notifyReleases,false);
 await bellButton.props.onPress();assert.equal(notificationState().saved.example.notifyReleases,true,'a reused bell handler follows the latest state');
 notificationState();const autoKey=alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').deps[1];
-const scheduleKey=alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[0]==='boolean').deps[0];
 notificationState().toggleStory('example','liked');notificationState().setStoryOptions('example',{list:'reading'});notificationState();
 assert.equal(alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[1]==='string').deps[1],autoKey,'likes and reading lists do not trigger automatic-download library scans');
-assert.equal(alertState.effects.find(effect=>effect.deps?.length===3&&typeof effect.deps[0]==='boolean').deps[0],scheduleKey,'unrelated story options do not reconfigure the background task');
 const refreshNotificationPermission=async()=>{notificationState();const stop=alertState.effects.at(-1).callback();await new Promise(resolve=>setTimeout(resolve,0));stop();};
 permissionAllowed=false;await refreshNotificationPermission();assert.equal(notificationState().preferences.releaseNotifications,false,'revoked Android permission is reflected');
 let acceptAlertPermission;
@@ -1098,7 +1106,7 @@ const verifyPage=component('../src/app/verify-source.tsx',{
 });
 const verificationNodes=()=>nodes(verifyPage.render('default',{}));
 verificationNodes();let closeVerification=verificationFocus();const stopVerificationNetwork=verifyPage.effects[0].callback();
-verificationNetwork({type:'wifi',isConnected:true});await new Promise(resolve=>setTimeout(resolve,0));
+verificationNetwork({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}});await new Promise(resolve=>setTimeout(resolve,0));
 let browserVerification=verificationNodes().find(node=>node.type==='WebView');
 browserVerification.props.onMessage({nativeEvent:{data:JSON.stringify({type:'source-ready',url:story.url})}});
 verificationNodes();verifyPage.effects.at(-1).callback();assert.ok(verificationSignal);

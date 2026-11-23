@@ -1,7 +1,7 @@
 import { router, Stack } from "expo-router";
 import { useEffect } from "react";
 import * as Notifications from "expo-notifications";
-import { loadCatalog } from "../lib/storage";
+import { catalogMetadata } from "../lib/storage";
 import { StatusBar } from "expo-status-bar";
 import { AppUpdatesProvider } from "../components/app-updates-provider";
 import { AppUpdatePrompt } from "../components/app-update-prompt";
@@ -17,7 +17,7 @@ export default function RootLayout() {
       const token = `${response.notification.request.identifier}/${response.notification.date}`;
       if (handled === token) return;
       const slug = response.notification.request.content.data?.slug;
-      if (typeof slug !== "string" || !loadCatalog().some(item => item.slug === slug)) return;
+      if (typeof slug !== "string" || !catalogMetadata().some(item => item.slug === slug)) return;
       handled = token;
       router.push({ pathname: "/series/[slug]", params: { slug, filter: "unread" } });
       void Notifications.clearLastNotificationResponseAsync();

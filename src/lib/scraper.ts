@@ -14,10 +14,9 @@ import { isVerificationHost, requireSourceVerification, SOURCE_AGENT, verificati
 import { backgroundTransfers, waitForTransfer } from "./background-downloads";
 import { recordSourceHealth, sourceForRequest } from "./library-tools";
 import type { NativeChapter } from "./background-downloads";
-import NetInfo from "@react-native-community/netinfo";
 
 const HEADERS = { "User-Agent": MOBILE_AGENT };
-type Guard = () => Promise<void>;
+type Guard = (() => Promise<void>) & { allowsMetered?: () => boolean };
 
 async function request<T>(url: string, guard: Guard, read: (response: Awaited<ReturnType<typeof fetch>>) => Promise<T>, referer?: string, signal?: AbortSignal, timeout = 30_000, assetAgent?: string): Promise<T> {
   throwIfAborted(signal);
@@ -50,7 +49,7 @@ async function request<T>(url: string, guard: Guard, read: (response: Awaited<Re
     }
     const result = await withAbort(() => read(response), controller.signal);
     throwIfAborted(signal);
-    const source = sourceForRequest(url); if (source) recordSourceHealth(source, "ok", "Source responded successfully");
+    const source = sourceForRequest(url); if (source) recordSourceHealth(source, "ok", "Source responded successfully", true);
     return result;
   } catch (error) { if (!signal?.aborted && (timedOut || !(error instanceof Error) || !/Request failed|verification/i.test(error.message))) { const source = sourceForRequest(url); if (source) recordSourceHealth(source, "network", timedOut ? "Connection timed out" : "Connection failed"); } if (timedOut && !signal?.aborted) throw new Error("Request timed out. Retry when the connection is stable."); throw error; }
   finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
@@ -227,8 +226,9 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
       } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) throw error; }
     }
   }
-  const urls = existing.filter(item => item.localChapters?.length || saved[item.slug]?.bookmarked).map(item => item.url);
+  const urls = existing.filter(item => item.localChapters?.length || saved[item.slug]?.bookmarked || saved[item.slug]?.autoDownload).map(item => item.url);
   urls.push(...[...items.values()].filter(item => sourceOf(item) === provider.id && Object.values(item.popularRanks || {}).some(Boolean)).map(item => item.url));
+  const byUrl = new Map([...items.values()].map(item => [item.url, item]));
   const discovered = new Map<string, Series>();
   if (provider.discover) {
     try { for (const item of await provider.discover(context)) { discovered.set(item.url, item); urls.push(item.url); } }
@@ -239,8 +239,8 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
     await new Promise(resolve => setTimeout(resolve, 0));
     await yieldToForeground(signal);
     throwIfAborted(signal);
-    const old = [...items.values()].find(item => item.url === url);
-    const owned = old && (old.localChapters?.length || saved[old.slug]?.bookmarked);
+    const old = byUrl.get(url);
+    const owned = old && (old.localChapters?.length || saved[old.slug]?.bookmarked || saved[old.slug]?.autoDownload);
     const priority = owned || (old && Object.values(old.popularRanks || {}).some(Boolean));
     if (old?.summary && (old.detailsCached || old.metadataSyncedAt) && !force && !owned && Date.now() - Date.parse(old.metadataSyncedAt || old.syncedAt || "") < 6 * 3600_000) continue;
     if (!priority && newDetails >= 12) continue;
@@ -259,7 +259,6 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
       items.set(item.slug, item);
       if (!priority) newDetails++;
       successful++;
-      await new Promise(resolve => setTimeout(resolve, 100));
     } catch (error) { throwIfAborted(signal); if (error instanceof NetworkPaused) { mergeCatalog([...items.values()], true); throw error; } }
   }
   for (const [slug, item] of items) {
@@ -272,7 +271,7 @@ export async function syncCatalog(onProgress: (message: string) => void, guard: 
   throwIfAborted(signal);
   if (!successful) throw discoveryError || new Error("Could not refresh stories. Pull down to retry.");
   mergeCatalog([...items.values()], true);
-  return loadCatalog();
+  return loadCatalogAsync(signal);
 }
 export async function searchCatalog(query: string, mode: ContentMode, guard: Guard): Promise<string[]> {
   if (query.trim().length < 2) return [];
@@ -376,10 +375,9 @@ export async function downloadChapters(series: Series, selector: string, onProgr
       onProgress(`Preparing chapters · ${index + 1}/${chapters.length} prepared`, 0);
     }
     await guard(); throwIfAborted(signal);
-    const network = await NetInfo.fetch();
     const settings = loadPreferences();
-    const meteredNow = network.type !== "wifi" || Boolean(network.details?.isConnectionExpensive);
-    const allowMetered = !automaticBookmark && settings.mobileData !== "never" && (settings.mobileData === "allow" || meteredNow);
+    const policy = settings.mobileData;
+    const allowMetered = !automaticBookmark && (policy === "allow" || (policy === "ask" && guard.allowsMetered?.() === true));
     onNativeHandoff();
     await backgroundTransfers.enqueue(JSON.stringify({ id: series.slug, title: series.title, chapters: batch, allowMetered, automatic: automaticBookmark, limitBytes: automaticBookmark ? settings.autoDownloadLimitMB * 1024 ** 2 : 0 }));
     if (detachAutomatic) {

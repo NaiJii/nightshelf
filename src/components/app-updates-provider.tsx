@@ -1,3 +1,4 @@
+import { isUnmeteredWifi } from "../lib/network-policy";
 import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
@@ -35,7 +36,7 @@ function useUpdatesState() {
       if (manual) await networkGuard("Check for a NightShelf update?")();
       else {
         const network = await NetInfo.fetch();
-        if (AppState.currentState !== "active" || network.type !== "wifi" || !network.isConnected || network.isInternetReachable === false || network.details?.isConnectionExpensive) return;
+        if (AppState.currentState !== "active" || !isUnmeteredWifi(network)) return;
       }
       if (generation !== launch.current || AppState.currentState !== "active") return;
       checkedLaunch.current = generation;

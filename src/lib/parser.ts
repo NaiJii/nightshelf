@@ -125,9 +125,8 @@ export function filterDiscovery(items: Series[], filters: DiscoveryFilters, save
     && (!info?.collectionFromUrl || !filters.webtoonCollection || info.collectionFromUrl(item.url) === filters.webtoonCollection)
     && (info && info.formats.length === 1 || filters.contentMode === "all" || kindOf(item) === (filters.contentMode === "novels" ? "novel" : "comic"))
     && (!filters.hideDownloaded || (!item.localChapters?.length && !item.hasLocalFiles))
-    && (!filters.hideLiked || !saved[item.slug]?.liked)
     && (filters.genreFilters?.[sourceOf(item)] || []).every(tag => item.genres?.some(genre => genre.toLowerCase() === tag.toLowerCase()))
-    && (!filters.hideBookmarked || !saved[item.slug]?.bookmarked));
+    && (!(filters.hideBookmarked || filters.hideLiked) || !(saved[item.slug]?.bookmarked || saved[item.slug]?.liked || saved[item.slug]?.list)));
 }
 
 export function publicationState(item: Series, now = Date.now()): { label: string; color: string } {

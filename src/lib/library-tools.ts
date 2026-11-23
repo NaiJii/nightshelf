@@ -3,7 +3,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import { chapterListCached } from "./parser";
 import type { SavedStory, SourceId } from "./parser";
 import { sourceIdForUrl } from "./provider-info";
-import { yieldToForeground } from "./request-control";
+import { throwIfAborted, yieldToForeground } from "./request-control";
 import { readDeletionDue } from "./read-retention";
 import { catalogMetadata, chapterDirectory, chapterFiles, COVERS, LIBRARY, loadCatalog, loadCatalogAsync, ROOT, savedStories, releaseSnapshots, releaseUpdates, loadPreferences, readChapters, localChapters, deleteChapters } from "./storage";
 
@@ -69,7 +69,9 @@ export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory
   let snapshotsChanged = false, updatesChanged = false;
   for (const slug of new Set(slugs)) {
     const previous = all[slug] || {}, next = { ...previous, ...change };
-    if (change.autoDownload || change.notifyReleases) next.bookmarked = true;
+    if (change.list || change.liked || change.notifyReleases) next.bookmarked = true;
+    if (!next.bookmarked) next.list = undefined;
+    delete next.liked;
     const needsBaseline = (next.bookmarked && !previous.bookmarked) || (next.autoDownload && !previous.autoDownload) || (next.notifyReleases && !previous.notifyReleases);
     if (needsBaseline) metadata ||= new Map(catalogMetadata().map(item => [item.slug, item]));
     const item = needsBaseline ? metadata?.get(slug) : undefined;
@@ -77,11 +79,15 @@ export function updateStoriesOptions(slugs: string[], change: Partial<SavedStory
     const snapshot = () => { snapshots ||= releaseSnapshots(); if (baseline) snapshots[slug] = [...baseline]; else delete snapshots[slug]; snapshotsChanged = true; };
     const clearUpdates = () => { updates ||= releaseUpdates(); delete updates[slug]; updatesChanged = true; };
     if (next.bookmarked && !previous.bookmarked) {
-      snapshot(); clearUpdates(); next.notifyReleases ??= false;
+      if (!previous.autoDownload) { snapshot(); clearUpdates(); }
+      next.notifyReleases ??= false;
     } else if (next.notifyReleases && !previous.notifyReleases) snapshot();
-    if (!next.bookmarked) {
-      next.autoDownload = false; next.notifyReleases = false;
-      if (previous.bookmarked) { snapshots ||= releaseSnapshots(); delete snapshots[slug]; snapshotsChanged = true; clearUpdates(); }
+    if (!next.bookmarked) next.notifyReleases = false;
+    if (next.autoDownload && !previous.autoDownload && !next.bookmarked && !previous.bookmarked) {
+      snapshot(); clearUpdates();
+    }
+    if (!next.bookmarked && !next.autoDownload && (previous.bookmarked || previous.autoDownload)) {
+      snapshots ||= releaseSnapshots(); delete snapshots[slug]; snapshotsChanged = true; clearUpdates();
     }
     if (next.autoDownload && !previous.autoDownload) next.autoDownloadBaseline = baseline ? [...baseline] : undefined;
     all[slug] = next;
@@ -102,30 +108,59 @@ export type SourceHealth = { state: "ok" | "verification" | "unavailable" | "net
 export function sourceHealth(): Partial<Record<SourceId, SourceHealth>> {
   try { return readJson(new File(ROOT, "source-health.json"), {}); } catch { return {}; }
 }
-export function recordSourceHealth(source: SourceId, state: SourceHealth["state"], message: string): void {
-  const all = sourceHealth(), now = new Date().toISOString();
+const recordedSuccess = new Map<SourceId, number>();
+export function recordSourceHealth(source: SourceId, state: SourceHealth["state"], message: string, coalesceSuccess = false): void {
+  const time = Date.now();
+  if (coalesceSuccess && state === "ok" && time - (recordedSuccess.get(source) ?? -Infinity) < 60_000) return;
+  const all = sourceHealth(), now = new Date(time).toISOString();
   all[source] = { state, message, checkedAt: now, lastSuccess: state === "ok" ? now : all[source]?.lastSuccess };
   ROOT.create({ intermediates: true, idempotent: true });
   writeJson(new File(ROOT, "source-health.json"), all);
+  if (state === "ok") recordedSuccess.set(source, time);
+  else recordedSuccess.delete(source);
 }
 export function sourceForRequest(url: string): SourceId | undefined {
   return sourceIdForUrl(url, true);
 }
-export function verifyChapterFiles(slug: string, id: string): { damaged: number; checked: number; legacy: boolean } {
+type IntegrityResult = { damaged: number; checked: number; legacy: boolean };
+function* chapterIntegrity(slug: string, id: string): Generator<void, IntegrityResult> {
   const folder = chapterDirectory(slug, id);
   const manifest = JSON.parse(new File(folder, ".complete").textSync());
-  if (manifest.kind === "novel") { const file = new File(folder, "text.json"); const value = JSON.parse(file.textSync()); return { damaged: Array.isArray(value.paragraphs) && value.paragraphs.length && (!manifest.hash || file.md5 === manifest.hash) ? 0 : 1, checked: 1, legacy: !manifest.hash }; }
-  const files = chapterFiles(slug, id);
-  if (!Array.isArray(manifest.urls)) return { damaged: files.length ? 0 : 1, checked: files.length, legacy: true };
+  if (manifest.kind === "novel") {
+    const file = new File(folder, "text.json");
+    const value = JSON.parse(file.textSync());
+    return { damaged: Array.isArray(value.paragraphs) && value.paragraphs.length && (!manifest.hash || file.md5 === manifest.hash) ? 0 : 1, checked: 1, legacy: !manifest.hash };
+  }
+  if (!Array.isArray(manifest.urls)) {
+    const count = chapterFiles(slug, id).length;
+    return { damaged: count ? 0 : 1, checked: count, legacy: true };
+  }
   let damaged = 0;
   for (let index = 0; index < manifest.urls.length; index++) {
     const url = manifest.urls[index], ext = new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp";
     const file = new File(folder, `${String(index + 1).padStart(3, "0")}${ext}`);
     const hash = manifest.hashes?.[index];
-    if (!file.exists || !file.size || (hash && file.md5 !== hash)) {
-      damaged++;
-
-    }
+    if (!file.exists || !file.size || (hash && file.md5 !== hash)) damaged++;
+    yield;
   }
   return { damaged, checked: manifest.urls.length, legacy: !manifest.hashes };
+}
+export function verifyChapterFiles(slug: string, id: string): IntegrityResult {
+  const scan = chapterIntegrity(slug, id);
+  let step = scan.next();
+  while (!step.done) step = scan.next();
+  return step.value;
+}
+export async function verifyChapterFilesAsync(slug: string, id: string, signal: AbortSignal): Promise<IntegrityResult> {
+  throwIfAborted(signal);
+  const scan = chapterIntegrity(slug, id);
+  let step = scan.next();
+  for (let files = 1; !step.done; files++) {
+    if (files % 4 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      throwIfAborted(signal);
+    }
+    step = scan.next();
+  }
+  return step.value;
 }

@@ -1,4 +1,3 @@
-import { queuedChapters } from "../lib/download-display";
 import { Pressable } from "./pressable";
 import { ComponentProps, ReactNode, useState } from "react";
 import { ActivityIndicator, ColorValue, Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -7,7 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Series } from "../lib/parser";
 import { useDownloadDrawer } from "./download-drawer-context";
 import { queueSummary } from "../lib/background-downloads";
-import { useDownloads, useShelf } from "../lib/app-state";
+import { useDownloadBadge, useDownloads, useShelf } from "../lib/app-state";
 
 export const color = { bg: "#0b0b10", surface: "#17171f", raised: "#24232f", text: "#f7f4fb", muted: "#aaa6b3", purple: "#8b5cf6", lilac: "#c9a7ff", line: "#ffffff14" };
 export function Icon({ name, size = 22, tint = color.text }: { name: ComponentProps<typeof Ionicons>["name"]; size?: number; tint?: ColorValue }) { return <Ionicons name={name} size={size} color={tint} />; }
@@ -15,25 +14,24 @@ export function Cover({ item, style }: { item: Series; style: object }) {
   const revision = `${item.localCover || ""}:${item.metadataSyncedAt || item.syncedAt || ""}`;
   const [failed, setFailed] = useState("");
   // Only cached covers are rendered: remote Image requests must not bypass the data-consent gate.
-  return item.localCover && failed !== revision ? <Image key={revision} source={{ uri: item.localCover }} style={style} resizeMode="cover" onError={() => setFailed(revision)} /> : <View style={[style, { backgroundColor: color.raised, alignItems: "center", justifyContent: "center" }]}><Icon name="book-outline" tint={color.muted} /></View>;
+  return item.localCover && failed !== revision ? <Image key={revision} source={{ uri: item.localCover }} style={style} resizeMode="cover" resizeMethod="resize" fadeDuration={0} onError={() => setFailed(revision)} /> : <View style={[style, { backgroundColor: color.raised, alignItems: "center", justifyContent: "center" }]}><Icon name="book-outline" tint={color.muted} /></View>;
 }
-export function Page({ title, subtitle, children, action }: { title: string; subtitle: string; children: ReactNode; action?: ReactNode }) {
-  const shelf = useShelf();
+export function Page({ title, subtitle, children, action, onRefresh, refreshing = false }: { title: string; subtitle: string; children: ReactNode; action?: ReactNode; onRefresh?: () => void; refreshing?: boolean }) {
   return <SafeAreaView edges={["top"]} style={ui.safe}>
-    <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={ui.page} refreshControl={<RefreshControl refreshing={shelf.refreshing} onRefresh={() => void shelf.sync()} tintColor={color.lilac} colors={[color.purple]} />}>
+    <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={ui.page} refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color.lilac} colors={[color.purple]} /> : undefined}>
       <PageHeading title={title} subtitle={subtitle} action={action} />
       {children}
     </ScrollView>
   </SafeAreaView>;
 }
 export function DownloadBadge({ slug, chapter }: { slug: string; chapter?: string }) {
-  const job = useDownloads().find(value => value.series.slug === slug);
-  if (!job || (chapter && !queuedChapters(job).includes(chapter))) return null;
-  const active = job.status === "downloading" && (!chapter || job.currentChapter === chapter);
-  const progress = Math.max(0, Math.min(1, chapter ? job.chapterProgress || 0 : job.progress));
-  const tint = job.status === "error" ? "#f08080" : color.lilac;
-  return <View pointerEvents="none" accessibilityLabel={job.status === "error" ? "Download needs attention" : active ? `Saving ${Math.floor(progress * 100)} percent` : job.status === "paused" ? "Download paused" : "Download pending"} style={{width:28,height:28,borderRadius:14,borderWidth:2,borderColor:color.raised,borderTopColor:active ? tint : color.raised,borderRightColor:active && progress>=0.25?tint:color.raised,borderBottomColor:active && progress>=0.5?tint:color.raised,borderLeftColor:active && progress>=0.75?tint:color.raised,backgroundColor:color.bg,alignItems:"center",justifyContent:"center"}}>
-    {active ? <Text style={{color:tint,fontSize:8,fontWeight:"700"}}>{Math.floor(progress*100)}%</Text> : <Icon name={job.status === "error" ? "alert" : job.status === "paused" ? "pause" : "time-outline"} tint={tint} size={14}/>}
+  const badge = useDownloadBadge(slug, chapter);
+  if (!badge) return null;
+  const active = badge.startsWith("active:");
+  const percent = active ? Number(badge.slice(7)) : 0;
+  const tint = badge === "error" ? "#f08080" : color.lilac;
+  return <View pointerEvents="none" accessibilityLabel={badge === "error" ? "Download needs attention" : active ? `Saving ${percent} percent` : badge === "paused" ? "Download paused" : "Download pending"} style={{width:28,height:28,borderRadius:14,borderWidth:2,borderColor:color.raised,borderTopColor:active ? tint : color.raised,borderRightColor:active && percent>=25?tint:color.raised,borderBottomColor:active && percent>=50?tint:color.raised,borderLeftColor:active && percent>=75?tint:color.raised,backgroundColor:color.bg,alignItems:"center",justifyContent:"center"}}>
+    {active ? <Text style={{color:tint,fontSize:8,fontWeight:"700"}}>{percent}%</Text> : <Icon name={badge === "error" ? "alert" : badge === "paused" ? "pause" : "time-outline"} tint={tint} size={14}/>}
   </View>;
 }
 export function DownloadIndicator() {

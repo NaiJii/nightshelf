@@ -2,13 +2,13 @@ import { downloadDetail, queuedChapters } from "../../lib/download-display";
 import { Pressable } from "../../components/pressable";
 import { ExpandableSummary } from "../../components/expandable-summary";
 import { useActionSheet } from "../../components/action-sheet";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useDownloads, useShelf } from "../../lib/app-state";
 import { Chip, color, Cover, DownloadBadge, DownloadIndicator, Icon, ui } from "../../components/ui";
-import { PublicationStatus, SaveActions } from "../../components/story-row";
+import { PublicationStatus } from "../../components/story-row";
 import { useDownloadDrawer } from "../../components/download-drawer";
 import { chapterProgress, chapterList, chapterListCached, kindOf, nextUnread, sourceOf, formatRating, selectChapters, resumeTarget } from "../../lib/parser";
 import { chapterIntact, chapterReadState, readingHistory } from "../../lib/storage";
@@ -61,31 +61,38 @@ export default function SeriesDetails() {
   const item = catalog.find(value => value.slug === slug);
   const readNow = useReaderNavigation(slug, item?.title, undefined, undefined, true);
   const verifyDetails = useSourceRetry(() => { void loadDetails(slug, true); }, item ? sourceOf(item) : undefined);
-  const owned = item?.localChapters || [];
-  const ownedSet = new Set(owned);
-  const savedRead = owned.filter(id => read[slug]?.[id]);
-  const all = chapterList(item?.chapterIds, owned);
-  const listed = chapterList([...(item?.chapterIds || []),...(item?.lockedChapterIds || [])],owned);
-  const locked = new Set((item?.lockedChapterIds || []).filter(id=>!ownedSet.has(id)));
-  const available = new Set(all);
+  const { owned, ownedSet, savedRead, all, listed, locked, available } = useMemo(() => {
+    const owned = item?.localChapters || [];
+    const ownedSet = new Set(owned);
+    const all = chapterList(item?.chapterIds, owned);
+    return {
+      owned, ownedSet, all,
+      savedRead: owned.filter(id => read[slug]?.[id]),
+      listed: chapterList([...(item?.chapterIds || []), ...(item?.lockedChapterIds || [])], owned),
+      locked: new Set((item?.lockedChapterIds || []).filter(id => !ownedSet.has(id))),
+      available: new Set(all),
+    };
+  }, [item, read, slug]);
   const chosen = selected.filter(id => available.has(id));
   const missing = chosen.filter(id => !ownedSet.has(id));
   const sampleIds = owned.slice(-5).join(",");
   const novel = Boolean(item && kindOf(item) === "novel");
   const missingCount = missing.length;
   const estimate = useDownloadEstimate(slug, missingCount, novel, sampleIds);
-  const ledger = read[slug] || {};
-  const visible = chapterList(listed, owned, ledger, filter, query, newest, item?.chapterTitles);
+  const ledger = useMemo(() => read[slug] || {}, [read, slug]);
+  const searchTerm = useDeferredValue(query);
+  const visible = useMemo(() => chapterList(listed, owned, ledger, filter, searchTerm, newest, item?.chapterTitles), [listed, owned, ledger, filter, searchTerm, newest, item?.chapterTitles]);
+  const unread = useMemo(() => chapterList(item?.chapterIds, owned, ledger, "unread", "", false), [item?.chapterIds, owned, ledger]);
   useLayoutEffect(()=>{ visibleIds.current = visible; },[visible]);
   if (!item) return <SafeAreaView style={ui.safe}><Pressable onPress={() => router.back()}><Text style={ui.empty}>Back · story unavailable</Text></Pressable></SafeAreaView>;
   const rating = formatRating(item.rating);
   const fullList = chapterListCached(item);
   const loadingChapters = detailsLoading.includes(slug);
   const chapterError = detailsErrors?.[slug];
-  const unread = chapterList(item.chapterIds, owned, ledger, "unread", "", false);
   const savedSelection = chosen.filter(id => ownedSet.has(id));
   const chosenSet = new Set(chosen);
   const job = downloads.find(value => value.series.slug === slug);
+  const pendingChapters = new Set(job ? queuedChapters(job) : []);
   const blocked = deleting;
   const ascendingSaved = chapterList([], owned, {}, "all", "", false);
   const continuation = nextUnread(ascendingSaved, history[slug], ledger);
@@ -165,7 +172,7 @@ export default function SeriesDetails() {
       ListHeaderComponent={<View>
         <View style={[ui.row, { marginTop: 24, alignItems: "flex-start" }]}><Cover item={item} style={{ width: 115, height: 165, borderRadius: 17 }} /><DownloadBadge slug={slug}/><View style={{ flex: 1 }}><Text style={[ui.title, { fontSize: 25 }]}>{item.title}</Text><Text style={[ui.muted, { marginTop: 12 }]}>{item.type} · {item.chapterCount} chapters</Text><Text style={{ color: color.lilac, marginTop: 12, fontWeight: "800" }}>{rating ? `★ ${rating} · ` : ""}{item.bookmarks ? `${item.bookmarks} ${providerInfo(sourceOf(item)).audienceNoun}` : ""}</Text></View></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingVertical: 10 }}>{item.genres?.map(tag => <View key={tag} style={[ui.chip, { minHeight: 30, paddingHorizontal: 10 }]}><Text style={{ color: color.muted, fontSize: 11 }}>{tag}</Text></View>)}</ScrollView>
-        <PublicationStatus item={item} /><View style={[ui.row, { gap: 0, marginTop: 6, borderBottomWidth: 1, borderColor: color.line }]}><SaveActions item={item} labels iconsOnly /><ReadingListAction item={item} iconsOnly /><ReleaseActions item={item} /></View>
+        <PublicationStatus item={item} /><View style={[ui.row, { gap: 0, marginTop: 6, borderBottomWidth: 1, borderColor: color.line }]}><ReadingListAction item={item} iconsOnly /><ReleaseActions item={item} /></View>
         {notice ? <Pressable onPress={dismissNotice} style={{ paddingVertical: 12 }}><Text style={ui.muted}>{notice} · Dismiss</Text></Pressable> : null}
         {providerInfo(sourceOf(item)).verification && needsVerification(chapterError || notice) && <Pressable onPress={verifyDetails} style={{ paddingVertical: 12 }}><Text style={{ color: color.lilac }}>Verify and retry</Text></Pressable>}
         <ExpandableSummary key={`${slug}/${item.summary}`} text={item.summary || (detailsLoading.includes(slug) ? "Loading summary…" : "No summary available.")} />
@@ -185,7 +192,7 @@ export default function SeriesDetails() {
       ListEmptyComponent={<View style={{ paddingVertical: 28 }}>{detailsLoading.includes(slug) ? <ActivityIndicator color={color.lilac} /> : <Text style={ui.muted}>{all.length ? "No chapters match these filters." : (sourceOf(item) === "webtoon" && item.detailsCached ? "No public episodes. Restricted episodes require WEBTOON." : "No chapters loaded. Pull to refresh.")}</Text>}</View>}
       renderItem={({ item: chapter }) => {
         const isSaved = ownedSet.has(chapter), isRead = Boolean(ledger[chapter]), checked = chosenSet.has(chapter);
-        const pending = Boolean(job && queuedChapters(job).includes(chapter));
+        const pending = pendingChapters.has(chapter);
         const readable = isSaved || (pending && chapterReadState(slug, chapter).files.length > 0);
         const progress = isRead ? 1 : Math.min(0.99, chapterProgress(history[slug], chapter));
         const chapterTitle = item.chapterTitles?.[chapter] || `Chapter ${chapter}`;

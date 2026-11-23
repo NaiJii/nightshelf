@@ -1,3 +1,4 @@
+import { isUnmeteredWifi } from "../lib/network-policy";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
@@ -69,15 +70,15 @@ export default function AppUpdateScreen() {
       if (!active.current || !focused.current || AppState.currentState !== "active") return;
       if (freeBytes() < update.size + 32 * 1024 ** 2) throw new Error("Not enough free space for the update.");
       const initial = await NetInfo.fetch();
-      const wifiOnly = initial.type === "wifi" && !initial.details?.isConnectionExpensive;
+      const wifiOnly = isUnmeteredWifi(initial);
       await FileSystem.makeDirectoryAsync(folder, { intermediates: true });
       await FileSystem.deleteAsync(apk, { idempotent: true });
       const transfer = FileSystem.createDownloadResumable(update.url, apk, {}, value => {
-        if (active.current) setProgress(Math.max(0, Math.min(1, value.totalBytesWritten / update.size)));
+        if (active.current) setProgress(Math.floor(Math.max(0, Math.min(1, value.totalBytesWritten / update.size)) * 100) / 100);
       });
       task.current = transfer;
       unsubscribe = NetInfo.addEventListener(network => {
-        if (network.isConnected === false || network.isInternetReachable === false || ((wifiOnly || loadPreferences().mobileData === "never") && (network.type !== "wifi" || network.details?.isConnectionExpensive))) {
+        if (network.isConnected === false || network.isInternetReachable === false || ((wifiOnly || loadPreferences().mobileData === "never") && !isUnmeteredWifi(network))) {
           cancelled.current = true;
           void transfer.cancelAsync().catch(() => {});
           if (active.current) { setStatus("Download paused."); setError("Connection changed. Retry on unmetered Wi-Fi, or approve this metered connection before downloading."); }
@@ -104,7 +105,7 @@ export default function AppUpdateScreen() {
   }
   const downloading = busy && status === "Downloading update…";
   const matchingReady = ready?.url === update?.url ? ready : null;
-  return <Page title="App updates" subtitle="NIGHTSHELF" action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{padding:12}}><Icon name="arrow-back"/></Pressable>}><View style={{padding:22,gap:16}}>
+  return <Page title="App updates" subtitle="NIGHTSHELF" onRefresh={() => { if (!busy) void check(true); }} refreshing={checking} action={<Pressable accessibilityLabel="Back" onPress={() => router.back()} style={{padding:12}}><Icon name="arrow-back"/></Pressable>}><View style={{padding:22,gap:16}}>
     <Text style={ui.text}>{installed ? `Installed ${installed.version} · ${installed.architecture === "arm64" ? "ARM64" : "ARMv7"}` : "Install the next Android build once to enable in-app updates."}</Text>
     {update ? <><Text style={ui.title}>NightShelf {update.version}</Text><Text style={ui.muted}>{formatBytes(update.size)} · Your library and reading progress stay.</Text>{update.notes ? <Text selectable style={[ui.muted,{lineHeight:21}]}>{update.notes}</Text> : null}
       <Pressable disabled={busy} onPress={() => void (matchingReady ? install(matchingReady) : download())} style={ui.primary}><Text style={ui.primaryText}>{busy ? "Please wait…" : matchingReady ? "Install update" : "Download and install"}</Text></Pressable>

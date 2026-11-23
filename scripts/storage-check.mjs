@@ -16,7 +16,7 @@ class Entry {
   get name() { return path.basename(this.path); }
   get exists() { return fs.existsSync(this.path); }
 }
-export const reads = {directories:0};
+export const reads = {directories:0,chapterMarkers:0};
 export class Directory extends Entry {
   create() { fs.mkdirSync(this.path, { recursive: true }); }
   list() { reads.directories++; return fs.readdirSync(this.path, { withFileTypes: true }).map(item => item.isDirectory() ? new Directory(this, item.name) : new File(this, item.name)); }
@@ -25,7 +25,7 @@ export class Directory extends Entry {
 export class File extends Entry {
   delete() { fs.unlinkSync(this.path); }
   write(value) { fs.writeFileSync(this.path, value); }
-  textSync() { return fs.readFileSync(this.path, 'utf8'); }
+  textSync() { if (this.name === '.complete') reads.chapterMarkers++; return fs.readFileSync(this.path, 'utf8'); }
   open() { const bytes=fs.readFileSync(this.path); return {readBytes:length=>new Uint8Array(bytes.subarray(0,length)),close() {}}; }
   get size() { return fs.statSync(this.path).size; }
   get md5() { return crypto.createHash('md5').update(fs.readFileSync(this.path)).digest('hex'); }
@@ -102,7 +102,9 @@ try {
   readable=storage.chapterReadState('example','3');
   assert.equal(readable.files.length,3);assert.equal(readable.complete,false,'all panel files alone do not create a completed chapter');
   new File(partial,'.complete').write(JSON.stringify({quality:2,urls:planUrls}));
+  const markerReads = reads.chapterMarkers;
   assert.equal(storage.chapterReadState('example','3').complete,true,'completion becomes visible after the writer commits its manifest');
+  assert.equal(reads.chapterMarkers - markerReads,1,'a reader scan opens the chapter manifest once');
   new File(partial,'.complete').delete();
   const racingFolder=storage.chapterDirectory('deletion-race','1');racingFolder.create();
   const listBeforeRace=Directory.prototype.list;
@@ -174,7 +176,7 @@ try {
   storage.deleteChapters("example", ["2"], true);
   assert.ok(!new Directory(storage.LIBRARY, "example").exists, "delete all also removes partial downloads");
   assert.equal(chapterProgress(storage.readingHistory().example,"1"),0.25,"deleting files preserves resumable chapter progress");
-  assert.deepEqual(storage.savedStories().example, { bookmarked: true, liked: true });
+  assert.deepEqual(storage.savedStories().example, { bookmarked: true });
   assert.equal(storage.readChapters().example["1"], completedAt, "deleting saved files preserves chapter read history");
   assert.ok(outside.exists && cover.exists, "deletion stays inside the story's download folder");
   console.log("Storage deletion check passed");
@@ -276,6 +278,7 @@ try {
   assert.equal(tools.verifyChapterFiles('backup-story','1').damaged,0);
   panel.write('corrupted image data');
   assert.equal(tools.verifyChapterFiles('backup-story','1').damaged,1,'checksum catches changed bytes even when file exists');
+  assert.deepEqual(await tools.verifyChapterFilesAsync('backup-story','1',new AbortController().signal),tools.verifyChapterFiles('backup-story','1'),'the responsive Storage scan uses the same integrity rules');
   assert.equal(panel.exists,true,'checking never deletes the user’s saved files');
   panel.delete();assert.equal(tools.verifyChapterFiles('backup-story','1').damaged,1,'missing panels are detected');
   tools.recordSourceHealth('vortex','parser','Catalog format changed');
@@ -288,8 +291,13 @@ try {
   const autoStory={...storage.SEED[0],slug:'automatic-baseline',chapterIds:['1','2'],chapterCount:2,detailsCached:true};
   storage.saveCatalog([autoStory]);storage.addReleaseUpdates(autoStory.slug,['2']);
   tools.updateStoryOptions(autoStory.slug,{autoDownload:true});
-  assert.equal(storage.savedStories()[autoStory.slug].bookmarked,true,'auto-download also bookmarks the story');
+  assert.equal(Boolean(storage.savedStories()[autoStory.slug].bookmarked),false,'auto-download can be enabled separately from the reading list');
   assert.deepEqual(storage.savedStories()[autoStory.slug].autoDownloadBaseline,['1','2'],'enabling auto-download records existing chapters as its baseline');
+  tools.updateStoryOptions(autoStory.slug,{list:'reading'});
+  assert.equal(storage.savedStories()[autoStory.slug].bookmarked,true);
+  tools.updateStoryOptions(autoStory.slug,{bookmarked:false});
+  assert.equal(storage.savedStories()[autoStory.slug].list,undefined);
+  assert.equal(storage.savedStories()[autoStory.slug].autoDownload,true,'removing from the list leaves auto-download enabled');
   assert.deepEqual(storage.releaseSnapshots()[autoStory.slug],['1','2'],'a new bookmark cannot announce existing chapters');
   tools.updateStoryOptions(autoStory.slug,{autoDownload:false});
   storage.saveCatalog([{...autoStory,chapterIds:['1','2','3'],chapterCount:3}]);
@@ -394,7 +402,7 @@ export async function fetch(url,options={}){
   const scraperHook = registerHooks({resolve(specifier,context,next){
     if(specifier==='./source-session' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export const SOURCE_AGENT='test';export const verificationUserAgent=async()=>'native-test-agent';export const isVerificationHost=url=>new URL(url).hostname==='www.mangakakalot.gg';export const verificationCookies=async()=>'';export const requireSourceVerification=()=>new Error('Verify source');`,shortCircuit:true};
     if(specifier==='nightshelf-native-test'||(specifier==='./background-downloads' && context.parentURL?.endsWith('/scraper.ts')))return {url:`data:text/javascript,${encodeURIComponent(nativeStub)}`,shortCircuit:true};
-    if(specifier==='@react-native-community/netinfo' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export default {fetch:async()=>({type:'wifi',isConnected:true,details:{}})}`,shortCircuit:true};
+    if(specifier==='@react-native-community/netinfo' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export default {fetch:async()=>({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}})}`,shortCircuit:true};
     if(specifier==='expo/fetch')return {url:`data:text/javascript,${encodeURIComponent(fakeFetch)}`,shortCircuit:true};
     if(specifier==='./network' && context.parentURL?.endsWith('/scraper.ts'))return {url:`data:text/javascript,export class NetworkPaused extends Error {}`,shortCircuit:true};
     return next(specifier,context);
@@ -698,7 +706,7 @@ export async function fetch(url,options={}){
     return next(specifier,context);
   } });
   try {
-    const { notifyReleases, configureReleaseChecks } = await import('../src/lib/releases.ts');
+    const { notifyReleases, removeLegacyReleaseSchedule, refreshTrackedReleases } = await import('../src/lib/releases.ts');
     const notifications = await import('expo-notifications');
     const tasks = await import('expo-task-manager');
     storage.savePreferences({...storage.loadPreferences(),releaseNotifications:true});
@@ -745,58 +753,58 @@ export async function fetch(url,options={}){
     assert.ok(storage.readChapters().example['6']);
     storage.clearReleaseUpdates('example');
     assert.equal(storage.releaseUpdates().example,undefined,'removing a bookmark can clear old update badges');
-    storage.saveCatalog([story]);
-    assert.equal(await tasks.task(),2,'background cellular requests are prevented');
-    console.log('Grouped release notification check passed');
-    const scheduler=await import('expo-background-task');
-    await configureReleaseChecks();assert.equal(scheduler.registrations.at(-1).minimumInterval,120,'background checks default to two hours');
-    tasks.registration({minimumInterval:15});
-    storage.savePreferences({...storage.loadPreferences(),releaseCheckInterval:60});
-    await configureReleaseChecks();assert.equal(scheduler.registrations.at(-1).minimumInterval,60,'changing interval replaces the existing 15-minute registration');
+    const scheduler = await import('expo-background-task');
+    const refresher = await import(`data:text/javascript,${encodeURIComponent(mocks['./scraper'])}`);
+    tasks.registration({minimumInterval:120});
+    assert.equal(await tasks.task(),1,'a legacy background wakeup becomes a no-op');
     assert.equal(scheduler.removals,1);
+    assert.deepEqual(refresher.attempted,[],'a legacy wakeup makes no provider requests');
     tasks.registration({minimumInterval:60});
-    const registrations=scheduler.registrations.length;await configureReleaseChecks();assert.equal(scheduler.registrations.length,registrations,'unchanged schedules are not reset');
+    await removeLegacyReleaseSchedule();
+    assert.equal(scheduler.removals,2,'opening the app removes the legacy registration');
+    tasks.registration(null);
+    await removeLegacyReleaseSchedule();
+    assert.equal(scheduler.registrations.length,0,'no new schedules are registered');
+    assert.equal(scheduler.removals,2,'unregistered installs need no migration');
 
     const net = await import('@react-native-community/netinfo');
-    const {AppState,Alert} = await import('react-native'); AppState.currentState='active';
-    storage.saveCatalog([{...story,slug:'bad'},{...story,slug:'good'}]);storage.toggleSaved('bad','bookmarked');storage.toggleSaved('good','bookmarked');
-    net.setNetwork({type:'wifi',isConnected:true});AppState.currentState='background';
-    assert.equal(await tasks.task(),1);
-    const refresher=await import(`data:text/javascript,${encodeURIComponent(mocks['./scraper'])}`);
-    assert.deepEqual(refresher.attempted,['bad','good'],'one broken bookmark never blocks later healthy stories');
-    const nativeTransfers=await import(`data:text/javascript,${encodeURIComponent(mocks['./background-downloads'])}`);
-    nativeTransfers.enable();
-    storage.saveCatalog([{...story,slug:'good',chapterIds:['1'],chapterCount:1}]);
-    tools.updateStoryOptions('good',{bookmarked:true,autoDownload:true});
-    storage.savePreferences({...storage.loadPreferences(),releaseNotifications:false});
-    storage.saveReleaseSnapshot('good',['1']);storage.clearReleaseUpdates('good');
-    storage.saveCatalog([{...story,slug:'good',chapterIds:['1'],chapterCount:1}]);
-    await tasks.task();
-    assert.equal(refresher.downloaded.length,1,'bookmarked auto-downloads work even with release notifications disabled');
-    assert.equal(refresher.downloaded[0][1],'2','only new unread releases are queued automatically');
-    assert.equal(refresher.downloaded[0][8],true);assert.equal(refresher.downloaded[0][9],true,'background metadata work hands off to Android instead of awaiting every image');
-    net.setNetwork({type:'cellular',isConnected:true});await tasks.task();
-    assert.equal(refresher.downloaded.length,1,'automatic releases never use cellular');
-    net.setNetwork({type:'wifi',isConnected:true});
-    storage.savePreferences({...storage.loadPreferences(),autoDownloadLimitMB:0});
-    await tasks.task();assert.equal(refresher.downloaded.length,1,'automatic transfers respect the storage budget');
-    storage.savePreferences({...storage.loadPreferences(),autoDownloadLimitMB:2048});
-    storage.setChaptersRead('good',['2'],true);await tasks.task();
-    assert.equal(refresher.downloaded.length,1,'already-read new releases are not automatically downloaded');
-    storage.setChaptersRead('good',['2'],false);
-    storage.saveDownloads([{series:{...story,slug:'good'},selection:'2',status:'paused',message:'Paused',progress:0}]);
-    await tasks.task();assert.equal(refresher.downloaded.length,1,'background release checks never replace a paused user job');
-    storage.saveDownloads([]);
-    tools.updateStoryOptions('good',{autoDownload:false});
-    storage.savePreferences({...storage.loadPreferences(),releaseNotifications:true});
-
-    storage.saveCatalog([{...story,slug:'first-baseline',chapterIds:undefined,detailsCached:false}]);
-    tools.updateStoryOptions('first-baseline',{autoDownload:true});
-    assert.equal(storage.savedStories()['first-baseline'].autoDownloadBaseline,undefined);
-    await tasks.task();
-    assert.equal(refresher.downloaded.length,1,'the first full pull cannot enqueue the existing chapter backlog');
-    assert.deepEqual(storage.savedStories()['first-baseline'].autoDownloadBaseline,['1','2']);
-    console.log('Automatic bookmarked Wi-Fi release handoff check passed');
+    const {AppState,Alert} = await import('react-native');
+    AppState.currentState='active';
+    const { networkGuard: releaseGuard } = await import('../src/lib/network.ts');
+    storage.savePreferences({...storage.loadPreferences(),mobileData:'ask',releaseNotifications:false});
+    storage.saveCatalog([{...story,slug:'bad'},{...story,slug:'good',chapterIds:['1']},{...story,slug:'untracked'}]);
+    tools.updateStoryOptions('bad',{bookmarked:true});
+    tools.updateStoryOptions('good',{autoDownload:true});
+    storage.saveReleaseSnapshot('good',['1']);
+    storage.clearReleaseUpdates('good');
+    const warnings = [];
+    net.setNetwork({type:'cellular',isConnected:true});
+    await assert.rejects(()=>refreshTrackedReleases(releaseGuard('Check releases?',true),message=>warnings.push(message)),{name:'NetworkPaused'});
+    assert.deepEqual(refresher.attempted,[],'automatic release checks wait on metered data under Ask first');
+    net.setNetwork({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}});
+    const fresh = await refreshTrackedReleases(releaseGuard('Check releases?',true),message=>warnings.push(message));
+    assert.deepEqual(refresher.attempted,['bad','good'],'one broken story does not block tracked releases, and untracked stories are skipped');
+    assert.deepEqual(warnings,['404']);
+    await notifyReleases(fresh);
+    assert.deepEqual(storage.releaseUpdates().good,['2'],'an auto-download-only title records new releases for the foreground queue');
+    net.setNetwork({type:'cellular',isConnected:true});
+    storage.savePreferences({...storage.loadPreferences(),mobileData:'allow'});
+    await refreshTrackedReleases(releaseGuard('Check releases?',true),()=>{});
+    assert.deepEqual(refresher.attempted.slice(2),['bad','good'],'Always allow enables automatic release checks on metered data');
+    storage.savePreferences({...storage.loadPreferences(),mobileData:'ask'});
+    const originalAlert = Alert.alert;
+    let prompts = 0;
+    Alert.alert = (_title,_text,buttons) => { prompts++; buttons.find(button=>button.text==='Yes').onPress(); };
+    try {
+      await refreshTrackedReleases(releaseGuard('Manual release check'),()=>{});
+    } finally { Alert.alert = originalAlert; }
+    assert.equal(prompts,1,'a manual release check asks once for metered access');
+    assert.equal(refresher.attempted.length,6);
+    AppState.currentState='background';
+    await assert.rejects(()=>refreshTrackedReleases(releaseGuard('Check releases?',true),()=>{}),{name:'NetworkPaused'});
+    assert.equal(refresher.attempted.length,6,'backgrounding prevents another provider request');
+    AppState.currentState='active';
+    console.log('Foreground release checks, network policy, and legacy schedule cleanup passed');
     notifications.allow();storage.savePreferences({...storage.loadPreferences(),releaseNotifications:true});
     const alertBad={...story,slug:'alert-fail',chapterIds:['1','2'],chapterCount:2}, alertGood={...alertBad,slug:'alert-good'};
     for(const item of [alertBad,alertGood]){tools.updateStoryOptions(item.slug,{bookmarked:true,notifyReleases:true});storage.saveReleaseSnapshot(item.slug,['1']);}
@@ -827,7 +835,7 @@ export async function fetch(url,options={}){
     await assert.rejects(()=>guard(), /offline/);
     net.setNetwork({type:'cellular',isConnected:true});
     storage.savePreferences({...storage.loadPreferences(),mobileData:'ask'});
-    Alert.alert=(title,text,buttons)=>{net.setNetwork({type:'wifi',isConnected:true});buttons.find(button=>button.text==='No').onPress();};
+    Alert.alert=(title,text,buttons)=>{net.setNetwork({type:'wifi',isConnected:true,details:{isConnectionExpensive:false}});buttons.find(button=>button.text==='No').onPress();};
     await networkGuard('Connection changed during the dialog')();
 
     net.setNetwork({type:'cellular',isConnected:true});

@@ -37,7 +37,7 @@ const available = {chapterIds:['1','2','3','4'],localChapters:['4']};
 assert.deepEqual(automaticReleaseIds(automatic,available,['2','3','4']),['3'],'old badges and saved chapters are excluded from auto-download');
 assert.deepEqual(automaticReleaseIds({...automatic,autoDownloadBaseline:undefined},available,['3']),[],'no automatic transfers before the first complete baseline');
 assert.deepEqual(automaticReleaseIds(automatic,available,['3'],{'3':'read'}),[],'read releases are excluded');
-assert.deepEqual(automaticReleaseIds({...automatic,bookmarked:false},available,['3']),[]);
+assert.deepEqual(automaticReleaseIds({...automatic,bookmarked:false},available,['3']),['3']);
 
 const providerAbort = new AbortController(), screenAbort = new AbortController(), downloadAbort = new AbortController();
 let combinedSignal;
@@ -244,11 +244,14 @@ assert.equal(inactive.messages.filter(message=>Number.isFinite(message.fraction)
 const start = readerSession(); start.setScroll(0); start.setFirstBottom(500);
 start.emit('scroll'); start.advance(400);
 assert.equal(start.messages.at(-1).fraction,0,'a newly opened chapter starts at zero');
-start.setBottom(750); start.setScroll(100); start.emit('scroll'); start.advance(400);
+start.setBottom(1750); start.setScroll(100); start.emit('scroll'); start.advance(400);
 assert.ok(start.messages.at(-1).fraction>0,'scrolling within a long first panel preserves a resume position without marking it read');
 assert.ok(!start.messages.some(message=>message.complete));
 start.setFirstBottom(-1); start.emit('scroll'); start.advance(400);
 assert.ok(start.messages.at(-1).fraction>0,'progress begins after leaving the first page');
+const endPastPanel = readerSession();
+endPastPanel.setBottom(-5); endPastPanel.setScroll(1000); endPastPanel.emit('scroll');
+assert.ok(endPastPanel.messages.some(message=>message.complete),'a fast scroll past the final panel still records completion');
 const short = readerSession(false,1); short.setScroll(0); short.setBottom(750); short.tick(3000);
 assert.ok(!short.messages.some(message=>message.complete),'a short first page cannot complete merely by opening it');
 short.setScroll(20); short.emit('scroll');
@@ -261,6 +264,8 @@ const wifi = { isConnected: true, isInternetReachable: true, type: "wifi", detai
 assert.equal(connectionAccess(wifi, "never", false), "allow");
 assert.equal(connectionAccess({ ...wifi, type: "cellular" }, "ask", false), "ask");
 assert.equal(connectionAccess({ ...wifi, details: { isConnectionExpensive: true } }, "ask", false), "ask");
+assert.equal(connectionAccess({ ...wifi, details: null }, "never", false), "deny");
+assert.equal(connectionAccess({ ...wifi, details: null }, "ask", false), "ask");
 assert.equal(connectionAccess({ ...wifi, type: "unknown" }, "ask", false), "ask");
 assert.equal(connectionAccess({ ...wifi, type: "cellular" }, "ask", true), "allow");
 assert.equal(connectionAccess({ ...wifi, type: "cellular" }, "never", true), "deny");
@@ -373,6 +378,12 @@ scrub.setScroll(0);scrub.document.documentElement.scrollHeight=5000;
 scrub.setPanels([{top:0,height:1000,width:400},{top:1000,height:4000,width:400}]);
 scrub.window.readerChromeVisible=true;scrub.window.readerUpdateControls();
 assert.equal(scrub.elements['reader-scrubber'].hidden,false);
+const revealed = readerSession();
+const revealFinger = {clientX:380,clientY:400};
+revealed.emit('touchstart',{touches:[revealFinger]}); revealed.emit('touchend',{touches:[]});
+const beforeRevealSeek = revealed.getScroll();
+revealed.input('change',7500);
+assert.equal(revealed.getScroll(),beforeRevealSeek,'the tap that reveals controls cannot seek');
 const beforePreview=scrub.messages.length, seeksBefore=scrub.seeks.length;
 scrub.input('input',5000);
 assert.equal(scrub.elements['scrub-preview'].hidden,false);
@@ -403,8 +414,8 @@ const inactiveSeek=scrub.getScroll();scrub.input('input',0);scrub.input('change'
 assert.equal(scrub.getScroll(),inactiveSeek,'a hidden or inactive scrubber cannot change position');
 scrub.window.readerActive=true;scrub.window.visualViewport.scale=2;scrub.window.visualViewport.width=200;scrub.window.visualViewport.height=400;scrub.window.visualViewport.offsetLeft=30;scrub.window.visualViewport.offsetTop=20;scrub.window.readerUpdateControls();
 assert.equal(scrub.elements['reader-scrubber'].style.transform,'scale(0.5)');
-assert.equal(scrub.elements['reader-scrubber'].style.width,'400px');
-assert.equal(scrub.elements['reader-scrubber'].style.left,'30px','controls stay anchored when zoomed and panned');
+assert.equal(scrub.elements['reader-scrubber'].style.width,'36px');
+assert.equal(scrub.elements['reader-scrubber'].style.left,'208px','controls stay anchored when zoomed and panned');
 const proseScrub=readerSession(true);proseScrub.window.readerChromeVisible=true;proseScrub.window.readerUpdateControls();proseScrub.input('input',6000);
 assert.equal(proseScrub.elements['scrub-crop'].hidden,true);
 assert.equal(proseScrub.elements['scrub-text'].textContent,'A preview of the last paragraph.');
@@ -440,7 +451,7 @@ console.log('Inline panel retry, cache refresh and reading-anchor checks passed'
 
 assert.deepEqual(unreadFromHere(['0','1','1.5','2','3'],'1',{'0':'read','1':'read','2':'read'}),['1','1.5','3'],'Read from here includes the chosen chapter and only unread later chapters');
 assert.deepEqual(unreadFromHere(['1'],'2',{}),[],'missing chapters cannot select an unrelated range');
-assert.deepEqual(libraryScopeCounts([{slug:'a',hasLocalFiles:true},{slug:'b',hasLocalFiles:false},{slug:'c',hasLocalFiles:true}],{a:{bookmarked:true,liked:true},b:{bookmarked:true,autoDownload:true,list:'reading'},c:{autoDownload:true}}),{downloads:2,bookmarked:2,liked:1,lists:1,autoDownload:1},'scope counts follow the same membership rules as library filters');
+assert.deepEqual(libraryScopeCounts([{slug:'a',hasLocalFiles:true},{slug:'b',hasLocalFiles:false},{slug:'c',hasLocalFiles:true}],{a:{bookmarked:true,liked:true},b:{bookmarked:true,autoDownload:true,list:'reading'},c:{autoDownload:true}}),{downloads:2,bookmarked:2,autoDownload:2},'scope counts follow the same membership rules as library filters');
 assert.match(unavailableChapter({locked:true,offline:true}),/provider/);
 assert.match(unavailableChapter({offline:true}),/Connect/);
 assert.match(unavailableChapter({damaged:true}),/repair/);

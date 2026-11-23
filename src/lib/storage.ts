@@ -32,19 +32,26 @@ export function loadDownloads(): DownloadJob[] {
   try { const jobs = readJson<DownloadJob[]>(DOWNLOADS, []); return Array.isArray(jobs) ? jobs.filter(job => job?.series && safePart(job.series.slug) && typeof job.selection === "string") : []; } catch { return []; }
 }
 export function saveDownloads(jobs: DownloadJob[]): void { initializeStorage(); writeJson(DOWNLOADS, jobs); }
-export type Preferences = DiscoveryFilters & { autoAppUpdates?: boolean; searchHistory?: Record<string, string[]>; readerContinuous: boolean; readerPrefetch: boolean; releaseCheckInterval: 60 | 120; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; interval: 5 | 10; sort: SortOrder; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
-export const DEFAULT_PREFERENCES: Preferences = { readerContinuous: true, readerPrefetch: true, releaseCheckInterval: 120, autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", interval: 10, sort: "smart", contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
+export type Preferences = DiscoveryFilters & { autoAppUpdates?: boolean; searchHistory?: Record<string, string[]>; readerContinuous: boolean; readerPrefetch: boolean; autoDownloadLimitMB: number; readerKeepAwake: boolean; readerBrightness: number; readerVolumeScroll: boolean; releaseNotifications: boolean; deleteAfterReading: boolean; autoSync: boolean; mobileData: "ask" | "allow" | "never"; sort: SortOrder; period: Period; novelFontSize: number; novelTheme: "dark" | "sepia" };
+export const DEFAULT_PREFERENCES: Preferences = { readerContinuous: true, readerPrefetch: true, autoDownloadLimitMB: 2048, source: "asura", webtoonLanguage: "en", webtoonCollection: "originals", readerKeepAwake: true, readerBrightness: -1, readerVolumeScroll: false, releaseNotifications: false, deleteAfterReading: false, autoSync: true, mobileData: "ask", sort: "smart", contentMode: "all", hideDownloaded: true, hideLiked: false, hideBookmarked: false, period: "week", novelFontSize: 19, novelTheme: "dark" };
 export type PanelPosition = { index: number; offset: number };
 export type ReadingPosition = { chapter: string; fraction: number; readAt: string; panel?: PanelPosition; chapters?: Record<string, { fraction: number; readAt: string; panel?: PanelPosition }> };
 
 export function loadPreferences(): Preferences {
   initializeStorage();
-  try { const stored = readJson<Partial<Preferences> & { weights?: unknown }>(PREFERENCES, {}); delete stored.weights; return { ...DEFAULT_PREFERENCES, ...stored, readerKeepAwake: true, readerContinuous: true }; } catch { return DEFAULT_PREFERENCES; }
+  try { const stored = readJson<Partial<Preferences> & { weights?: unknown; releaseCheckInterval?: unknown; interval?: unknown }>(PREFERENCES, {}); delete stored.weights; delete stored.releaseCheckInterval; delete stored.interval; if (stored.hideLiked) { stored.hideBookmarked = true; stored.hideLiked = false; } return { ...DEFAULT_PREFERENCES, ...stored, readerKeepAwake: true, readerContinuous: true }; } catch { return DEFAULT_PREFERENCES; }
 }
 export function savePreferences(value: Preferences): void { initializeStorage(); writeJson(PREFERENCES, value); }
 export function savedStories(): Record<string, SavedStory> {
   initializeStorage();
-  try { return readJson(SAVED, {}); } catch { return {}; }
+  try {
+    const entries = readJson<Record<string, SavedStory>>(SAVED, {});
+    for (const story of Object.values(entries)) {
+      if (story.list || story.liked) story.bookmarked = true;
+      delete story.liked;
+    }
+    return entries;
+  } catch { return {}; }
 }
 export function toggleSaved(slug: string, field: "liked" | "bookmarked"): void {
   const all = savedStories();
@@ -123,10 +130,9 @@ export function clearReleaseUpdates(slug: string): void {
 
 export function chapterIntact(slug: string, chapter: string): boolean {
   try {
-    const manifest = JSON.parse(new File(chapterDirectory(slug, chapter), ".complete").textSync());
-    if (manifest.kind === "novel") return Boolean(novelChapter(slug, chapter)?.paragraphs.length) && (!manifest.hash || new File(chapterDirectory(slug, chapter), "text.json").md5 === manifest.hash);
-    const files = chapterFiles(slug, chapter);
-    return files.length > 0 && (manifest.quality !== 2 || (Array.isArray(manifest.urls) && manifest.urls.length === files.length));
+    const folder = chapterDirectory(slug, chapter);
+    const manifest = JSON.parse(new File(folder, ".complete").textSync());
+    return savedChapterState(slug, chapter, folder, manifest).complete;
   } catch { return false; }
 }
 
@@ -145,10 +151,13 @@ export const SEED: Series[] = [{
   rank: 3,
 }];
 
+let storageInitialized = false;
 export function initializeStorage(): void {
+  if (storageInitialized) return;
   ROOT.create({ idempotent: true, intermediates: true });
   LIBRARY.create({ idempotent: true, intermediates: true });
   COVERS.create({ idempotent: true, intermediates: true });
+  storageInitialized = true;
 }
 
 export function chapterDirectory(slug: string, chapter: string): Directory {
@@ -247,20 +256,48 @@ export function mergeCatalog(updates: Series[], rankings = false): void {
   saveCatalog([...items.values()]);
 }
 
+function plannedPanels(folder: Directory, urls: string[]): File[] {
+  return urls.map((url, index) => {
+    const extension = new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp";
+    return new File(folder, `${String(index + 1).padStart(3, "0")}${extension}`);
+  });
+}
+
+function listedPanels(folder: Directory): string[] {
+  return folder.list()
+    .filter(item => item instanceof File && /^\d+\.(avif|gif|jpe?g|png|webp)$/i.test(item.name) && item.size > 0)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    .map(item => item.uri);
+}
+
 export function chapterFiles(slug: string, chapter: string, includeMissing = false): string[] {
   const folder = chapterDirectory(slug, chapter);
   if (!folder.exists) return [];
   try {
     const manifest = JSON.parse(new File(folder, ".complete").textSync());
     if (manifest.quality === 2 && Array.isArray(manifest.urls)) {
-      return manifest.urls.map((url: string, index: number) => new File(folder, `${String(index + 1).padStart(3, "0")}${new URL(url).pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0].toLowerCase() || ".webp"}`))
-        .filter((file: File) => includeMissing || (file.exists && file.size)).map((file: File) => file.uri);
+      return plannedPanels(folder, manifest.urls).filter(file => includeMissing || (file.exists && file.size)).map(file => file.uri);
     }
   } catch { /* legacy download uses directory listing */ }
-  return folder.list()
-    .filter(item => item instanceof File && item.size > 0 && /^\d+\.(avif|gif|jpe?g|png|webp)$/i.test(item.name))
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-    .map(item => item.uri);
+  return listedPanels(folder);
+}
+
+function savedChapterState(slug: string, chapter: string, folder: Directory, manifest: { kind?: string; hash?: string; quality?: number; urls?: string[] }) {
+  if (manifest.kind === "novel") {
+    const complete = Boolean(novelChapter(slug, chapter)?.paragraphs.length)
+      && (!manifest.hash || new File(folder, "text.json").md5 === manifest.hash);
+    return { files: [], total: 0, complete };
+  }
+  if (manifest.quality === 2 && Array.isArray(manifest.urls)) {
+    const panels = plannedPanels(folder, manifest.urls);
+    return {
+      files: panels.map(file => file.uri),
+      total: panels.length,
+      complete: panels.length > 0 && panels.every(file => Boolean(file.exists && file.size)),
+    };
+  }
+  const files = listedPanels(folder);
+  return { files, total: files.length, complete: manifest.quality !== 2 && files.length > 0 };
 }
 
 /** Only publish an ordered prefix of committed panels; .part files are never readable. */
@@ -268,9 +305,13 @@ export function chapterReadState(slug: string, chapter: string): { files: string
   try {
     const folder = chapterDirectory(slug, chapter);
     if (!folder.exists) return { files: [], total: 0, complete: false };
-    if (new File(folder, ".complete").exists) {
-      const files = chapterFiles(slug, chapter, true);
-      return { files, total: files.length, complete: chapterIntact(slug, chapter) };
+    const marker = new File(folder, ".complete");
+    if (marker.exists) {
+      try { return savedChapterState(slug, chapter, folder, JSON.parse(marker.textSync())); }
+      catch {
+        const files = listedPanels(folder);
+        return { files, total: files.length, complete: false };
+      }
     }
     try {
       const plan = JSON.parse(new File(folder, ".panels.json").textSync());

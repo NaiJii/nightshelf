@@ -9,6 +9,12 @@ export function queuedChapters(job: DownloadJob): string[] {
 export function chapterDownloadStatus(jobs: DownloadJob[], slug: string, chapter: string): DownloadJob["status"] | "stopped" {
   return jobs.find(job => job.series.slug === slug && queuedChapters(job).includes(chapter))?.status || "stopped";
 }
+export function downloadBadgeState(job?: DownloadJob, chapter?: string): string {
+  if (!job || (chapter && !queuedChapters(job).includes(chapter))) return "";
+  if (job.status !== "downloading" || (chapter && job.currentChapter !== chapter)) return job.status;
+  const fraction = chapter ? job.chapterProgress : job.progress;
+  return "active:" + Math.floor(Math.max(0, Math.min(1, fraction || 0)) * 100);
+}
 export function downloadConflicts(job: DownloadJob, ids: string[], all = false): boolean {
   if ((job.status === "error" || job.status === "paused") && !job.native) return false;
   if (all || job.status === "cancelling") return true;

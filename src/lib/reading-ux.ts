@@ -1,17 +1,24 @@
-import type { SavedStory, Series } from "./parser";
+import { publicationState, type SavedStory, type Series } from "./parser";
+
+export function libraryPriority(item: Series, saved?: SavedStory, reading = false): number {
+  const status = publicationState(item).label;
+  if (status === "Completed") return 2;
+  if (status === "On hiatus" && saved?.list !== "reading" && !reading) return 1;
+  return 0;
+}
 
 export function unreadFromHere(ascending: string[], chapter: string, read: Record<string, string>): string[] {
   const index = ascending.indexOf(chapter);
   return index < 0 ? [] : ascending.slice(index).filter(id => id === chapter || !read[id]);
 }
 
-export type LibraryScope = "downloads" | "bookmarked" | "liked" | "lists" | "autoDownload";
+export type LibraryScope = "downloads" | "bookmarked" | "autoDownload";
 export function inLibraryScope(item: Series, saved: SavedStory | undefined, scope: LibraryScope): boolean {
-  return Boolean(scope === "downloads" ? item.hasLocalFiles : scope === "lists" ? saved?.list : scope === "autoDownload" ? saved?.bookmarked && saved.autoDownload : saved?.[scope]);
+  return Boolean(scope === "downloads" ? item.hasLocalFiles : scope === "autoDownload" ? saved?.autoDownload : saved?.[scope]);
 }
 
 export function libraryScopeCounts(items: Series[], saved: Record<string, SavedStory>): Record<LibraryScope, number> {
-  const counts = { downloads: 0, bookmarked: 0, liked: 0, lists: 0, autoDownload: 0 };
+  const counts = { downloads: 0, bookmarked: 0, autoDownload: 0 };
   const scopes = Object.keys(counts) as LibraryScope[];
   for (const item of items) for (const scope of scopes) if (inLibraryScope(item, saved[item.slug], scope)) counts[scope]++;
   return counts;
